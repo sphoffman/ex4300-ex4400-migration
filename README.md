@@ -11,6 +11,9 @@ versioned snapshot. It does not load or commit configuration.
 - Host-key verification is required by default.
 - Passwords are read from an environment variable or an interactive prompt and
   are never written to the snapshot.
+- Configuration collection is narrowly scoped; system authentication, RADIUS
+  secrets, SNMP communities, private keys, and complete configuration dumps are
+  never requested.
 - Existing snapshot directories are never overwritten.
 - Every raw artifact is SHA-256 hashed.
 - A snapshot records partial/unsupported commands rather than silently omitting
