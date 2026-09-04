@@ -23,7 +23,7 @@ def test_voice_and_mac_classification():
 def test_missing_voice_vlan_is_invalid():
  _,_,voice,_=parse_set_configuration('set switch-options voip interface edge_ports vlan absent'); assert not voice.valid and voice.errors
 def test_operational_inventory_and_lldp():
- i={}; present=parse_interfaces_terse('ge-0/0/2 up up\nge-0/0/2.0 up up eth-switch\nae0 up up\n',i)
+ i={}; present=parse_interfaces_terse('ge-0/0/2 up up\nge-0/0/2.0 up up eth-switch\nae0 up up\ngr-0/0/0 up up\n',i)
  assert present=={'ge-0/0/2','ae0'} and i['ge-0/0/2'].oper_status=='up'
  n=parse_lldp_neighbors_text('LLDP Neighbor Information:\nLocal Interface : ge-0/0/0\nParent Interface : ae0\nPort ID : et-0/0/3\nSystem name : BD-1\n','now','raw')
  assert n[0]['remote_system_name']=='BD-1' and n[0]['parent_interface']=='ae0'
