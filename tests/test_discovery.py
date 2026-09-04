@@ -1,5 +1,7 @@
 from ex_migration_discovery.normalize import normalize_mac,split_interface
 from ex_migration_discovery.parsers import parse_interfaces_terse,parse_lldp_neighbors_text,parse_mac_table_text,parse_set_configuration
+from ex_migration_discovery.collector import Collector
+from pathlib import Path
 CFG='''set switch-options voip interface edge_ports vlan voip
 set vlans v100 vlan-id 100
 set vlans voip vlan-id 1111
@@ -27,3 +29,7 @@ def test_operational_inventory_and_lldp():
  assert present=={'ge-0/0/2','ae0'} and i['ge-0/0/2'].oper_status=='up'
  n=parse_lldp_neighbors_text('LLDP Neighbor Information:\nLocal Interface : ge-0/0/0\nParent Interface : ae0\nPort ID : et-0/0/3\nSystem name : BD-1\n','now','raw')
  assert n[0]['remote_system_name']=='BD-1' and n[0]['parent_interface']=='ae0'
+def test_migration_id_is_path_safe():
+ try: Collector(None,Path('snapshots'),0,60,'bad/id')
+ except ValueError: pass
+ else: raise AssertionError('unsafe migration ID accepted')
