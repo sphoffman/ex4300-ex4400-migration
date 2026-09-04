@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 
 @dataclass(frozen=True)
@@ -80,6 +80,8 @@ class DeviceIdentity:
 @dataclass
 class Snapshot:
     snapshot_id: str
+    migration_id: str
+    device_role: str
     started_at: str
     completed_at: str
     lifecycle: str
@@ -99,4 +101,3 @@ class Snapshot:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
-
