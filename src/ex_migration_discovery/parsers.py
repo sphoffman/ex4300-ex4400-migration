@@ -163,6 +163,30 @@ def parse_interfaces_descriptions(text: str, interfaces: dict[str, InterfaceStat
         if match.group("desc"):
             state.description = match.group("desc")
 
+def parse_interfaces_terse(text: str, interfaces: dict[str, InterfaceState]) -> set[str]:
+    present: set[str] = set()
+    for line in text.splitlines():
+        match = re.match(r"^(?P<name>(?:[a-z]+-\d+/\d+/\d+|ae\d+))\s+(?P<admin>up|down)\s+(?P<link>up|down)(?:\s|$)", line.strip())
+        if not match:
+            continue
+        name = match.group("name")
+        present.add(name)
+        p = split_interface(name)
+        state = interfaces.setdefault(name, InterfaceState(name=name, physical_name=name, media_type=p["media"] if isinstance(p["media"], str) else None, vc_member=p["member"] if isinstance(p["member"], int) else None, pic=p["pic"] if isinstance(p["pic"], int) else None, port=p["port"] if isinstance(p["port"], int) else None))
+        state.admin_status, state.oper_status = match.group("admin"), match.group("link")
+    return present
+
+def parse_lldp_neighbors_text(text: str, observed_at: str, raw_artifact: str) -> list[dict]:
+    result=[]
+    for block in text.split("LLDP Neighbor Information:")[1:]:
+        local=_find(block,r"Local Interface\s*:\s*(\S+)")
+        system=_find(block,r"System name\s*:\s*([^\n]+)")
+        port=_find(block,r"Port ID\s*:\s*(\S+)")
+        parent=_find(block,r"Parent Interface\s*:\s*(\S+)")
+        if local and system:
+            result.append({"observed_at":observed_at,"local_interface":local,"parent_interface":None if parent=="-" else parent,"remote_system_name":system,"remote_port_id":port,"raw_artifact":raw_artifact})
+    return result
+
 
 def _find(text: str, pattern: str) -> str | None:
     match = re.search(pattern, text)
