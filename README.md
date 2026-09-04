@@ -41,22 +41,32 @@ From the repository root, no host installation is required:
 
 ```bash
 docker run --rm -it \
+  --user "$(id -u):$(id -g)" \
   --env EX_MIGRATION_PASSWORD \
+  --env PYTHONPATH=/scripts/src \
   --volume "$PWD:/scripts" \
   --workdir /scripts \
   --entrypoint python \
   juniper/pyez \
-  -m ex_migration_discovery.cli
+  -m ex_migration_discovery.cli collect \
+  --migration-id BLDG-A-IDF-101 \
+  --host 10.0.0.15 \
+  --username admin \
+  --password-env EX_MIGRATION_PASSWORD \
+  --output snapshots \
+  --duration 120 \
+  --interval 60 \
+  --no-host-key-check
 ```
 
-Set `PYTHONPATH=/scripts/src` with `--env PYTHONPATH=/scripts/src` and append
-the `collect` arguments shown below. Use `--no-host-key-check` only in the lab,
-or mount a populated SSH known-hosts file for verified operation.
+Use `--no-host-key-check` only in the lab, or mount a populated SSH known-hosts
+file for verified operation.
 
 ```bash
 export EX_MIGRATION_PASSWORD='temporary-password'
 
 ex-migration-discovery collect \
+  --migration-id BLDG-A-IDF-101 \
   --host 10.0.0.15 \
   --username admin \
   --password-env EX_MIGRATION_PASSWORD \
@@ -69,6 +79,7 @@ For an initial short lab check:
 
 ```bash
 ex-migration-discovery collect \
+  --migration-id BLDG-A-IDF-101 \
   --host 10.0.0.15 \
   --username admin \
   --password-env EX_MIGRATION_PASSWORD \
@@ -84,17 +95,19 @@ rest of the snapshot.
 
 ## Output
 
-Each run creates a new directory such as:
+Each run is grouped under a stable migration ID:
 
 ```text
-snapshots/20260904T190000Z_vQFX1_ab12cd34/
-├── snapshot.json
-├── report.md
-├── integrity.json
-├── errors.json
-└── raw/
-    ├── static/
-    └── observations/
+snapshots/migrations/BLDG-A-IDF-101/
+├── manifest.json
+├── status.json
+└── old-switch/collections/
+    └── 20260904T190000Z_vQFX1_ab12cd34/
+        ├── snapshot.json
+        ├── report.md
+        ├── integrity.json
+        ├── errors.json
+        └── raw/
 ```
 
 `snapshot.json` has lifecycle state `COLLECTED`. Approval is deliberately not a
