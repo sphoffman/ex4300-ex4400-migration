@@ -35,6 +35,24 @@ Host-key checking can be disabled only with the conspicuous
 
 ## Collect
 
+### Using the Juniper PyEZ container
+
+From the repository root, no host installation is required:
+
+```bash
+docker run --rm -it \
+  --env EX_MIGRATION_PASSWORD \
+  --volume "$PWD:/scripts" \
+  --workdir /scripts \
+  --entrypoint python \
+  juniper/pyez \
+  -m ex_migration_discovery.cli
+```
+
+Set `PYTHONPATH=/scripts/src` with `--env PYTHONPATH=/scripts/src` and append
+the `collect` arguments shown below. Use `--no-host-key-check` only in the lab,
+or mount a populated SSH known-hosts file for verified operation.
+
 ```bash
 export EX_MIGRATION_PASSWORD='temporary-password'
 
