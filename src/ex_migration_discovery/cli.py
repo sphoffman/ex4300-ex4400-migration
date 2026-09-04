@@ -12,3 +12,6 @@ def main():
  dev.open(auto_probe=10,hostkey_verify=not a.no_host_key_check)
  try: print(Collector(dev,Path(a.output),a.duration,a.interval).run())
  finally: dev.close()
+
+if __name__ == "__main__":
+ main()
