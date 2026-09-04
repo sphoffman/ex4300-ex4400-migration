@@ -53,7 +53,7 @@ def render_report(snapshot: Snapshot) -> str:
         lines.append("- None")
     if snapshot.errors:
         lines.extend(["", "## Collection errors or unsupported commands", ""])
-        lines.extend(f"- `{e.get('command', 'unknown')}`: {e.get('error', 'unknown error')}" for e in snapshot.errors)
+        lines.extend(f"- `{e.get('command', 'unknown')}` ({e.get('format', 'unknown')}): {e.get('error', 'unknown error')}" for e in snapshot.errors)
     lines.extend([
         "",
         "## Interpretation boundary",
@@ -71,4 +71,3 @@ def voice_summary(snapshot: Snapshot) -> str:
     if not policy.valid:
         return f"invalid ({policy.vlan_name or 'unknown'})"
     return f"{policy.vlan_name} ({policy.vlan_id})"
-
