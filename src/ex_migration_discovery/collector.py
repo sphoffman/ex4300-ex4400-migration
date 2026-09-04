@@ -16,8 +16,7 @@ STATIC=[
  "show configuration protocols lldp | display inheritance | display set",
  "show configuration protocols lldp-med | display inheritance | display set",
  "show configuration protocols dot1x | display inheritance | display set",
- "show configuration forwarding-options storm-control-profiles | display inheritance | display set",
- "show configuration forwarding-options dhcp-security | display inheritance | display set",
+ "show configuration forwarding-options | display inheritance | display set",
  "show vlans extensive","show interfaces descriptions",
 ]
 SAMPLED=["show ethernet-switching table detail","show interfaces terse","show lldp neighbors detail","show lacp interfaces","show dhcp-security binding","show dot1x interface detail"]
@@ -41,7 +40,10 @@ class Collector:
    except Exception as e: errors.append({"command":cmd,"format":"xml","error":f"{type(e).__name__}: {e}"})
    try:
     txt=self.dev.cli(cmd,warning=False); tp=d/(stem+".txt"); tp.write_text(txt); text_path=str(tp.relative_to(base))
-    artifacts.append({"path":text_path,"sha256":hashlib.sha256(tp.read_bytes()).hexdigest(),"command":cmd,"format":"text"})
+    usable=not re.search(r"(?m)^protocol:\s*operation-failed\s*$",txt)
+    artifacts.append({"path":text_path,"sha256":hashlib.sha256(tp.read_bytes()).hexdigest(),"command":cmd,"format":"text","usable":usable})
+    if not usable:
+     errors.append({"command":cmd,"format":"text","error":"device returned operation-failed text"}); txt=""
    except Exception as e: errors.append({"command":cmd,"format":"text","error":f"{type(e).__name__}: {e}"})
    return txt,text_path
   for n,c in enumerate(STATIC): texts[c]=grab(c,"static",n)
@@ -63,7 +65,7 @@ class Collector:
   voice.interface_selectors=[x for x in voice.interface_selectors if x.split('.',1)[0] in present]
   voice.evidence=[x for x in voice.evidence if any(f"interface {sel} " in x for sel in voice.interface_selectors)]
   facts=getattr(self.dev,"facts",{}) or {}; ident=DeviceIdentity(facts.get("hostname"),facts.get("model"),facts.get("version"),"evolved" if "EVO" in str(facts.get("version", "")) else "classic",[str(facts[x]) for x in ("serialnumber",) if facts.get(x)])
-  formats={c:{a.get("format") for a in artifacts if a["command"]==c} for c in STATIC+SAMPLED}
+  formats={c:{a.get("format") for a in artifacts if a["command"]==c and a.get("usable",True)} for c in STATIC+SAMPLED}
   capabilities={c:("xml_and_text" if formats[c]=={"xml","text"} else "text_only" if "text" in formats[c] else "xml_only" if "xml" in formats[c] else "unsupported_or_failed") for c in STATIC+SAMPLED}
   failed={c for c,v in capabilities.items() if v=="unsupported_or_failed"}
   snap=Snapshot(run,started,utc(),"COLLECTED",ident,{"duration_seconds":self.duration,"interval_seconds":self.interval,"samples":sample},capabilities,{"status":"unsupported" if "show virtual-chassis status" in failed else "collected"},list(interfaces.values()),list(vlans.values()),voice,observations,neighbors,artifacts,warnings,errors)
