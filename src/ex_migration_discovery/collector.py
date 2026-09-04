@@ -6,7 +6,20 @@ from .model import DeviceIdentity, Snapshot
 from .parsers import parse_interfaces_descriptions, parse_mac_table_text, parse_set_configuration
 from .report import render_report
 
-STATIC=["show version","show chassis hardware","show virtual-chassis status","show configuration | display inheritance | display set","show vlans extensive","show interfaces descriptions"]
+STATIC=[
+ "show version","show chassis hardware","show virtual-chassis status",
+ "show configuration interfaces | display inheritance | display set",
+ "show configuration vlans | display inheritance | display set",
+ "show configuration switch-options | display inheritance | display set",
+ "show configuration ethernet-switching-options | display inheritance | display set",
+ "show configuration protocols rstp | display inheritance | display set",
+ "show configuration protocols lldp | display inheritance | display set",
+ "show configuration protocols lldp-med | display inheritance | display set",
+ "show configuration protocols dot1x | display inheritance | display set",
+ "show configuration forwarding-options storm-control-profiles | display inheritance | display set",
+ "show configuration forwarding-options dhcp-security | display inheritance | display set",
+ "show vlans extensive","show interfaces descriptions",
+]
 SAMPLED=["show ethernet-switching table detail","show interfaces terse","show lldp neighbors detail","show lacp interfaces","show dhcp-security binding","show dot1x interface detail"]
 
 def utc(): return datetime.now(timezone.utc).isoformat().replace("+00:00","Z")
@@ -26,8 +39,8 @@ class Collector:
     return txt,str(tp.relative_to(base))
    except Exception as e: errors.append({"command":cmd,"error":f"{type(e).__name__}: {e}"}); return "",""
   for n,c in enumerate(STATIC): texts[c]=grab(c,"static",n)
-  config=texts[STATIC[3]][0]; interfaces,vlans,voice,warnings=parse_set_configuration(config)
-  parse_interfaces_descriptions(texts[STATIC[5]][0],interfaces)
+  config="\n".join(texts[c][0] for c in STATIC if c.startswith("show configuration")); interfaces,vlans,voice,warnings=parse_set_configuration(config)
+  parse_interfaces_descriptions(texts["show interfaces descriptions"][0],interfaces)
   observations=[]; sample=0; deadline=time.monotonic()+self.duration
   while True:
    stamp=utc()
