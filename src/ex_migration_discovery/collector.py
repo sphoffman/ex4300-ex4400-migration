@@ -23,11 +23,17 @@ SAMPLED=["show ethernet-switching table detail","show interfaces terse","show ll
 
 def utc(): return datetime.now(timezone.utc).isoformat().replace("+00:00","Z")
 def safe(s): return re.sub(r"[^A-Za-z0-9_.-]+","_",s).strip("_")
+def atomic_json(path:Path,value):
+ tmp=path.with_suffix(path.suffix+".tmp"); tmp.write_text(json.dumps(value,indent=2)+"\n"); os.replace(tmp,path)
 
 class Collector:
- def __init__(self,dev,out:Path,duration:int,interval:int): self.dev,self.out,self.duration,self.interval=dev,out,duration,interval
+ def __init__(self,dev,out:Path,duration:int,interval:int,migration_id:str,device_role:str="old-switch"):
+  self.dev,self.out,self.duration,self.interval=dev,out,duration,interval
+  self.migration_id=safe(migration_id); self.device_role=device_role
+  if not self.migration_id or self.migration_id!=migration_id: raise ValueError("migration ID may contain only letters, numbers, dot, underscore, and hyphen")
  def run(self):
-  started=utc(); run=uuid.uuid4().hex[:8]; base=self.out/(started.replace(":","").replace("-","")[:15]+"Z_pending_"+run); base.mkdir(parents=True)
+  started=utc(); run=uuid.uuid4().hex[:8]; migration_root=self.out/"migrations"/self.migration_id; collections=migration_root/self.device_role/"collections"; collections.mkdir(parents=True,exist_ok=True)
+  base=collections/(started.replace(":","").replace("-","")[:15]+"Z_pending_"+run); base.mkdir()
   artifacts=[]; errors=[]; texts={}
   def grab(cmd,group,n):
    d=base/"raw"/group; d.mkdir(parents=True,exist_ok=True); stem=f"{n:03d}_{safe(cmd)}"
@@ -68,7 +74,11 @@ class Collector:
   formats={c:{a.get("format") for a in artifacts if a["command"]==c and a.get("usable",True)} for c in STATIC+SAMPLED}
   capabilities={c:("xml_and_text" if formats[c]=={"xml","text"} else "text_only" if "text" in formats[c] else "xml_only" if "xml" in formats[c] else "unsupported_or_failed") for c in STATIC+SAMPLED}
   failed={c for c,v in capabilities.items() if v=="unsupported_or_failed"}
-  snap=Snapshot(run,started,utc(),"COLLECTED",ident,{"duration_seconds":self.duration,"interval_seconds":self.interval,"samples":sample},capabilities,{"status":"unsupported" if "show virtual-chassis status" in failed else "collected"},list(interfaces.values()),list(vlans.values()),voice,observations,neighbors,artifacts,warnings,errors)
-  name=f"{started.replace(':','').replace('-','')[:15]}Z_{safe(ident.hostname or 'unknown')}_{run}"; final=self.out/name
+  snap=Snapshot(run,self.migration_id,self.device_role,started,utc(),"COLLECTED",ident,{"duration_seconds":self.duration,"interval_seconds":self.interval,"samples":sample},capabilities,{"status":"unsupported" if "show virtual-chassis status" in failed else "collected"},list(interfaces.values()),list(vlans.values()),voice,observations,neighbors,artifacts,warnings,errors)
+  name=f"{started.replace(':','').replace('-','')[:15]}Z_{safe(ident.hostname or 'unknown')}_{run}"; final=collections/name
   (base/"snapshot.json").write_text(json.dumps(snap.to_dict(),indent=2)+"\n"); (base/"report.md").write_text(render_report(snap)); (base/"errors.json").write_text(json.dumps(errors,indent=2)+"\n")
-  integ={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in base.iterdir() if p.is_file()}; (base/"integrity.json").write_text(json.dumps(integ,indent=2)+"\n"); os.replace(base,final); return final
+  integ={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in base.iterdir() if p.is_file()}; (base/"integrity.json").write_text(json.dumps(integ,indent=2)+"\n"); os.replace(base,final)
+  manifest=migration_root/"manifest.json"
+  if not manifest.exists(): atomic_json(manifest,{"schema_version":"1.0","migration_id":self.migration_id,"created_at":started,"old_switch":{"observed_hostname":ident.hostname,"management_address":getattr(self.dev,"hostname",None)}})
+  atomic_json(migration_root/"status.json",{"migration_id":self.migration_id,"state":"COLLECTING_OLD","latest_collection":str(final.relative_to(migration_root)),"updated_at":utc()})
+  return final
