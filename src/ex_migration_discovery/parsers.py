@@ -166,7 +166,7 @@ def parse_interfaces_descriptions(text: str, interfaces: dict[str, InterfaceStat
 def parse_interfaces_terse(text: str, interfaces: dict[str, InterfaceState]) -> set[str]:
     present: set[str] = set()
     for line in text.splitlines():
-        match = re.match(r"^(?P<name>(?:[a-z]+-\d+/\d+/\d+|ae\d+))\s+(?P<admin>up|down)\s+(?P<link>up|down)(?:\s|$)", line.strip())
+        match = re.match(r"^(?P<name>(?:(?:ge|xe|et|mge)-\d+/\d+/\d+|ae\d+))\s+(?P<admin>up|down)\s+(?P<link>up|down)(?:\s|$)", line.strip())
         if not match:
             continue
         name = match.group("name")
