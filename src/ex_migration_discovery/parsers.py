@@ -105,6 +105,9 @@ def parse_set_configuration(text: str) -> tuple[dict[str, InterfaceState], dict[
         else:
             voice.vlan_id = vlan.vlan_id
             voice.valid = vlan.vlan_id is not None
+    for state in interfaces.values():
+        if state.untagged_vlan and state.untagged_vlan.name in vlans:
+            state.untagged_vlan = VlanRef(state.untagged_vlan.name, vlans[state.untagged_vlan.name].vlan_id)
     return interfaces, vlans, voice, sorted(set(warnings))
 
 
@@ -164,4 +167,3 @@ def parse_interfaces_descriptions(text: str, interfaces: dict[str, InterfaceStat
 def _find(text: str, pattern: str) -> str | None:
     match = re.search(pattern, text)
     return match.group(1).strip() if match else None
-
