@@ -32,14 +32,18 @@ class Collector:
   artifacts=[]; errors=[]; texts={}
   def grab(cmd,group,n):
    d=base/"raw"/group; d.mkdir(parents=True,exist_ok=True); stem=f"{n:03d}_{safe(cmd)}"
+   txt=""; text_path=""
    try:
     xml=self.dev.rpc.cli(command=cmd,format="xml"); xp=d/(stem+".xml")
     xml_bytes=__import__("lxml.etree").etree.tostring(xml,pretty_print=True) if hasattr(xml,"tag") else (repr(xml)+"\n").encode()
     xp.write_bytes(xml_bytes)
-    txt=self.dev.cli(cmd,warning=False); tp=d/(stem+".txt"); tp.write_text(txt)
-    for p in (xp,tp): artifacts.append({"path":str(p.relative_to(base)),"sha256":hashlib.sha256(p.read_bytes()).hexdigest(),"command":cmd})
-    return txt,str(tp.relative_to(base))
-   except Exception as e: errors.append({"command":cmd,"error":f"{type(e).__name__}: {e}"}); return "",""
+    artifacts.append({"path":str(xp.relative_to(base)),"sha256":hashlib.sha256(xp.read_bytes()).hexdigest(),"command":cmd,"format":"xml"})
+   except Exception as e: errors.append({"command":cmd,"format":"xml","error":f"{type(e).__name__}: {e}"})
+   try:
+    txt=self.dev.cli(cmd,warning=False); tp=d/(stem+".txt"); tp.write_text(txt); text_path=str(tp.relative_to(base))
+    artifacts.append({"path":text_path,"sha256":hashlib.sha256(tp.read_bytes()).hexdigest(),"command":cmd,"format":"text"})
+   except Exception as e: errors.append({"command":cmd,"format":"text","error":f"{type(e).__name__}: {e}"})
+   return txt,text_path
   for n,c in enumerate(STATIC): texts[c]=grab(c,"static",n)
   config="\n".join(texts[c][0] for c in STATIC if c.startswith("show configuration")); interfaces,vlans,voice,warnings=parse_set_configuration(config)
   parse_interfaces_descriptions(texts["show interfaces descriptions"][0],interfaces)
@@ -55,13 +59,13 @@ class Collector:
    sample+=1
    if time.monotonic()>=deadline: break
    time.sleep(min(self.interval,max(0,deadline-time.monotonic())))
-  phantom=set(interfaces)-present
-  if phantom: warnings.append(f"ignored {len(phantom)} effective-config interfaces absent from operational inventory")
   interfaces={k:v for k,v in interfaces.items() if k in present}
   voice.interface_selectors=[x for x in voice.interface_selectors if x.split('.',1)[0] in present]
   voice.evidence=[x for x in voice.evidence if any(f"interface {sel} " in x for sel in voice.interface_selectors)]
   facts=getattr(self.dev,"facts",{}) or {}; ident=DeviceIdentity(facts.get("hostname"),facts.get("model"),facts.get("version"),"evolved" if "EVO" in str(facts.get("version", "")) else "classic",[str(facts[x]) for x in ("serialnumber",) if facts.get(x)])
-  failed={e["command"] for e in errors}; capabilities={c:("unsupported_or_failed" if c in failed else "collected") for c in STATIC+SAMPLED}
+  formats={c:{a.get("format") for a in artifacts if a["command"]==c} for c in STATIC+SAMPLED}
+  capabilities={c:("xml_and_text" if formats[c]=={"xml","text"} else "text_only" if "text" in formats[c] else "xml_only" if "xml" in formats[c] else "unsupported_or_failed") for c in STATIC+SAMPLED}
+  failed={c for c,v in capabilities.items() if v=="unsupported_or_failed"}
   snap=Snapshot(run,started,utc(),"COLLECTED",ident,{"duration_seconds":self.duration,"interval_seconds":self.interval,"samples":sample},capabilities,{"status":"unsupported" if "show virtual-chassis status" in failed else "collected"},list(interfaces.values()),list(vlans.values()),voice,observations,neighbors,artifacts,warnings,errors)
   name=f"{started.replace(':','').replace('-','')[:15]}Z_{safe(ident.hostname or 'unknown')}_{run}"; final=self.out/name
   (base/"snapshot.json").write_text(json.dumps(snap.to_dict(),indent=2)+"\n"); (base/"report.md").write_text(render_report(snap)); (base/"errors.json").write_text(json.dumps(errors,indent=2)+"\n")
