@@ -61,3 +61,10 @@ def test_mismatched_source_address_requires_review():
  _,management=parse_management_configuration(config,vlans,163,"10.0.0.15",False)
  assert management.consistency=="REVIEW_REQUIRED"
  assert next(x for x in management.source_addresses if x.configuration_path=="system ntp source-address").disposition=="REVIEW_REQUIRED"
+
+def test_hierarchical_snmp_name_preserves_hostname_keyword():
+ config=CONFIG.replace("set snmp name hostname","name hostname;")
+ _,vlans,_,_=parse_set_configuration(config)
+ _,management=parse_management_configuration(config,vlans,163,"10.0.0.15",False)
+ assert management.snmp.name=="hostname"
+ assert management.snmp.name_uses_hostname is True
