@@ -24,6 +24,13 @@ default route. Management VLAN 163 is the default policy and can be changed with
 SNMP name, location, engine ID, SNMPv3 presence, and source-address statements
 are collected through narrow queries. SNMP communities, authentication/privacy
 keys, login passwords, and complete configuration dumps are not requested.
+All effective `source-address` statements are collected with one text-only,
+configuration-wide filter. They are validation evidence for the authoritative
+EX4400 template and are never treated as configuration to replay.
+
+DHCP-security bindings and dot1x operational sessions are sampled only when the
+corresponding configuration is present. `ethernet-switching-options` is queried
+only as a fallback when the ELS `switch-options` hierarchy is unavailable.
 
 ## Single-switch collection
 
