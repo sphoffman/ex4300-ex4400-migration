@@ -1,6 +1,5 @@
 from __future__ import annotations
 import hashlib,json,os,re,time,uuid
-from collections import Counter
 from datetime import datetime,timezone
 from pathlib import Path
 from .identity import derive_identity
@@ -16,7 +15,7 @@ STATIC=[
  "show configuration system ntp | display inheritance | display set | match source-address",
  "show configuration interfaces | display inheritance | display set",
  "show configuration vlans | display inheritance | display set",
- "show configuration snmp name | display inheritance | display set",
+ "show configuration snmp name | display set",
  "show configuration snmp location | display inheritance | display set",
  "show configuration snmp engine-id | display inheritance | display set",
  "show configuration snmp trap-options | display inheritance | display set | match source-address",
@@ -75,9 +74,11 @@ class Collector:
   for n,c in enumerate(STATIC): texts[c]=grab(c,"static",n)
   config="\n".join(texts[c][0] for c in STATIC if c.startswith("show configuration"))
   interfaces,vlans,voice,warnings=parse_set_configuration(config)
-  count_text=texts["show configuration snmp v3 | display set | count"][0]
+  v3_command="show configuration snmp v3 | display set | count"
+  count_text=texts[v3_command][0]
   count_match=re.search(r"Count:\s*(\d+)\s+lines",count_text)
-  v3_configured=(int(count_match.group(1))>0) if count_match else None
+  v3_text_failed=any(e["command"]==v3_command and e["format"]=="text" for e in errors)
+  v3_configured=(int(count_match.group(1))>0) if count_match else (None if v3_text_failed else False)
   configured_hostname,management=parse_management_configuration(config,vlans,self.management_vlan_id,self.connection_address,v3_configured)
   if configured_hostname and configured_hostname.lower()!=observed_hostname.lower(): warnings.append(f"configured hostname {configured_hostname!r} differs from device fact {observed_hostname!r}")
   parse_interfaces_descriptions(texts["show interfaces descriptions"][0],interfaces)
@@ -95,8 +96,8 @@ class Collector:
   interfaces={k:v for k,v in interfaces.items() if k in present}
   voice.interface_selectors=[x for x in voice.interface_selectors if x.split('.',1)[0] in present]
   voice.evidence=[x for x in voice.evidence if any(f"interface {sel} " in x for sel in voice.interface_selectors)]
-  mac_counts=Counter(o.vlan.vlan_id for o in observations)
-  for vlan in vlans.values(): vlan.observed_mac_count=mac_counts.get(vlan.vlan_id,0); vlan.observed=vlan.observed_mac_count>0
+  unique_macs={vlan_id:{o.mac for o in observations if o.vlan.vlan_id==vlan_id} for vlan_id in {o.vlan.vlan_id for o in observations}}
+  for vlan in vlans.values(): vlan.observed_mac_count=len(unique_macs.get(vlan.vlan_id,set())); vlan.observed=vlan.observed_mac_count>0
   for vlan in vlans.values():
    if vlan.irb_interface and vlan.vlan_id!=self.management_vlan_id: warnings.append(f"non-management VLAN {vlan.name} has l3-interface {vlan.irb_interface}")
   ident=DeviceIdentity(observed_hostname or None,facts.get("model"),facts.get("version"),"evolved" if "EVO" in str(facts.get("version","")) else "classic",[str(facts[x]) for x in ("serialnumber",) if facts.get(x)],configured_hostname,derived.proposed_hostname,derived.rule)
