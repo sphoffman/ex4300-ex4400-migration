@@ -1,108 +1,98 @@
 # EX Migration Discovery Collector
 
-This is **Script 1 only** for the EX4300-to-EX4400 migration workflow. It is
-read-only. It collects repeated operational observations, effective
-configuration, structured XML, and raw CLI evidence into an immutable,
-versioned snapshot. It does not load or commit configuration.
+Read-only discovery for staged EX4300-to-EX4400 migrations. The collector keeps
+raw XML/text evidence and normalized state in immutable, per-migration snapshot
+directories. It never loads or commits configuration.
 
-## Safety properties
+## Identity and management
 
-- No configuration RPCs are implemented.
-- Host-key verification is required by default.
-- Passwords are read from an environment variable or an interactive prompt and
-  are never written to the snapshot.
-- Configuration collection is narrowly scoped; system authentication, RADIUS
-  secrets, SNMP communities, private keys, and complete configuration dumps are
-  never requested.
-- Existing snapshot directories are never overwritten.
-- Every raw artifact is SHA-256 hashed.
-- A snapshot records partial/unsupported commands rather than silently omitting
-  them.
-- MAC addresses and interface names are normalized, but raw output is retained.
-- Device types are not inferred from MAC OUIs.
+For an old hostname such as:
 
-## Install
-
-```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -e '.[test]'
+```text
+home1-ex4300-vc-fd-dh4301
 ```
 
-Ensure the device host key exists in the SSH known-hosts file before collecting.
-Host-key checking can be disabled only with the conspicuous
-`--no-host-key-check` lab option; production collection must not use it.
+the collector derives migration ID `dh4301` and proposed replacement hostname
+`home1-ex4400-vc-fd-dh4301`. An optional `--migration-id` is an assertion and
+must match the derived value.
 
-## Collect
+The normalized management profile distinguishes the NETCONF connection and
+`fxp0`/`mgmt_junos` path from the production management VLAN, IRB, address, and
+default route. Management VLAN 163 is the default policy and can be changed with
+`--management-vlan`.
 
-### Using the Juniper PyEZ container
+SNMP name, location, engine ID, SNMPv3 presence, and source-address statements
+are collected through narrow queries. SNMP communities, authentication/privacy
+keys, login passwords, and complete configuration dumps are not requested.
 
-From the repository root, no host installation is required:
+## Single-switch collection
+
+Username and password are prompted when not otherwise supplied:
+
+```bash
+ex-migration-discovery collect \
+  --host 10.0.0.15 \
+  --output snapshots \
+  --duration 120 \
+  --interval 60
+```
+
+For the PyEZ container in the lab:
 
 ```bash
 docker run --rm -it \
   --user "$(id -u):$(id -g)" \
-  --env EX_MIGRATION_PASSWORD \
   --env PYTHONPATH=/scripts/src \
   --volume "$PWD:/scripts" \
   --workdir /scripts \
   --entrypoint python \
   juniper/pyez \
   -m ex_migration_discovery.cli collect \
-  --migration-id BLDG-A-IDF-101 \
   --host 10.0.0.15 \
-  --username admin \
-  --password-env EX_MIGRATION_PASSWORD \
   --output snapshots \
   --duration 120 \
   --interval 60 \
   --no-host-key-check
 ```
 
-Use `--no-host-key-check` only in the lab, or mount a populated SSH known-hosts
-file for verified operation.
+`--no-host-key-check` is for lab use only.
 
-```bash
-export EX_MIGRATION_PASSWORD='temporary-password'
+## Batch collection
 
-ex-migration-discovery collect \
-  --migration-id BLDG-A-IDF-101 \
-  --host 10.0.0.15 \
-  --username admin \
-  --password-env EX_MIGRATION_PASSWORD \
-  --output snapshots \
-  --duration 1800 \
-  --interval 60
-```
-
-For an initial short lab check:
+Repeat `--host`:
 
 ```bash
 ex-migration-discovery collect \
-  --migration-id BLDG-A-IDF-101 \
   --host 10.0.0.15 \
-  --username admin \
-  --password-env EX_MIGRATION_PASSWORD \
-  --output snapshots \
-  --duration 120 \
-  --interval 60
+  --host 10.0.0.16 \
+  --host 10.0.0.17
 ```
 
-The collector runs an initial static/configuration pass, then repeatedly samples
-the MAC table, interface state, LLDP, LACP, DHCP security, and authentication
-state. Unsupported commands are recorded in `errors.json` and do not erase the
-rest of the snapshot.
+Or use an inventory:
+
+```csv
+old_address,new_fxp_address
+10.0.0.15,10.200.10.10
+10.0.0.16,10.200.10.11
+10.0.0.17,10.200.10.12
+```
+
+```bash
+ex-migration-discovery collect --inventory switches.csv
+```
+
+Credentials are obtained once per batch. A failed device is reported without
+discarding successful collections from other devices, and the command exits
+nonzero when any target fails.
 
 ## Output
 
-Each run is grouped under a stable migration ID:
-
 ```text
-snapshots/migrations/BLDG-A-IDF-101/
+snapshots/migrations/<derived-migration-id>/
 ├── manifest.json
 ├── status.json
 └── old-switch/collections/
-    └── 20260904T190000Z_vQFX1_ab12cd34/
+    └── <timestamp>_<hostname>_<snapshot-id>/
         ├── snapshot.json
         ├── report.md
         ├── integrity.json
@@ -110,13 +100,7 @@ snapshots/migrations/BLDG-A-IDF-101/
         └── raw/
 ```
 
-`snapshot.json` has lifecycle state `COLLECTED`. Approval is deliberately not a
-collector operation; a later review command will create a separate approval
-record bound to the snapshot digest.
-
-## Lab limitation
-
-vJunos-switch does not reproduce every EX4300/EX4400 Virtual Chassis RPC, and
-vJunosEvolved may omit production QFX Ethernet-segment operational commands.
-Unsupported capabilities are recorded explicitly so lab success cannot be
-mistaken for complete production-platform validation.
+The normalized VLAN inventory retains configured-but-unobserved VLANs,
+descriptions, IRB associations, observed MAC counts, and DHCP-trust evidence.
+Non-management VLANs with IRBs and management identity inconsistencies are
+reported for review rather than silently converted into provisioning input.
