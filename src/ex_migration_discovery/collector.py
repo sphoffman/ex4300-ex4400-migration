@@ -7,23 +7,26 @@ from .model import DeviceIdentity,Snapshot
 from .parsers import parse_interfaces_descriptions,parse_interfaces_terse,parse_lldp_neighbors_text,parse_mac_table_text,parse_management_configuration,parse_set_configuration
 from .report import render_report
 
+SOURCE_ADDRESS_COMMAND="show configuration | display inheritance | display set | match source-address"
+SWITCH_OPTIONS_COMMAND="show configuration switch-options | display inheritance | display set"
+LEGACY_SWITCH_OPTIONS_COMMAND="show configuration ethernet-switching-options | display inheritance | display set"
+DHCP_BINDING_COMMAND="show dhcp-security binding"
+DOT1X_DETAIL_COMMAND="show dot1x interface detail"
+
 STATIC=[
  "show version","show chassis hardware","show virtual-chassis status",
  "show configuration system host-name | display inheritance | display set",
  "show configuration system management-instance | display inheritance | display set",
- "show configuration system syslog | display inheritance | display set | match source-address",
- "show configuration system ntp | display inheritance | display set | match source-address",
+ SOURCE_ADDRESS_COMMAND,
  "show configuration interfaces | display inheritance | display set",
  "show configuration vlans | display inheritance | display set",
  "show configuration snmp name",
  "show configuration snmp location | display inheritance | display set",
  "show configuration snmp engine-id | display inheritance | display set",
- "show configuration snmp trap-options | display inheritance | display set | match source-address",
  "show configuration snmp v3 | display set | count",
  "show configuration routing-options static | display inheritance | display set",
  "show configuration routing-instances mgmt_junos routing-options | display inheritance | display set",
- "show configuration switch-options | display inheritance | display set",
- "show configuration ethernet-switching-options | display inheritance | display set",
+ SWITCH_OPTIONS_COMMAND,
  "show configuration protocols rstp | display inheritance | display set",
  "show configuration protocols lldp | display inheritance | display set",
  "show configuration protocols lldp-med | display inheritance | display set",
@@ -31,10 +34,12 @@ STATIC=[
  "show configuration forwarding-options | display inheritance | display set",
  "show vlans extensive","show interfaces descriptions",
 ]
-SAMPLED=["show ethernet-switching table detail","show interfaces terse","show lldp neighbors detail","show lacp interfaces","show dhcp-security binding","show dot1x interface detail"]
-TEXT_ONLY={"show configuration snmp v3 | display set | count"}
+SAMPLED=["show ethernet-switching table detail","show interfaces terse","show lldp neighbors detail","show lacp interfaces"]
+TEXT_ONLY={"show configuration snmp v3 | display set | count",SOURCE_ADDRESS_COMMAND}
 def utc(): return datetime.now(timezone.utc).isoformat().replace("+00:00","Z")
 def safe(s): return re.sub(r"[^A-Za-z0-9_.-]+","_",s).strip("_")
+def needs_dhcp_binding(config): return bool(re.search(r"(?m)^set .*?(?:dhcp-security|dhcp-snooping|secure-access-port)(?:\s|$)",config))
+def needs_dot1x_detail(config): return bool(re.search(r"(?m)^set protocols dot1x(?:\s|$)",config))
 def atomic_json(path,value):
  tmp=path.with_suffix(path.suffix+".tmp"); tmp.write_text(json.dumps(value,indent=2)+"\n"); os.replace(tmp,path)
 
@@ -71,8 +76,13 @@ class Collector:
     if not usable: errors.append({"command":cmd,"format":"text","error":"device returned operation-failed text"}); txt=""
    except Exception as e: errors.append({"command":cmd,"format":"text","error":f"{type(e).__name__}: {e}"})
    return txt,text_path
-  for n,c in enumerate(STATIC): texts[c]=grab(c,"static",n)
-  config="\n".join(texts[c][0] for c in STATIC if c.startswith("show configuration"))
+  attempted_static=list(STATIC)
+  for n,c in enumerate(attempted_static): texts[c]=grab(c,"static",n)
+  switch_options_supported=any(a["command"]==SWITCH_OPTIONS_COMMAND and a.get("format")=="text" and a.get("usable",True) for a in artifacts)
+  if not switch_options_supported:
+   texts[LEGACY_SWITCH_OPTIONS_COMMAND]=grab(LEGACY_SWITCH_OPTIONS_COMMAND,"static",len(attempted_static))
+   attempted_static.append(LEGACY_SWITCH_OPTIONS_COMMAND)
+  config="\n".join(texts[c][0] for c in attempted_static if c.startswith("show configuration"))
   interfaces,vlans,voice,warnings=parse_set_configuration(config)
   v3_command="show configuration snmp v3 | display set | count"
   count_text=texts[v3_command][0]
@@ -82,10 +92,15 @@ class Collector:
   configured_hostname,management=parse_management_configuration(config,vlans,self.management_vlan_id,self.connection_address,v3_configured)
   if configured_hostname and configured_hostname.lower()!=observed_hostname.lower(): warnings.append(f"configured hostname {configured_hostname!r} differs from device fact {observed_hostname!r}")
   parse_interfaces_descriptions(texts["show interfaces descriptions"][0],interfaces)
+  sampled_commands=list(SAMPLED)
+  dhcp_binding_enabled=needs_dhcp_binding(config)
+  dot1x_detail_enabled=needs_dot1x_detail(config)
+  if dhcp_binding_enabled: sampled_commands.append(DHCP_BINDING_COMMAND)
+  if dot1x_detail_enabled: sampled_commands.append(DOT1X_DETAIL_COMMAND)
   observations=[]; neighbors=[]; present=set(); sample=0; deadline=time.monotonic()+self.duration
   while True:
    stamp=utc()
-   for n,c in enumerate(SAMPLED):
+   for n,c in enumerate(sampled_commands):
     text,path=grab(c,f"observations/{sample:04d}",n)
     if c.startswith("show ethernet-switching table"): observations+=parse_mac_table_text(text,stamp,path,interfaces)
     elif c=="show interfaces terse": present|=parse_interfaces_terse(text,interfaces)
@@ -101,8 +116,15 @@ class Collector:
   for vlan in vlans.values():
    if vlan.irb_interface and vlan.vlan_id!=self.management_vlan_id: warnings.append(f"non-management VLAN {vlan.name} has l3-interface {vlan.irb_interface}")
   ident=DeviceIdentity(observed_hostname or None,facts.get("model"),facts.get("version"),"evolved" if "EVO" in str(facts.get("version","")) else "classic",[str(facts[x]) for x in ("serialnumber",) if facts.get(x)],configured_hostname,derived.proposed_hostname,derived.rule)
-  formats={c:{a.get("format") for a in artifacts if a["command"]==c and a.get("usable",True)} for c in STATIC+SAMPLED}; capabilities={c:("xml_and_text" if formats[c]=={"xml","text"} else "text_only" if "text" in formats[c] else "xml_only" if "xml" in formats[c] else "unsupported_or_failed") for c in STATIC+SAMPLED}; failed={c for c,v in capabilities.items() if v=="unsupported_or_failed"}
-  snap=Snapshot(run,migration_id,self.device_role,started,utc(),"COLLECTED",ident,management,{"duration_seconds":self.duration,"interval_seconds":self.interval,"samples":sample,"management_vlan_id":self.management_vlan_id},capabilities,{"status":"unsupported" if "show virtual-chassis status" in failed else "collected"},list(interfaces.values()),list(vlans.values()),voice,observations,neighbors,artifacts,sorted(set(warnings)),errors)
+  attempted_commands=attempted_static+sampled_commands
+  formats={c:{a.get("format") for a in artifacts if a["command"]==c and a.get("usable",True)} for c in attempted_commands}
+  capabilities={c:("xml_and_text" if formats[c]=={"xml","text"} else "text_only" if "text" in formats[c] else "xml_only" if "xml" in formats[c] else "unsupported_or_failed") for c in attempted_commands}
+  if LEGACY_SWITCH_OPTIONS_COMMAND not in attempted_commands: capabilities[LEGACY_SWITCH_OPTIONS_COMMAND]="not_collected_els_supported"
+  if not dhcp_binding_enabled: capabilities[DHCP_BINDING_COMMAND]="not_collected_not_configured"
+  if not dot1x_detail_enabled: capabilities[DOT1X_DETAIL_COMMAND]="not_collected_not_configured"
+  failed={c for c,v in capabilities.items() if v=="unsupported_or_failed"}
+  collection_policy={"duration_seconds":self.duration,"interval_seconds":self.interval,"samples":sample,"management_vlan_id":self.management_vlan_id,"conditional_collection":{"legacy_switching_options":LEGACY_SWITCH_OPTIONS_COMMAND in attempted_commands,"dhcp_security_bindings":dhcp_binding_enabled,"dot1x_sessions":dot1x_detail_enabled}}
+  snap=Snapshot(run,migration_id,self.device_role,started,utc(),"COLLECTED",ident,management,collection_policy,capabilities,{"status":"unsupported" if "show virtual-chassis status" in failed else "collected"},list(interfaces.values()),list(vlans.values()),voice,observations,neighbors,artifacts,sorted(set(warnings)),errors)
   name=f"{started.replace(':','').replace('-','')[:15]}Z_{safe(ident.hostname or 'unknown')}_{run}"; final=collections/name
   (base/"snapshot.json").write_text(json.dumps(snap.to_dict(),indent=2)+"\n"); (base/"report.md").write_text(render_report(snap)); (base/"errors.json").write_text(json.dumps(errors,indent=2)+"\n")
   integ={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in base.iterdir() if p.is_file()}; (base/"integrity.json").write_text(json.dumps(integ,indent=2)+"\n"); os.replace(base,final)
