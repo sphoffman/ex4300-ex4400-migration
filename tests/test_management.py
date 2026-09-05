@@ -1,5 +1,5 @@
 from ex_migration_discovery.identity import derive_identity
-from ex_migration_discovery.collector import contains_prohibited_credential,needs_dhcp_binding,needs_dot1x_detail
+from ex_migration_discovery.collector import STATIC,contains_prohibited_credential,needs_dhcp_binding,needs_dot1x_detail
 from ex_migration_discovery.parsers import parse_management_configuration,parse_set_configuration
 
 CONFIG='''
@@ -90,3 +90,6 @@ def test_credential_material_guard_fails_closed():
  assert contains_prohibited_credential('<authentication-key>redacted</authentication-key>')
  assert contains_prohibited_credential('set snmp community private authorization read-only')
  assert not contains_prohibited_credential('set system syslog source-address 192.0.2.10')
+
+def test_collector_does_not_request_source_address_configuration():
+ assert not any("source-address" in command for command in STATIC)
