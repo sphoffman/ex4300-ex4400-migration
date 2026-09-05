@@ -7,6 +7,7 @@ set system syslog source-address 10.100.163.10
 set system ntp source-address 10.100.163.10
 set interfaces fxp0 unit 0 family inet address 10.0.0.15/24
 set interfaces irb unit 163 family inet address 10.100.163.10/24
+set interfaces ge-0/0/2 unit 0 family ethernet-switching vlan members 100
 set snmp name hostname
 set snmp location <home><1><dh4301>
 set snmp engine-id local 10.100.163.10
@@ -31,12 +32,14 @@ def test_identity_rejects_unapproved_name():
  else: raise AssertionError("unapproved hostname was accepted")
 
 def test_management_and_all_configured_vlans_are_normalized():
- _,vlans,_,_=parse_set_configuration(CONFIG)
+ interfaces,vlans,_,_=parse_set_configuration(CONFIG)
  hostname,management=parse_management_configuration(CONFIG,vlans,163,"10.0.0.15",True)
  assert hostname=="home1-ex4300-vc-fd-dh4301"
  assert set(vlans)=={"v100","v163","UNUSED-TEST"}
  assert vlans["v163"].description=="management"
  assert vlans["v163"].irb_interface=="irb.163"
+ assert interfaces["ge-0/0/2"].untagged_vlan.name=="v100"
+ assert interfaces["ge-0/0/2"].untagged_vlan.vlan_id==100
  assert management.vlan_name=="v163"
  assert management.addresses==["10.100.163.10/24"]
  assert management.production_ipv4=="10.100.163.10"
