@@ -117,8 +117,19 @@ def parse_set_configuration(text: str) -> tuple[dict[str, InterfaceState], dict[
             voice.vlan_id = vlan.vlan_id
             voice.valid = vlan.vlan_id is not None
     for state in interfaces.values():
-        if state.untagged_vlan and state.untagged_vlan.name in vlans:
-            state.untagged_vlan = VlanRef(state.untagged_vlan.name, vlans[state.untagged_vlan.name].vlan_id)
+        if not state.untagged_vlan:
+            continue
+        reference = state.untagged_vlan.name or ""
+        if reference in vlans:
+            state.untagged_vlan = VlanRef(reference, vlans[reference].vlan_id)
+        elif reference.isdigit():
+            matches = [v for v in vlans.values() if v.vlan_id == int(reference)]
+            if len(matches) == 1:
+                state.untagged_vlan = VlanRef(matches[0].name, matches[0].vlan_id)
+            elif not matches:
+                warnings.append(f"numeric VLAN member {reference} has no configured VLAN definition")
+            else:
+                warnings.append(f"numeric VLAN member {reference} matches multiple VLAN definitions")
     return interfaces, vlans, voice, sorted(set(warnings))
 
 
