@@ -1,4 +1,5 @@
 from ex_migration_discovery.identity import derive_identity
+from ex_migration_discovery.collector import needs_dhcp_binding,needs_dot1x_detail
 from ex_migration_discovery.parsers import parse_management_configuration,parse_set_configuration
 
 CONFIG='''
@@ -68,3 +69,18 @@ def test_hierarchical_snmp_name_preserves_hostname_keyword():
  _,management=parse_management_configuration(config,vlans,163,"10.0.0.15",False)
  assert management.snmp.name=="hostname"
  assert management.snmp.name_uses_hostname is True
+
+def test_optional_operational_collection_is_configuration_driven():
+ assert needs_dhcp_binding("set vlans v100 forwarding-options dhcp-security group TRUST interface ae0.0")
+ assert needs_dhcp_binding("set ethernet-switching-options secure-access-port interface ge-0/0/2")
+ assert not needs_dhcp_binding(CONFIG)
+ assert needs_dot1x_detail("set protocols dot1x authenticator interface ge-0/0/2")
+ assert not needs_dot1x_detail(CONFIG)
+
+def test_arbitrary_source_address_path_is_normalized():
+ config=CONFIG+"set system archival configuration source-address 10.100.163.10\n"
+ _,vlans,_,_=parse_set_configuration(config)
+ _,management=parse_management_configuration(config,vlans,163,"10.0.0.15",False)
+ source=next(x for x in management.source_addresses if x.configuration_path=="system archival configuration source-address")
+ assert source.configured_value=="10.100.163.10"
+ assert source.disposition=="COPY_SAFE"
