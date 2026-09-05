@@ -15,7 +15,7 @@ STATIC=[
  "show configuration system ntp | display inheritance | display set | match source-address",
  "show configuration interfaces | display inheritance | display set",
  "show configuration vlans | display inheritance | display set",
- "show configuration snmp name | display set",
+ "show configuration snmp name",
  "show configuration snmp location | display inheritance | display set",
  "show configuration snmp engine-id | display inheritance | display set",
  "show configuration snmp trap-options | display inheritance | display set | match source-address",
