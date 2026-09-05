@@ -9,11 +9,11 @@ directories. It never loads or commits configuration.
 For an old hostname such as:
 
 ```text
-home1-ex4300-vc-fd-dh4301
+site1-ex4300-vc-fd-room101
 ```
 
-the collector derives migration ID `dh4301` and proposed replacement hostname
-`home1-ex4400-vc-fd-dh4301`. An optional `--migration-id` is an assertion and
+the collector derives migration ID `room101` and proposed replacement hostname
+`site1-ex4400-vc-fd-room101`. An optional `--migration-id` is an assertion and
 must match the derived value.
 
 The normalized management profile distinguishes the NETCONF connection and
@@ -24,9 +24,12 @@ default route. Management VLAN 163 is the default policy and can be changed with
 SNMP name, location, engine ID, SNMPv3 presence, and source-address statements
 are collected through narrow queries. SNMP communities, authentication/privacy
 keys, login passwords, and complete configuration dumps are not requested.
-All effective `source-address` statements are collected with one text-only,
-configuration-wide filter. They are validation evidence for the authoritative
-EX4400 template and are never treated as configuration to replay.
+Known management-service `source-address` statements are collected through
+narrow hierarchy queries. They are validation evidence for the authoritative
+EX4400 template and are never treated as configuration to replay. Root-level
+configuration retrieval is prohibited. A fail-closed content guard rejects any
+command response containing credential-bearing configuration before it can be
+written to a snapshot.
 
 DHCP-security bindings and dot1x operational sessions are sampled only when the
 corresponding configuration is present. `ethernet-switching-options` is queried
@@ -38,7 +41,7 @@ Username and password are prompted when not otherwise supplied:
 
 ```bash
 ex-migration-discovery collect \
-  --host 10.0.0.15 \
+  --host 192.0.2.15 \
   --output snapshots \
   --duration 120 \
   --interval 60
@@ -55,7 +58,7 @@ docker run --rm -it \
   --entrypoint python \
   juniper/pyez \
   -m ex_migration_discovery.cli collect \
-  --host 10.0.0.15 \
+  --host 192.0.2.15 \
   --output snapshots \
   --duration 120 \
   --interval 60 \
@@ -70,18 +73,18 @@ Repeat `--host`:
 
 ```bash
 ex-migration-discovery collect \
-  --host 10.0.0.15 \
-  --host 10.0.0.16 \
-  --host 10.0.0.17
+  --host 192.0.2.15 \
+  --host 192.0.2.16 \
+  --host 192.0.2.17
 ```
 
 Or use an inventory:
 
 ```csv
 old_address,new_fxp_address
-10.0.0.15,10.200.10.10
-10.0.0.16,10.200.10.11
-10.0.0.17,10.200.10.12
+192.0.2.15,198.51.100.10
+192.0.2.16,198.51.100.11
+192.0.2.17,198.51.100.12
 ```
 
 ```bash
