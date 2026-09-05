@@ -7,11 +7,6 @@ from .model import DeviceIdentity,Snapshot
 from .parsers import parse_interfaces_descriptions,parse_interfaces_terse,parse_lldp_neighbors_text,parse_mac_table_text,parse_management_configuration,parse_set_configuration
 from .report import render_report
 
-SOURCE_ADDRESS_COMMANDS=[
- "show configuration system syslog | display inheritance | display set | match source-address",
- "show configuration system ntp | display inheritance | display set | match source-address",
- "show configuration snmp trap-options | display inheritance | display set | match source-address",
-]
 SWITCH_OPTIONS_COMMAND="show configuration switch-options | display inheritance | display set"
 LEGACY_SWITCH_OPTIONS_COMMAND="show configuration ethernet-switching-options | display inheritance | display set"
 DHCP_BINDING_COMMAND="show dhcp-security binding"
@@ -21,7 +16,6 @@ STATIC=[
  "show version","show chassis hardware","show virtual-chassis status",
  "show configuration system host-name | display inheritance | display set",
  "show configuration system management-instance | display inheritance | display set",
- *SOURCE_ADDRESS_COMMANDS,
  "show configuration interfaces | display inheritance | display set",
  "show configuration vlans | display inheritance | display set",
  "show configuration snmp name",
