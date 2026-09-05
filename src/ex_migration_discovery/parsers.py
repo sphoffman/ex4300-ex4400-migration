@@ -158,6 +158,9 @@ def parse_management_configuration(
             snmp.name, snmp.name_uses_hostname = "hostname", True
         elif line.startswith("set snmp name "):
             snmp.name = _value(line[len("set snmp name ") :])
+        elif match := re.match(r"^name\s+(?P<value>.+);$", line):
+            snmp.name = _value(match.group("value"))
+            snmp.name_uses_hostname = snmp.name == "hostname"
         elif line.startswith("set snmp location "):
             snmp.location = _value(line[len("set snmp location ") :])
         elif match := re.match(r"^set snmp engine-id (?P<kind>\S+) (?P<value>\S+)$", line):
