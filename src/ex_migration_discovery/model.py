@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
-SCHEMA_VERSION = "1.1"
+SCHEMA_VERSION = "1.2"
 
 
 @dataclass(frozen=True)
@@ -51,9 +51,12 @@ class VlanState:
     name: str
     vlan_id: int | None
     configured: bool = True
+    description: str | None = None
     interfaces: list[dict[str, Any]] = field(default_factory=list)
     observed_mac_count: int = 0
+    observed: bool = False
     irb_interface: str | None = None
+    purpose: str | None = None
     dhcp_snooping_trusted_interfaces: list[str] = field(default_factory=list)
 
 
@@ -75,6 +78,45 @@ class DeviceIdentity:
     junos_version: str | None = None
     junos_family: str | None = None
     serial_numbers: list[str] = field(default_factory=list)
+    configured_hostname: str | None = None
+    proposed_hostname: str | None = None
+    identity_rule: str | None = None
+
+
+@dataclass(frozen=True)
+class SourceAddress:
+    configuration_path: str
+    configured_value: str
+    matches_management_ip: bool | None
+    disposition: str
+
+
+@dataclass
+class SnmpIdentity:
+    name: str | None = None
+    name_uses_hostname: bool = False
+    location: str | None = None
+    engine_id_type: str | None = None
+    engine_id: str | None = None
+    v3_configured: bool | None = None
+
+
+@dataclass
+class ManagementProfile:
+    policy_vlan_id: int
+    vlan_name: str | None = None
+    vlan_id: int | None = None
+    l3_interface: str | None = None
+    addresses: list[str] = field(default_factory=list)
+    production_ipv4: str | None = None
+    default_gateway: str | None = None
+    connection_address: str | None = None
+    fxp0_addresses: list[str] = field(default_factory=list)
+    mgmt_junos_default_gateways: list[str] = field(default_factory=list)
+    snmp: SnmpIdentity = field(default_factory=SnmpIdentity)
+    source_addresses: list[SourceAddress] = field(default_factory=list)
+    consistency: str = "UNRESOLVED"
+    findings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -86,6 +128,7 @@ class Snapshot:
     completed_at: str
     lifecycle: str
     device: DeviceIdentity
+    management: ManagementProfile
     collection_policy: dict[str, Any]
     capabilities: dict[str, str]
     virtual_chassis: dict[str, Any]
