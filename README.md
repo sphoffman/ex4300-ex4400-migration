@@ -21,12 +21,11 @@ The normalized management profile distinguishes the NETCONF connection and
 default route. Management VLAN 163 is the default policy and can be changed with
 `--management-vlan`.
 
-SNMP name, location, engine ID, SNMPv3 presence, and source-address statements
-are collected through narrow queries. SNMP communities, authentication/privacy
-keys, login passwords, and complete configuration dumps are not requested.
-Known management-service `source-address` statements are collected through
-narrow hierarchy queries. They are validation evidence for the authoritative
-EX4400 template and are never treated as configuration to replay. Root-level
+SNMP name, location, engine ID, and SNMPv3 presence are collected through narrow
+queries. Source-address configuration is deliberately not collected: the
+authoritative EX4400 template renders every required source address from the
+discovered management IP. SNMP communities, authentication/privacy keys, login
+passwords, and complete configuration dumps are not requested. Root-level
 configuration retrieval is prohibited. A fail-closed content guard rejects any
 command response containing credential-bearing configuration before it can be
 written to a snapshot.
