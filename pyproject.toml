@@ -1,26 +1,17 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
-build-backend = "setuptools.build_meta"
-
+requires=["setuptools>=69","wheel"]
+build-backend="setuptools.build_meta"
 [project]
-name = "ex-migration-discovery"
-version = "0.1.0"
-description = "Read-only Juniper EX migration state collector"
-requires-python = ">=3.11"
-dependencies = [
-  "junos-eznc>=2.7.3,<3",
-  "lxml>=5,<7",
-]
-
+name="ex-migration-discovery"
+version="0.2.0"
+description="Read-only Juniper EX migration state collector"
+requires-python=">=3.11"
+dependencies=["junos-eznc>=2.7.3,<3","lxml>=5,<7"]
 [project.optional-dependencies]
-test = ["pytest>=8,<9"]
-
+test=["pytest>=8,<9"]
 [project.scripts]
-ex-migration-discovery = "ex_migration_discovery.cli:main"
-
+ex-migration-discovery="ex_migration_discovery.cli:main"
 [tool.setuptools.packages.find]
-where = ["src"]
-
+where=["src"]
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-
+testpaths=["tests"]
