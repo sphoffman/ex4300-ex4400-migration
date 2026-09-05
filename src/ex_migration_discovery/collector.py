@@ -7,7 +7,11 @@ from .model import DeviceIdentity,Snapshot
 from .parsers import parse_interfaces_descriptions,parse_interfaces_terse,parse_lldp_neighbors_text,parse_mac_table_text,parse_management_configuration,parse_set_configuration
 from .report import render_report
 
-SOURCE_ADDRESS_COMMAND="show configuration | display inheritance | display set | match source-address"
+SOURCE_ADDRESS_COMMANDS=[
+ "show configuration system syslog | display inheritance | display set | match source-address",
+ "show configuration system ntp | display inheritance | display set | match source-address",
+ "show configuration snmp trap-options | display inheritance | display set | match source-address",
+]
 SWITCH_OPTIONS_COMMAND="show configuration switch-options | display inheritance | display set"
 LEGACY_SWITCH_OPTIONS_COMMAND="show configuration ethernet-switching-options | display inheritance | display set"
 DHCP_BINDING_COMMAND="show dhcp-security binding"
@@ -17,7 +21,7 @@ STATIC=[
  "show version","show chassis hardware","show virtual-chassis status",
  "show configuration system host-name | display inheritance | display set",
  "show configuration system management-instance | display inheritance | display set",
- SOURCE_ADDRESS_COMMAND,
+ *SOURCE_ADDRESS_COMMANDS,
  "show configuration interfaces | display inheritance | display set",
  "show configuration vlans | display inheritance | display set",
  "show configuration snmp name",
@@ -35,11 +39,16 @@ STATIC=[
  "show vlans extensive","show interfaces descriptions",
 ]
 SAMPLED=["show ethernet-switching table detail","show interfaces terse","show lldp neighbors detail","show lacp interfaces"]
-TEXT_ONLY={"show configuration snmp v3 | display set | count",SOURCE_ADDRESS_COMMAND}
+TEXT_ONLY={"show configuration snmp v3 | display set | count"}
+PROHIBITED_CREDENTIAL=re.compile(r"(?im)(?:encrypted-password|authentication-key|privacy-key|pre-shared-key|private-key|^set snmp community\b|<community>)")
 def utc(): return datetime.now(timezone.utc).isoformat().replace("+00:00","Z")
 def safe(s): return re.sub(r"[^A-Za-z0-9_.-]+","_",s).strip("_")
 def needs_dhcp_binding(config): return bool(re.search(r"(?m)^set .*?(?:dhcp-security|dhcp-snooping|secure-access-port)(?:\s|$)",config))
 def needs_dot1x_detail(config): return bool(re.search(r"(?m)^set protocols dot1x(?:\s|$)",config))
+def contains_prohibited_credential(value):
+ if isinstance(value,bytes): value=value.decode("utf-8",errors="replace")
+ return bool(PROHIBITED_CREDENTIAL.search(value))
+class ProhibitedCredentialMaterial(RuntimeError): pass
 def atomic_json(path,value):
  tmp=path.with_suffix(path.suffix+".tmp"); tmp.write_text(json.dumps(value,indent=2)+"\n"); os.replace(tmp,path)
 
@@ -67,13 +76,19 @@ class Collector:
    if cmd not in TEXT_ONLY:
     try:
      xml=self.dev.rpc.cli(command=cmd,format="xml"); xp=d/(stem+".xml")
-     xml_bytes=__import__("lxml.etree").etree.tostring(xml,pretty_print=True) if hasattr(xml,"tag") else (repr(xml)+"\n").encode(); xp.write_bytes(xml_bytes)
+     xml_bytes=__import__("lxml.etree").etree.tostring(xml,pretty_print=True) if hasattr(xml,"tag") else (repr(xml)+"\n").encode()
+     if contains_prohibited_credential(xml_bytes): raise ProhibitedCredentialMaterial(f"refusing prohibited credential material returned by {cmd!r}")
+     xp.write_bytes(xml_bytes)
      artifacts.append({"path":str(xp.relative_to(base)),"sha256":hashlib.sha256(xp.read_bytes()).hexdigest(),"command":cmd,"format":"xml"})
+    except ProhibitedCredentialMaterial: raise
     except Exception as e: errors.append({"command":cmd,"format":"xml","error":f"{type(e).__name__}: {e}"})
    try:
-    txt=self.dev.cli(cmd,warning=False); tp=d/(stem+".txt"); tp.write_text(txt); text_path=str(tp.relative_to(base)); usable=not re.search(r"(?m)^protocol:\s*operation-failed\s*$",txt)
+    txt=self.dev.cli(cmd,warning=False)
+    if contains_prohibited_credential(txt): raise ProhibitedCredentialMaterial(f"refusing prohibited credential material returned by {cmd!r}")
+    tp=d/(stem+".txt"); tp.write_text(txt); text_path=str(tp.relative_to(base)); usable=not re.search(r"(?m)^protocol:\s*operation-failed\s*$",txt)
     artifacts.append({"path":text_path,"sha256":hashlib.sha256(tp.read_bytes()).hexdigest(),"command":cmd,"format":"text","usable":usable})
     if not usable: errors.append({"command":cmd,"format":"text","error":"device returned operation-failed text"}); txt=""
+   except ProhibitedCredentialMaterial: raise
    except Exception as e: errors.append({"command":cmd,"format":"text","error":f"{type(e).__name__}: {e}"})
    return txt,text_path
   attempted_static=list(STATIC)
