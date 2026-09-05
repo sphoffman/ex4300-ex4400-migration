@@ -142,13 +142,13 @@ def parse_management_configuration(
         if not line or line.startswith(("deactivate ", "inactive:")):
             continue
         if line.startswith("set system host-name "):
-            configured_hostname = _value(line.removeprefix("set system host-name "))
+            configured_hostname = _value(line[len("set system host-name ") :])
         elif line == "set snmp name hostname":
             snmp.name, snmp.name_uses_hostname = "hostname", True
         elif line.startswith("set snmp name "):
-            snmp.name = _value(line.removeprefix("set snmp name "))
+            snmp.name = _value(line[len("set snmp name ") :])
         elif line.startswith("set snmp location "):
-            snmp.location = _value(line.removeprefix("set snmp location "))
+            snmp.location = _value(line[len("set snmp location ") :])
         elif match := re.match(r"^set snmp engine-id (?P<kind>\S+) (?P<value>\S+)$", line):
             snmp.engine_id_type, snmp.engine_id = match.group("kind"), match.group("value")
         elif match := re.match(r"^set interfaces irb unit (?P<unit>\d+) family inet address (?P<address>\S+)$", line):
