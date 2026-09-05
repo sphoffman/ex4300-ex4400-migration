@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse,csv,getpass,os,sys
 from dataclasses import dataclass
 from pathlib import Path
