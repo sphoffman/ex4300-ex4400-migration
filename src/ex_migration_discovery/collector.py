@@ -49,6 +49,7 @@ def atomic_json(path,value):
 class Collector:
  def __init__(self,dev,out:Path,duration:int,interval:int,migration_id:str|None=None,device_role:str="old-switch",management_vlan_id:int=163,connection_address:str|None=None,new_fxp_address:str|None=None):
   self.dev,self.out,self.duration,self.interval=dev,out,duration,interval
+  if migration_id and safe(migration_id)!=migration_id: raise ValueError("migration ID contains unsupported characters")
   self.requested_migration_id=migration_id; self.device_role=device_role; self.management_vlan_id=management_vlan_id
   self.connection_address=connection_address or getattr(dev,"hostname",None); self.new_fxp_address=new_fxp_address
  def run(self):
