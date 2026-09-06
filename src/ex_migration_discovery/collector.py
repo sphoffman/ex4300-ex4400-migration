@@ -124,7 +124,8 @@ class Collector:
    summary={mac_key(item):item for item in sample_views.get("summary",[])}
    declared_match=re.search(r"Ethernet switching table\s*:\s*(\d+) entries",sample_texts.get("show ethernet-switching table",""))
    declared=int(declared_match.group(1)) if declared_match else None
-   status="RECONCILED" if "detail" in sample_views and "summary" in sample_views and (declared is None or declared==len(summary)) else "FAILED"
+   command_status={item["command"]:item["status"] for item in sample_run["commands"]}
+   status="RECONCILED" if command_status.get("show ethernet-switching table")=="SUCCESS" and command_status.get("show ethernet-switching table detail")=="SUCCESS" and declared is not None and declared==len(summary) else "FAILED"
    merged=dict(detail); merged.update({key:value for key,value in summary.items() if key not in merged}); observations+=list(merged.values())
    audit={"sample_index":sample,"status":status,"summary_rows":len(summary),"detail_rows":len(detail),"union_rows":len(merged),"summary_declared_rows":declared,"summary_only":[{"mac":key[0],"vlan_id":key[1],"interface":key[2]} for key in sorted(set(summary)-set(detail))],"detail_only":[{"mac":key[0],"vlan_id":key[1],"interface":key[2]} for key in sorted(set(detail)-set(summary))]}
    reconciliation.append(audit); sample_run["mac_table_reconciliation"]=audit
