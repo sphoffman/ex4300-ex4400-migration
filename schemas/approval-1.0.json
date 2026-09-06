@@ -3,7 +3,7 @@
   "$id": "https://example.invalid/ex-migration/approval-1.0.json",
   "title": "EX migration snapshot approval",
   "type": "object",
-  "required": ["schema_version", "approval_id", "migration_id", "snapshot_id", "snapshot_sha256", "collection_digest", "policy_id", "policy_digest", "approved_by", "approved_at", "reason", "waivers"],
+  "required": ["schema_version", "approval_id", "migration_id", "snapshot_id", "snapshot_sha256", "collection_digest", "analysis_preview_digest", "policy_id", "policy_digest", "approved_by", "approved_at", "reason", "waivers"],
   "properties": {
     "schema_version": {"const": "1.0"},
     "approval_id": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
@@ -12,6 +12,7 @@
     "snapshot_schema_version": {"type": "string"},
     "snapshot_sha256": {"$ref": "#/$defs/digest"},
     "collection_digest": {"$ref": "#/$defs/digest"},
+    "analysis_preview_digest": {"$ref": "#/$defs/digest"},
     "policy_id": {"type": "string"},
     "policy_digest": {"$ref": "#/$defs/digest"},
     "approved_by": {"type": "string", "minLength": 1},
@@ -22,4 +23,3 @@
   "$defs": {"digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
   "additionalProperties": false
 }
-

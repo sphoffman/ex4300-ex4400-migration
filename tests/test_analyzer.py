@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from ex_migration_analyzer.core import AnalysisError, analyze, canonical_bytes, correlate, validate_collection
+from ex_migration_analyzer.cli import candidate_rank, inspect_candidates
 
 
 def write_collection(tmp_path, migration_id="dh4301", vlan_id=100, extra_vlan=None):
@@ -103,6 +104,14 @@ def test_no_phone_is_normal(tmp_path):
     ports, _, findings = correlate(snapshot, {})
     assert ports[0]["disposition"] == "DATA_ONLY"
     assert not any("PHONE" in item["code"] for item in findings)
+
+
+def test_access_port_without_vlan_or_mac_is_distinct(tmp_path):
+    _, snapshot = write_collection(tmp_path)
+    snapshot["interfaces"][1]["untagged_vlan"] = None
+    ports, _, findings = correlate(snapshot, {})
+    assert ports[1]["disposition"] == "ACCESS_NO_VLAN_NO_MAC"
+    assert any(item["code"] == "ACCESS_NO_VLAN_NO_MAC" for item in findings)
 
 
 def test_analysis_id_is_deterministic(tmp_path):

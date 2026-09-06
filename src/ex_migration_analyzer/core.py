@@ -237,7 +237,10 @@ def correlate(snapshot, policy):
             elif configured not in observed_data_vlans:
                 port_findings.append("OBSERVED_CONFIGURED_VLAN_CONFLICT")
                 findings.append(_finding("REVIEW", "OBSERVED_CONFIGURED_VLAN_CONFLICT", port, "observed VLANs conflict with configured access VLAN", observed_data_vlans))
-        if not unique_macs:
+        if not unique_macs and configured is None:
+            disposition = "ACCESS_NO_VLAN_NO_MAC"
+            findings.append(_finding("REVIEW", "ACCESS_NO_VLAN_NO_MAC", port, "access port had no configured data VLAN and no observed MAC", []))
+        elif not unique_macs:
             disposition = "CONFIGURED_NO_MAC"
             findings.append(_finding("REVIEW", "CONFIGURED_NO_MAC", port, "configured access port had no observed MAC", []))
         elif moved or "DATA_VLAN_UNRESOLVED" in port_findings:

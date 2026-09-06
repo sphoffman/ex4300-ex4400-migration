@@ -2,154 +2,178 @@ from __future__ import annotations
 
 import argparse
 import getpass
-import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from . import __version__
-from .core import (
-    AnalysisError, analyze, atomic_json, canonical_bytes, read_json, render_report,
-    evaluate_policy, sha256_bytes, sha256_file, utc_now, validate_collection,
-)
+from .core import AnalysisError, analyze, atomic_json, canonical_bytes, evaluate_policy, read_json, render_report, sha256_bytes, sha256_file, utc_now, validate_collection
 
 
 def load_settings(path):
-    defaults = {
-        "snapshot_root": "snapshots",
-        "analysis_policy": "policies/production-old-v1.json",
-    }
-    if path.is_file():
-        defaults.update(read_json(path))
+    defaults = {"snapshot_root": "snapshots", "analysis_policy": "policies/production-old-v1.json"}
+    if path.is_file(): defaults.update(read_json(path))
     return defaults
 
 
-def collections_for(root, migration_id):
+def collection_directories(root, migration_id):
     path = root / "migrations" / migration_id / "old-switch" / "collections"
     return sorted((item for item in path.iterdir() if item.is_dir()), reverse=True) if path.is_dir() else []
 
 
-def select_collection(candidates, policy, interactive):
-    inspected = []
-    for candidate in candidates:
-        try:
-            snapshot, envelope = validate_collection(candidate)
-            inspected.append((candidate, snapshot, envelope, None))
-        except AnalysisError as exc:
-            inspected.append((candidate, None, None, str(exc)))
-    valid = [item for item in inspected if item[1] is not None]
-    if not valid:
-        raise AnalysisError("no integrity-valid old-switch collections were found")
-    if not interactive:
-        if len(valid) != 1:
-            raise AnalysisError("non-interactive selection requires exactly one valid collection")
-        return valid[0][:3]
-    print("Available integrity-valid snapshots:")
-    for index, (path, snapshot, _envelope, _error) in enumerate(valid, 1):
-        cp = snapshot["collection_policy"]
-        print("  [%d] %s  samples=%s duration=%ss schema=%s" % (
-            index, path.name, cp.get("samples"), cp.get("duration_seconds"), snapshot["schema_version"],
-        ))
-    answer = input("Select snapshot [1]: ").strip() or "1"
+def readable_time(value):
     try:
-        return valid[int(answer) - 1][:3]
-    except (ValueError, IndexError):
-        raise AnalysisError("invalid snapshot selection")
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%b %-d, %Y %H:%M UTC")
+    except (AttributeError, TypeError, ValueError):
+        return value or "unknown"
 
 
-def approval_for(migration_root, snapshot, envelope, policy, policy_digest, interactive, operator, reason):
+def inspect_candidates(directories, policy, policy_digest):
+    complete, incomplete, rejected = [], [], []
+    for directory in directories:
+        if "_pending_" in directory.name or not (directory / "snapshot.json").is_file():
+            incomplete.append(directory); continue
+        try:
+            snapshot, envelope = validate_collection(directory)
+            preview = analyze(snapshot, envelope, policy, policy_digest, "PREVIEW", __version__)
+            blockers, _reviews = evaluate_policy(snapshot, policy)
+            complete.append({"path": directory, "snapshot": snapshot, "envelope": envelope, "preview": preview, "blockers": blockers})
+        except AnalysisError as exc:
+            rejected.append((directory, str(exc)))
+    return complete, incomplete, rejected
+
+
+def candidate_rank(candidate):
+    snapshot = candidate["snapshot"]; policy = snapshot.get("collection_policy", {})
+    review_count = sum(1 for finding in candidate["preview"]["findings"] if finding["severity"] == "REVIEW")
+    return (not bool(candidate["blockers"]), int(policy.get("duration_seconds", 0)), int(policy.get("samples", 0)), -review_count, snapshot.get("completed_at", ""))
+
+
+def show_candidate(index, candidate, recommended, policy_id):
+    snapshot = candidate["snapshot"]; preview = candidate["preview"]; collection_policy = snapshot.get("collection_policy", {})
+    endpoint_ports = sum(1 for port in preview["ports"] if port["unique_macs"])
+    successful = sum(1 for run in snapshot.get("sample_runs", []) if all(entry.get("status") == "SUCCESS" for entry in run.get("commands", [])))
+    marker = " (recommended)" if recommended else ""
+    print("  [%d] %s%s" % (index, readable_time(snapshot.get("started_at")), marker))
+    print("      Host: %s" % (snapshot.get("device", {}).get("hostname") or "unknown"))
+    print("      Snapshot: %s | %ss | %s/%s successful samples" % (snapshot.get("snapshot_id"), collection_policy.get("duration_seconds", 0), successful, collection_policy.get("samples", 0)))
+    print("      Endpoints: %s unique MACs on %s access ports | Findings: %s" % (preview["statistics"]["unique_endpoint_macs"], endpoint_ports, len(preview["findings"])))
+    print("      Policy %s: %s" % (policy_id, "ELIGIBLE" if not candidate["blockers"] else "NOT ELIGIBLE"))
+    if candidate["blockers"]: print("      Blockers: %s" % "; ".join(code for code, _message in candidate["blockers"]))
+
+
+def choose_candidate(candidates, incomplete, rejected, policy, interactive):
+    if incomplete:
+        print("Incomplete collections ignored: %d" % len(incomplete))
+        for path in incomplete: print("  - %s" % path.name)
+        print()
+    if rejected:
+        print("Corrupt or unreadable collections rejected: %d" % len(rejected))
+        for path, error in rejected: print("  - %s: %s" % (path.name, error))
+        print()
+    if not candidates: raise AnalysisError("no complete, integrity-valid old-switch collections were found")
+    ranked = sorted(candidates, key=candidate_rank, reverse=True)
+    eligible = [candidate for candidate in ranked if not candidate["blockers"]]
+    if not eligible:
+        print("Completed snapshots:")
+        for index, candidate in enumerate(ranked, 1): show_candidate(index, candidate, False, policy["policy_id"])
+        raise AnalysisError("no snapshot is approvable under %s" % policy["policy_id"])
+    recommended = eligible[0]
+    print("Completed snapshots:")
+    for index, candidate in enumerate(ranked, 1): show_candidate(index, candidate, candidate is recommended, policy["policy_id"])
+    if len(eligible) == 1:
+        print("\nOnly one eligible snapshot; selecting it automatically."); return recommended, False
+    if not interactive: return recommended, False
+    default_index = ranked.index(recommended) + 1
+    answer = input("\nSelect baseline [%d]: " % default_index).strip() or str(default_index)
+    try: selected = ranked[int(answer) - 1]
+    except (ValueError, IndexError): raise AnalysisError("invalid snapshot selection")
+    if selected["blockers"]: raise AnalysisError("selected snapshot is not eligible under %s" % policy["policy_id"])
+    return selected, selected is not recommended
+
+
+def show_analysis_summary(candidate):
+    snapshot = candidate["snapshot"]; preview = candidate["preview"]; policy = snapshot["collection_policy"]
+    print("\n%s baseline analysis" % ("Selected" if candidate.get("operator_override") else "Recommended"))
+    print("  Collected: %s through %s" % (readable_time(snapshot["started_at"]), readable_time(snapshot["completed_at"])))
+    print("  Snapshot: %s" % snapshot["snapshot_id"])
+    print("  Observation: %s seconds / %s samples" % (policy.get("duration_seconds"), policy.get("samples")))
+    print("  Unique endpoint MACs: %s" % preview["statistics"]["unique_endpoint_macs"])
+    print("  Excluded infrastructure observations: %s" % preview["statistics"]["excluded_observations"])
+    print("  Result: %s" % preview["result"]); print("  Findings:")
+    if preview["findings"]:
+        for finding in preview["findings"]: print("    - %s [%s]: %s" % (finding["subject"], finding["code"], finding["message"]))
+    else: print("    - None")
+
+
+def find_approval(migration_root, candidate, policy_digest):
     approvals = migration_root / "old-switch" / "approvals"
+    preview_digest = sha256_bytes(canonical_bytes(candidate["preview"]))
     if approvals.is_dir():
         for path in sorted(approvals.glob("*/approval.json")):
             value = read_json(path)
-            if value.get("collection_digest") == envelope["collection_digest"] and value.get("policy_digest") == policy_digest:
-                return value, sha256_file(path), False
-    if not interactive:
-        raise AnalysisError("no matching approval exists; interactive approval is required")
-    print("Collection digest: sha256:%s" % envelope["collection_digest"])
-    if input("Approve this snapshot as the old-switch migration baseline? [y/N]: ").strip().lower() not in ("y", "yes"):
-        raise AnalysisError("snapshot was not approved")
-    operator = operator or input("Operator [%s]: " % getpass.getuser()).strip() or getpass.getuser()
-    reason = reason or input("Reason [Approved migration baseline]: ").strip() or "Approved migration baseline"
+            if value.get("collection_digest") == candidate["envelope"]["collection_digest"] and value.get("policy_digest") == policy_digest and value.get("analysis_preview_digest") == preview_digest: return value, path
+    return None, None
+
+
+def approve(migration_root, candidate, policy, policy_digest, interactive, override_reason=None):
+    existing, path = find_approval(migration_root, candidate, policy_digest)
+    if existing: return existing, sha256_file(path), False
+    if not interactive: raise AnalysisError("no matching approval exists; interactive approval is required")
+    print("\nCollection digest: sha256:%s" % candidate["envelope"]["collection_digest"])
+    if input("Use this snapshot and analysis as the approved old-switch baseline? [y/N]: ").strip().lower() not in ("y", "yes"): raise AnalysisError("baseline was not approved")
     approval = {
-        "schema_version": "1.0", "migration_id": snapshot["migration_id"],
-        "snapshot_id": snapshot["snapshot_id"], "snapshot_schema_version": snapshot["schema_version"],
-        "snapshot_sha256": envelope["snapshot_sha256"], "collection_digest": envelope["collection_digest"],
-        "policy_id": policy["policy_id"], "policy_digest": policy_digest,
-        "approved_by": operator, "approved_at": utc_now(), "reason": reason, "waivers": [],
+        "schema_version": "1.0", "migration_id": candidate["snapshot"]["migration_id"], "snapshot_id": candidate["snapshot"]["snapshot_id"],
+        "snapshot_schema_version": candidate["snapshot"]["schema_version"], "snapshot_sha256": candidate["envelope"]["snapshot_sha256"],
+        "collection_digest": candidate["envelope"]["collection_digest"], "analysis_preview_digest": sha256_bytes(canonical_bytes(candidate["preview"])),
+        "policy_id": policy["policy_id"], "policy_digest": policy_digest, "approved_by": getpass.getuser(), "approved_at": utc_now(),
+        "reason": override_reason or "Selected recommended analyzer baseline", "waivers": [],
     }
     approval["approval_id"] = sha256_bytes(canonical_bytes(approval))[:16]
-    path = approvals / approval["approval_id"] / "approval.json"
-    atomic_json(path, approval)
-    return approval, sha256_file(path), True
+    path = migration_root / "old-switch" / "approvals" / approval["approval_id"] / "approval.json"
+    atomic_json(path, approval); return approval, sha256_file(path), True
 
 
 def write_analysis(migration_root, analysis):
-    destination = migration_root / "analyses" / analysis["analysis_id"]
-    output = destination / "analysis.json"
+    destination = migration_root / "analyses" / analysis["analysis_id"]; output = destination / "analysis.json"
     if output.is_file():
-        existing = read_json(output)
-        if existing != analysis:
-            raise AnalysisError("existing analysis ID has different content")
+        if read_json(output) != analysis: raise AnalysisError("existing analysis ID has different content")
         integrity = read_json(destination / "integrity.json")
-        if sha256_file(output) != integrity.get("analysis.json") or sha256_file(destination / "report.md") != integrity.get("report.md"):
-            raise AnalysisError("existing analysis output failed integrity validation")
+        if sha256_file(output) != integrity.get("analysis.json") or sha256_file(destination / "report.md") != integrity.get("report.md"): raise AnalysisError("existing analysis output failed integrity validation")
         return destination, "UNCHANGED"
-    destination.mkdir(parents=True, exist_ok=False)
-    atomic_json(output, analysis)
+    destination.mkdir(parents=True, exist_ok=False); atomic_json(output, analysis)
     (destination / "report.md").write_text(render_report(analysis), encoding="utf-8")
-    atomic_json(destination / "integrity.json", {
-        "analysis.json": sha256_file(output), "report.md": sha256_file(destination / "report.md"),
-    })
+    atomic_json(destination / "integrity.json", {"analysis.json": sha256_file(output), "report.md": sha256_file(destination / "report.md")})
     return destination, "CREATED"
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Offline EX migration analyzer")
-    parser.add_argument("command", choices=("run",))
-    parser.add_argument("migration_id", nargs="?")
-    parser.add_argument("--settings", type=Path, default=Path("config/site.json"))
-    parser.add_argument("--policy", type=Path)
-    parser.add_argument("--non-interactive", action="store_true")
-    parser.add_argument("--operator")
-    parser.add_argument("--reason")
-    args = parser.parse_args(argv)
-    interactive = not args.non_interactive
+    parser = argparse.ArgumentParser(description="Offline EX migration analyzer"); parser.add_argument("command", choices=("run",)); parser.add_argument("migration_id", nargs="?")
+    parser.add_argument("--settings", type=Path, default=Path("config/site.json")); parser.add_argument("--policy", type=Path); parser.add_argument("--non-interactive", action="store_true")
+    args = parser.parse_args(argv); interactive = not args.non_interactive
     migration_id = args.migration_id or (input("Migration ID: ").strip() if interactive else "")
-    if not re_safe_id(migration_id):
-        parser.error("a path-safe migration ID is required")
+    if not safe_id(migration_id): parser.error("a path-safe migration ID is required")
     try:
-        settings = load_settings(args.settings)
-        root = Path(settings["snapshot_root"])
-        policy_path = args.policy or Path(settings["analysis_policy"])
-        policy = read_json(policy_path)
-        policy_digest = sha256_bytes(canonical_bytes(policy))
-        migration_root = root / "migrations" / migration_id
-        _path, snapshot, envelope = select_collection(collections_for(root, migration_id), policy, interactive)
-        if snapshot["migration_id"] != migration_id:
-            raise AnalysisError("selected snapshot migration ID does not match requested migration")
-        blockers, _reviews = evaluate_policy(snapshot, policy)
-        if blockers:
-            detail = "; ".join("%s: %s" % item for item in blockers)
-            raise AnalysisError("selected snapshot is not approvable under %s: %s" % (policy["policy_id"], detail))
-        _approval, approval_digest, created = approval_for(
-            migration_root, snapshot, envelope, policy, policy_digest,
-            interactive, args.operator, args.reason,
-        )
-        result = analyze(snapshot, envelope, policy, policy_digest, approval_digest, __version__)
+        settings = load_settings(args.settings); root = Path(settings["snapshot_root"]); policy_path = args.policy or Path(settings["analysis_policy"])
+        policy = read_json(policy_path); policy_digest = sha256_bytes(canonical_bytes(policy)); migration_root = root / "migrations" / migration_id
+        candidates, incomplete, rejected = inspect_candidates(collection_directories(root, migration_id), policy, policy_digest)
+        candidate, overridden = choose_candidate(candidates, incomplete, rejected, policy, interactive)
+        if candidate["snapshot"]["migration_id"] != migration_id: raise AnalysisError("selected snapshot migration ID does not match requested migration")
+        candidate["operator_override"] = overridden; show_analysis_summary(candidate); override_reason = None
+        if overridden:
+            override_reason = input("Reason for choosing a non-recommended snapshot: ").strip()
+            if not override_reason: raise AnalysisError("an override reason is required")
+        _approval, approval_digest, created = approve(migration_root, candidate, policy, policy_digest, interactive, override_reason)
+        result = analyze(candidate["snapshot"], candidate["envelope"], policy, policy_digest, approval_digest, __version__)
         destination, action = write_analysis(migration_root, result)
-        print("Approval: %s" % ("CREATED" if created else "EXISTING"))
-        print("Analysis: %s (%s)" % (result["result"], action))
-        print("Report: %s" % (destination / "report.md"))
-        return 0
+        print("\nApproval: %s" % ("CREATED" if created else "EXISTING")); print("Analysis: %s (%s)" % (result["result"], action)); print("Report: %s" % (destination / "report.md")); return 0
     except AnalysisError as exc:
-        print("ERROR: %s" % exc, file=sys.stderr)
-        return 2
+        print("ERROR: %s" % exc, file=sys.stderr); return 2
 
 
-def re_safe_id(value):
+def safe_id(value):
     import re
     return bool(re.fullmatch(r"[A-Za-z0-9_.-]+", value or ""))
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+if __name__ == "__main__": sys.exit(main())

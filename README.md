@@ -138,3 +138,12 @@ ex-migration-discovery collect 10.100.163.10
 
 The migration ID continues to be derived exclusively from the validated device
 hostname.
+
+### Guided baseline selection
+
+The analyzer validates and previews every completed collection, reports unfinished
+`_pending_` collections separately, recommends the strongest policy-eligible
+baseline, and shows human-readable evidence and findings before asking one
+approval question. A reason is requested only when an operator deliberately
+chooses a non-recommended candidate. Existing approvals are reused only when the
+collection, policy, and analysis preview digests all still match.
