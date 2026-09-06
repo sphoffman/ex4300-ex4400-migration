@@ -187,3 +187,13 @@ and exact missing observations, and recommends coverage before recency. The
 single approval binds the selected baseline digest, every supporting collection
 digest, and the historical catalog digest. Historical evidence informs silent
 port classification but does not merge or alter any collection.
+
+
+## Collection progress
+
+Before prompting for credentials, collection reports the target count, bounded
+worker count, observation duration, sample interval, expected samples, and the
+fact that connection/static-discovery overhead is additional. On an interactive
+terminal it refreshes per-target phases and an observation countdown. Redirected
+output records only phase changes and completed samples to keep logs concise.
+The countdown begins when each target enters operational sampling.

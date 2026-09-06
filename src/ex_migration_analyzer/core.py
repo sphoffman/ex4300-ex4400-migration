@@ -140,6 +140,7 @@ def evaluate_policy(snapshot, policy):
     accepted = policy.get("accepted_snapshot_schemas", [])
     if snapshot["schema_version"] not in accepted:
         blockers.append(("SNAPSHOT_SCHEMA_NOT_ACCEPTED", "snapshot schema is not accepted by policy"))
+        return blockers, reviews
     observation = policy.get("observation", {})
     samples = int(snapshot.get("collection_policy", {}).get("samples", 0))
     duration = int(snapshot.get("collection_policy", {}).get("duration_seconds", 0))

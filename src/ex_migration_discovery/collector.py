@@ -47,11 +47,15 @@ def atomic_json(path,value):
  tmp=path.with_suffix(path.suffix+".tmp"); tmp.write_text(json.dumps(value,indent=2)+"\n"); os.replace(tmp,path)
 
 class Collector:
- def __init__(self,dev,out:Path,duration:int,interval:int,migration_id:str|None=None,device_role:str="old-switch",management_vlan_id:int=163,connection_address:str|None=None,new_fxp_address:str|None=None):
+ def __init__(self,dev,out:Path,duration:int,interval:int,migration_id:str|None=None,device_role:str="old-switch",management_vlan_id:int=163,connection_address:str|None=None,new_fxp_address:str|None=None,progress_callback=None):
   self.dev,self.out,self.duration,self.interval=dev,out,duration,interval
   if migration_id and safe(migration_id)!=migration_id: raise ValueError("migration ID contains unsupported characters")
   self.requested_migration_id=migration_id; self.device_role=device_role; self.management_vlan_id=management_vlan_id
-  self.connection_address=connection_address or getattr(dev,"hostname",None); self.new_fxp_address=new_fxp_address
+  self.connection_address=connection_address or getattr(dev,"hostname",None); self.new_fxp_address=new_fxp_address; self.progress_callback=progress_callback
+ def progress(self,stage,**details):
+  if self.progress_callback:
+   try: self.progress_callback(stage,details)
+   except Exception: pass
  def run(self):
   facts=getattr(self.dev,"facts",{}) or {}; observed_hostname=str(facts.get("hostname") or "")
   derived=derive_identity(observed_hostname)
@@ -86,6 +90,7 @@ class Collector:
    except ProhibitedCredentialMaterial: raise
    except Exception as e: errors.append({"command":cmd,"format":"text","error":f"{type(e).__name__}: {e}"})
    return txt,text_path
+  self.progress("STATIC_DISCOVERY")
   attempted_static=list(STATIC)
   for n,c in enumerate(attempted_static): texts[c]=grab(c,"static",n)
   switch_options_supported=any(a["command"]==SWITCH_OPTIONS_COMMAND and a.get("format")=="text" and a.get("usable",True) for a in artifacts)
@@ -108,6 +113,7 @@ class Collector:
   if dhcp_binding_enabled: sampled_commands.append(DHCP_BINDING_COMMAND)
   if dot1x_detail_enabled: sampled_commands.append(DOT1X_DETAIL_COMMAND)
   observations=[]; neighbors=[]; sample_runs=[]; reconciliation=[]; present=set(); sample=0; deadline=time.monotonic()+self.duration
+  self.progress("OBSERVING",deadline_monotonic=deadline,duration_seconds=self.duration,samples_completed=0)
   while True:
    stamp=utc(); sample_run={"sample_index":sample,"observed_at":stamp,"commands":[]}; sample_views={}; sample_texts={}
    for n,c in enumerate(sampled_commands):
@@ -130,6 +136,7 @@ class Collector:
    audit={"sample_index":sample,"status":status,"summary_rows":len(summary),"detail_rows":len(detail),"union_rows":len(merged),"summary_declared_rows":declared,"summary_only":[{"mac":key[0],"vlan_id":key[1],"interface":key[2]} for key in sorted(set(summary)-set(detail))],"detail_only":[{"mac":key[0],"vlan_id":key[1],"interface":key[2]} for key in sorted(set(detail)-set(summary))]}
    reconciliation.append(audit); sample_run["mac_table_reconciliation"]=audit
    sample_run["completed_at"]=utc(); sample_runs.append(sample_run); sample+=1
+   self.progress("OBSERVING",deadline_monotonic=deadline,duration_seconds=self.duration,samples_completed=sample)
    if time.monotonic()>=deadline: break
    time.sleep(min(self.interval,max(0,deadline-time.monotonic())))
   interfaces={k:v for k,v in interfaces.items() if k in present}
@@ -148,10 +155,12 @@ class Collector:
   if not dot1x_detail_enabled: capabilities[DOT1X_DETAIL_COMMAND]="not_collected_not_configured"
   failed={c for c,v in capabilities.items() if v=="unsupported_or_failed"}
   collection_policy={"duration_seconds":self.duration,"interval_seconds":self.interval,"samples":sample,"management_vlan_id":self.management_vlan_id,"mac_table_reconciliation":reconciliation,"conditional_collection":{"legacy_switching_options":LEGACY_SWITCH_OPTIONS_COMMAND in attempted_commands,"dhcp_security_bindings":dhcp_binding_enabled,"dot1x_sessions":dot1x_detail_enabled}}
+  self.progress("FINALIZING",samples_completed=sample)
   snap=Snapshot(run,migration_id,self.device_role,started,utc(),"COLLECTED",ident,management,collection_policy,capabilities,{"status":"unsupported" if "show virtual-chassis status" in failed else "collected"},list(interfaces.values()),list(vlans.values()),voice,observations,neighbors,artifacts,sorted(set(warnings)),errors,sample_runs=sample_runs)
   name=f"{started.replace(':','').replace('-','')[:15]}Z_{safe(ident.hostname or 'unknown')}_{run}"; final=collections/name
   (base/"snapshot.json").write_text(json.dumps(snap.to_dict(),indent=2)+"\n"); (base/"report.md").write_text(render_report(snap)); (base/"errors.json").write_text(json.dumps(errors,indent=2)+"\n")
   integ={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in base.iterdir() if p.is_file()}; (base/"integrity.json").write_text(json.dumps(integ,indent=2)+"\n"); os.replace(base,final)
   if not manifest.exists(): atomic_json(manifest,{"schema_version":"1.1","migration_id":migration_id,"created_at":started,"old_switch":{"observed_hostname":ident.hostname,"management_address":management.production_ipv4,"connection_address":self.connection_address},"new_switch":{"proposed_hostname":derived.proposed_hostname,"temporary_fxp0_address":self.new_fxp_address}})
+  self.progress("COMPLETE",samples_completed=sample)
   atomic_json(migration_root/"status.json",{"migration_id":migration_id,"state":"COLLECTING_OLD","latest_collection":str(final.relative_to(migration_root)),"updated_at":utc()})
   return final

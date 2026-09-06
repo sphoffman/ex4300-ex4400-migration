@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import argparse,csv,getpass,json,os,sys
-from concurrent.futures import ThreadPoolExecutor,as_completed
+import argparse,csv,getpass,json,os,sys,threading,time
+from concurrent.futures import FIRST_COMPLETED,ThreadPoolExecutor,wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List,Optional
@@ -48,26 +48,71 @@ def main():
  a.interval=a.interval or int(settings.get("default_collection_interval_seconds",60))
  workers=a.workers or int(settings.get("collection_workers",4))
  if workers<1: p.error("--workers must be at least 1")
+ if a.duration<0: p.error("--duration must not be negative")
+ if a.interval<1: p.error("--interval must be at least 1")
+ expected_samples=a.duration//a.interval+1
+ active_workers=min(workers,len(targets))
+ print("\nEX migration discovery")
+ print(f"Targets: {len(targets)}")
+ print(f"Workers: {active_workers}")
+ print(f"Observation duration: {a.duration} seconds per switch")
+ print(f"Sample interval: {a.interval} seconds")
+ print(f"Expected samples: {expected_samples} per switch")
+ print("Total runtime includes connection and static-discovery overhead.\n")
  username=a.username or input("Username: ").strip()
  if not username: p.error("username must not be empty")
  password=os.environ.get(a.password_env) if a.password_env else getpass.getpass("Password: ")
  if a.password_env and password is None: p.error(f"environment variable {a.password_env} is not set")
  from jnpr.junos import Device
+ interactive_status=sys.stdout.isatty()
+ status_lock=threading.Lock()
+ statuses={target.host:{"stage":"QUEUED"} for target in targets}
+ def update_status(host,stage,details=None):
+  details=details or {}
+  with status_lock:
+   previous=statuses.get(host,{})
+   statuses[host]=dict(details,stage=stage)
+   if not interactive_status:
+    samples=details.get("samples_completed")
+    changed=previous.get("stage")!=stage or (samples is not None and samples!=previous.get("samples_completed"))
+    if changed:
+     suffix=f" | {samples}/{expected_samples} samples" if samples is not None else ""
+     print(f"{host}  {stage.replace('_',' ').title()}{suffix}",flush=True)
+ def status_line():
+  now=time.monotonic(); parts=[]
+  with status_lock:
+   current={host:dict(value) for host,value in statuses.items()}
+  for host in sorted(current):
+   value=current[host]; stage=value.get("stage","QUEUED")
+   if stage=="OBSERVING":
+    remaining=max(0,int(value.get("deadline_monotonic",now)-now+0.999))
+    samples=value.get("samples_completed",0)
+    parts.append(f"{host} Observing {remaining//60:02d}:{remaining%60:02d} {samples}/{expected_samples}")
+   else: parts.append(f"{host} {stage.replace('_',' ').title()}")
+  return " | ".join(parts)
  def collect_target(target):
+  update_status(target.host,"CONNECTING")
   dev=Device(host=target.host,user=username,passwd=password,port=a.port,gather_facts=True)
   try:
    dev.open(auto_probe=10,hostkey_verify=not a.no_host_key_check)
-   result=Collector(dev,Path(a.output),a.duration,a.interval,a.migration_id,management_vlan_id=a.management_vlan,connection_address=target.host,new_fxp_address=target.new_fxp_address).run()
+   result=Collector(dev,Path(a.output),a.duration,a.interval,a.migration_id,management_vlan_id=a.management_vlan,connection_address=target.host,new_fxp_address=target.new_fxp_address,progress_callback=lambda stage,details:update_status(target.host,stage,details)).run()
    return target.host,result,None
   except Exception as exc:
+   update_status(target.host,"FAILED")
    return target.host,None,exc
   finally:
    try: dev.close()
    except Exception: pass
  results=[]
- with ThreadPoolExecutor(max_workers=min(workers,len(targets))) as executor:
-  futures=[executor.submit(collect_target,target) for target in targets]
-  for future in as_completed(futures): results.append(future.result())
+ with ThreadPoolExecutor(max_workers=active_workers) as executor:
+  pending={executor.submit(collect_target,target) for target in targets}
+  while pending:
+   done,pending=wait(pending,timeout=1,return_when=FIRST_COMPLETED)
+   for future in done: results.append(future.result())
+   if interactive_status:
+    line=status_line()
+    print("\r"+line+" "*max(0,160-len(line)),end="",flush=True)
+ if interactive_status: print()
  failures=[item for item in results if item[2] is not None]
  print("\nCollection summary")
  for host,result,error in sorted(results):
