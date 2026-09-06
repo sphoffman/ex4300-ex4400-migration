@@ -164,38 +164,6 @@ def endpoint_observations(candidate):
     return observations
 
 
-def show_snapshot_comparison(selected, candidates):
-    """Explain coverage changes without merging immutable collections."""
-    others = [item for item in candidates if item is not selected]
-    if not others:
-        return
-    reference = max(others, key=lambda item: item["snapshot"].get("completed_at", ""))
-    current = endpoint_observations(selected)
-    previous = endpoint_observations(reference)
-    missing = previous - current
-    added = current - previous
-    changed = []
-    for mac, old_vlan, port in sorted(missing):
-        new_vlans = sorted(vlan for new_mac, vlan, new_port in added if (new_mac, new_port) == (mac, port))
-        if new_vlans:
-            changed.append((port, mac, old_vlan, ",".join(new_vlans)))
-    changed_keys = {(mac, port) for port, mac, _old, _new in changed}
-    missing = {item for item in missing if (item[0], item[2]) not in changed_keys}
-    added = {item for item in added if (item[0], item[2]) not in changed_keys}
-    if not missing and not added and not changed:
-        return
-    print("\nCross-snapshot comparison")
-    print("  Reference: %s | Snapshot: %s" % (
-        readable_time(reference["snapshot"].get("started_at")), reference["snapshot"].get("snapshot_id")))
-    for port, mac, old_vlan, new_vlan in changed:
-        print("  - %s: %s changed VLAN %s -> %s" % (port, mac, old_vlan, new_vlan))
-    for mac, vlan, port in sorted(missing, key=lambda item: (item[2], item[0], item[1])):
-        print("  - %s: %s VLAN %s was previously observed but is absent" % (port, mac, vlan))
-    for mac, vlan, port in sorted(added, key=lambda item: (item[2], item[0], item[1])):
-        print("  - %s: %s VLAN %s is newly observed" % (port, mac, vlan))
-    print("  Collections remain independent; this comparison does not merge endpoint evidence.")
-
-
 def find_approval(migration_root, candidate, policy_digest):
     approvals = migration_root / "old-switch" / "approvals"
     preview_digest = sha256_bytes(canonical_bytes(candidate["preview"]))
@@ -250,7 +218,7 @@ def main(argv=None):
         candidates, incomplete, rejected = inspect_candidates(collection_directories(root, migration_id), policy, policy_digest)
         candidate, overridden = choose_candidate(candidates, incomplete, rejected, policy, interactive)
         if candidate["snapshot"]["migration_id"] != migration_id: raise AnalysisError("selected snapshot migration ID does not match requested migration")
-        candidate["operator_override"] = overridden; show_analysis_summary(candidate); show_snapshot_comparison(candidate, candidates); override_reason = None
+        candidate["operator_override"] = overridden; show_analysis_summary(candidate); override_reason = None
         if overridden:
             override_reason = input("Reason for choosing a non-recommended snapshot: ").strip()
             if not override_reason: raise AnalysisError("an override reason is required")
