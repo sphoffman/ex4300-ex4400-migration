@@ -28,8 +28,8 @@ def main():
  p=argparse.ArgumentParser(); s=p.add_subparsers(dest="cmd",required=True); c=s.add_parser("collect")
  source=c.add_mutually_exclusive_group(required=False); source.add_argument("--host",action="append",help="Old-switch address; repeat for multiple switches"); source.add_argument("--inventory",type=Path,help="CSV with old_address and optional new_fxp_address")
  c.add_argument("address",nargs="?",help="Old-switch address for the normal single-device workflow")
- c.add_argument("--username"); c.add_argument("--output",default="snapshots"); c.add_argument("--migration-id",help="Optional assertion/override; valid only with one host")
- c.add_argument("--management-vlan",type=int,default=163); c.add_argument("--password-env"); c.add_argument("--duration",type=int,default=1800); c.add_argument("--interval",type=int,default=60); c.add_argument("--port",type=int,default=830); c.add_argument("--workers",type=int); c.add_argument("--settings",type=Path,default=Path("config/site.json")); c.add_argument("--no-host-key-check",action="store_true",help="LAB ONLY: disable SSH host-key verification")
+ c.add_argument("--username"); c.add_argument("--output"); c.add_argument("--migration-id",help="Optional assertion/override; valid only with one host")
+ c.add_argument("--management-vlan",type=int); c.add_argument("--password-env"); c.add_argument("--duration",type=int); c.add_argument("--interval",type=int); c.add_argument("--port",type=int,default=830); c.add_argument("--workers",type=int); c.add_argument("--settings",type=Path,default=Path("config/site.json")); c.add_argument("--no-host-key-check",action="store_true",help="LAB ONLY: disable SSH host-key verification")
  a=p.parse_args()
  if a.address and (a.host or a.inventory): p.error("address cannot be combined with --host or --inventory")
  if a.address: targets=[Target(a.address)]
@@ -42,6 +42,10 @@ def main():
  if a.migration_id and len(targets)!=1: p.error("--migration-id may be used only with a single host")
  if len({target.host for target in targets})!=len(targets): p.error("duplicate old-switch addresses are not allowed")
  settings=json.loads(a.settings.read_text()) if a.settings.is_file() else {}
+ a.output=a.output or settings.get("snapshot_root","snapshots")
+ a.management_vlan=a.management_vlan or int(settings.get("default_management_vlan_id",163))
+ a.duration=a.duration or int(settings.get("default_collection_duration_seconds",1800))
+ a.interval=a.interval or int(settings.get("default_collection_interval_seconds",60))
  workers=a.workers or int(settings.get("collection_workers",4))
  if workers<1: p.error("--workers must be at least 1")
  username=a.username or input("Username: ").strip()
