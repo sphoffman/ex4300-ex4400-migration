@@ -14,7 +14,7 @@
     "excluded_observations": {"type": "array", "items": {"type": "object"}},
     "findings": {"type": "array", "items": {"type": "object"}},
     "statistics": {"type": "object"}
+    ,"historical_evidence": {"type": "object"}
   },
   "additionalProperties": false
 }
-

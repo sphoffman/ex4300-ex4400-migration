@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from ex_migration_analyzer.core import AnalysisError, analyze, canonical_bytes, correlate, validate_collection
-from ex_migration_analyzer.cli import candidate_rank, inspect_candidates, load_settings
+from ex_migration_analyzer.cli import candidate_rank, inspect_candidates, load_settings, prepare_history
 
 
 def write_collection(tmp_path, migration_id="dh4301", vlan_id=100, extra_vlan=None):
@@ -129,3 +129,18 @@ def test_local_site_policy_overrides_tracked_default(tmp_path):
     (config / "site.json").write_text('{"analysis_policy":"policies/production-old-v1.json"}')
     (config / "site.local.json").write_text('{"analysis_policy":"policies/lab-smoke-v1.json"}')
     assert load_settings(config / "site.json")["analysis_policy"] == "policies/lab-smoke-v1.json"
+
+
+def test_history_uses_all_eligible_snapshots(tmp_path):
+    candidates = []
+    for migration_id, mac in (("one", "02:00:00:00:00:01"), ("two", "02:00:00:00:00:03")):
+        collection, snapshot = write_collection(tmp_path / migration_id)
+        snapshot["snapshot_id"] = migration_id
+        snapshot["mac_observations"][0]["mac"] = mac
+        snapshot["mac_observations"] = snapshot["mac_observations"][:1]
+        preview = {"ports": [{"interface": "ge-0/0/2", "unique_macs": [mac]}]}
+        candidates.append({"snapshot": snapshot, "preview": preview, "blockers": [], "envelope": {"collection_digest": ("a" if migration_id == "one" else "b") * 64}})
+    history = prepare_history(candidates)
+    assert len(history["catalog"]) == 2
+    assert candidates[0]["historical_coverage"] == 1
+    assert len(candidates[0]["historically_missing"]) == 1

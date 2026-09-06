@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ex-migration/approval-1.1.json",
+  "title": "EX migration baseline and evidence-set approval",
+  "type": "object",
+  "required": ["schema_version", "approval_id", "migration_id", "snapshot_id", "snapshot_sha256", "collection_digest", "analysis_preview_digest", "historical_evidence_catalog_digest", "supporting_snapshots", "policy_id", "policy_digest", "approved_by", "approved_at", "reason", "waivers"],
+  "properties": {
+    "schema_version": {"const": "1.1"},
+    "approval_id": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+    "migration_id": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$"},
+    "snapshot_id": {"type": "string"},
+    "snapshot_schema_version": {"type": "string"},
+    "snapshot_sha256": {"$ref": "#/$defs/digest"},
+    "collection_digest": {"$ref": "#/$defs/digest"},
+    "analysis_preview_digest": {"$ref": "#/$defs/digest"},
+    "historical_evidence_catalog_digest": {"$ref": "#/$defs/digest"},
+    "supporting_snapshots": {"type": "array", "items": {"type": "object", "required": ["snapshot_id", "collection_digest"], "properties": {"snapshot_id": {"type": "string"}, "collection_digest": {"$ref": "#/$defs/digest"}}, "additionalProperties": false}},
+    "policy_id": {"type": "string"},
+    "policy_digest": {"$ref": "#/$defs/digest"},
+    "approved_by": {"type": "string", "minLength": 1},
+    "approved_at": {"type": "string", "format": "date-time"},
+    "reason": {"type": "string", "minLength": 1},
+    "waivers": {"type": "array", "items": {"type": "object"}}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+  "additionalProperties": false
+}

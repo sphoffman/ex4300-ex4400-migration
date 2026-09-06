@@ -166,3 +166,24 @@ baseline, and shows human-readable evidence and findings before asking one
 approval question. A reason is requested only when an operator deliberately
 chooses a non-recommended candidate. Existing approvals are reused only when the
 collection, policy, and analysis preview digests all still match.
+
+
+## Reconciled MAC evidence (schema 1.4)
+
+Each observation sample collects both `show ethernet-switching table` and
+`show ethernet-switching table detail`. The views are parsed independently and
+reconciled as a set of MAC, VLAN, and interface observations. Per-sample counts,
+summary-only rows, detail-only rows, and declared-count validation are retained
+in the immutable snapshot. A failed reconciliation makes the snapshot
+ineligible under the attached policies.
+
+Schema 1.2 and 1.3 collections remain immutable historical artifacts but are not
+eligible for new baseline approval. Both the lab and production policies require
+schema 1.4 reconciled evidence.
+
+Before baseline selection, the analyzer builds a historical endpoint catalog
+from every policy-eligible snapshot. It shows each candidate's catalog coverage
+and exact missing observations, and recommends coverage before recency. The
+single approval binds the selected baseline digest, every supporting collection
+digest, and the historical catalog digest. Historical evidence informs silent
+port classification but does not merge or alter any collection.

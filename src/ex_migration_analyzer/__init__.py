@@ -1,3 +1,3 @@
 """Offline analysis for EX4300-to-EX4400 migrations."""
 
-__version__ = "0.3.2"
+__version__ = "0.4.0"

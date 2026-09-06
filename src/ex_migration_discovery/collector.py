@@ -4,7 +4,7 @@ from datetime import datetime,timezone
 from pathlib import Path
 from .identity import derive_identity
 from .model import DeviceIdentity,Snapshot
-from .parsers import parse_interfaces_descriptions,parse_interfaces_terse,parse_lldp_neighbors_text,parse_mac_table_text,parse_management_configuration,parse_set_configuration
+from .parsers import parse_interfaces_descriptions,parse_interfaces_terse,parse_lldp_neighbors_text,parse_mac_table_summary_text,parse_mac_table_text,parse_management_configuration,parse_set_configuration
 from .report import render_report
 
 SWITCH_OPTIONS_COMMAND="show configuration switch-options | display inheritance | display set"
@@ -32,7 +32,7 @@ STATIC=[
  "show configuration forwarding-options | display inheritance | display set",
  "show vlans extensive","show interfaces descriptions",
 ]
-SAMPLED=["show ethernet-switching table detail","show interfaces terse","show lldp neighbors detail","show lacp interfaces"]
+SAMPLED=["show ethernet-switching table","show ethernet-switching table detail","show interfaces terse","show lldp neighbors detail","show lacp interfaces"]
 TEXT_ONLY={"show configuration snmp v3 | display set | count"}
 PROHIBITED_CREDENTIAL=re.compile(r"(?im)(?:encrypted-password|authentication-key|privacy-key|pre-shared-key|private-key|^set snmp community\b|<community>)")
 def utc(): return datetime.now(timezone.utc).isoformat().replace("+00:00","Z")
@@ -107,17 +107,27 @@ class Collector:
   dot1x_detail_enabled=needs_dot1x_detail(config)
   if dhcp_binding_enabled: sampled_commands.append(DHCP_BINDING_COMMAND)
   if dot1x_detail_enabled: sampled_commands.append(DOT1X_DETAIL_COMMAND)
-  observations=[]; neighbors=[]; sample_runs=[]; present=set(); sample=0; deadline=time.monotonic()+self.duration
+  observations=[]; neighbors=[]; sample_runs=[]; reconciliation=[]; present=set(); sample=0; deadline=time.monotonic()+self.duration
   while True:
-   stamp=utc(); sample_run={"sample_index":sample,"observed_at":stamp,"commands":[]}
+   stamp=utc(); sample_run={"sample_index":sample,"observed_at":stamp,"commands":[]}; sample_views={}; sample_texts={}
    for n,c in enumerate(sampled_commands):
-    error_count=len(errors); text,path=grab(c,f"observations/{sample:04d}",n)
+    error_count=len(errors); text,path=grab(c,f"observations/{sample:04d}",n); sample_texts[c]=text
     text_failed=any(e["command"]==c and e["format"]=="text" for e in errors[error_count:])
     status="SUCCESS" if path and not text_failed else "FAILED"
     sample_run["commands"].append({"command":c,"status":status,"text_artifact":path or None})
-    if c.startswith("show ethernet-switching table"): observations+=parse_mac_table_text(text,stamp,path,interfaces)
+    if c=="show ethernet-switching table detail": sample_views["detail"]=parse_mac_table_text(text,stamp,path,interfaces)
+    elif c=="show ethernet-switching table": sample_views["summary"]=parse_mac_table_summary_text(text,stamp,path,interfaces,vlans)
     elif c=="show interfaces terse": present|=parse_interfaces_terse(text,interfaces)
     elif c=="show lldp neighbors detail": neighbors+=parse_lldp_neighbors_text(text,stamp,path)
+   def mac_key(item): return (item.mac,item.vlan.vlan_id,item.reported_interface)
+   detail={mac_key(item):item for item in sample_views.get("detail",[])}
+   summary={mac_key(item):item for item in sample_views.get("summary",[])}
+   declared_match=re.search(r"Ethernet switching table\s*:\s*(\d+) entries",sample_texts.get("show ethernet-switching table",""))
+   declared=int(declared_match.group(1)) if declared_match else None
+   status="RECONCILED" if "detail" in sample_views and "summary" in sample_views and (declared is None or declared==len(summary)) else "FAILED"
+   merged=dict(detail); merged.update({key:value for key,value in summary.items() if key not in merged}); observations+=list(merged.values())
+   audit={"sample_index":sample,"status":status,"summary_rows":len(summary),"detail_rows":len(detail),"union_rows":len(merged),"summary_declared_rows":declared,"summary_only":[{"mac":key[0],"vlan_id":key[1],"interface":key[2]} for key in sorted(set(summary)-set(detail))],"detail_only":[{"mac":key[0],"vlan_id":key[1],"interface":key[2]} for key in sorted(set(detail)-set(summary))]}
+   reconciliation.append(audit); sample_run["mac_table_reconciliation"]=audit
    sample_run["completed_at"]=utc(); sample_runs.append(sample_run); sample+=1
    if time.monotonic()>=deadline: break
    time.sleep(min(self.interval,max(0,deadline-time.monotonic())))
@@ -136,7 +146,7 @@ class Collector:
   if not dhcp_binding_enabled: capabilities[DHCP_BINDING_COMMAND]="not_collected_not_configured"
   if not dot1x_detail_enabled: capabilities[DOT1X_DETAIL_COMMAND]="not_collected_not_configured"
   failed={c for c,v in capabilities.items() if v=="unsupported_or_failed"}
-  collection_policy={"duration_seconds":self.duration,"interval_seconds":self.interval,"samples":sample,"management_vlan_id":self.management_vlan_id,"conditional_collection":{"legacy_switching_options":LEGACY_SWITCH_OPTIONS_COMMAND in attempted_commands,"dhcp_security_bindings":dhcp_binding_enabled,"dot1x_sessions":dot1x_detail_enabled}}
+  collection_policy={"duration_seconds":self.duration,"interval_seconds":self.interval,"samples":sample,"management_vlan_id":self.management_vlan_id,"mac_table_reconciliation":reconciliation,"conditional_collection":{"legacy_switching_options":LEGACY_SWITCH_OPTIONS_COMMAND in attempted_commands,"dhcp_security_bindings":dhcp_binding_enabled,"dot1x_sessions":dot1x_detail_enabled}}
   snap=Snapshot(run,migration_id,self.device_role,started,utc(),"COLLECTED",ident,management,collection_policy,capabilities,{"status":"unsupported" if "show virtual-chassis status" in failed else "collected"},list(interfaces.values()),list(vlans.values()),voice,observations,neighbors,artifacts,sorted(set(warnings)),errors,sample_runs=sample_runs)
   name=f"{started.replace(':','').replace('-','')[:15]}Z_{safe(ident.hostname or 'unknown')}_{run}"; final=collections/name
   (base/"snapshot.json").write_text(json.dumps(snap.to_dict(),indent=2)+"\n"); (base/"report.md").write_text(render_report(snap)); (base/"errors.json").write_text(json.dumps(errors,indent=2)+"\n")

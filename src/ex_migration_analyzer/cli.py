@@ -48,10 +48,46 @@ def inspect_candidates(directories, policy, policy_digest):
     return complete, incomplete, rejected
 
 
+def prepare_history(candidates):
+    """Attach deterministic all-candidate coverage without changing any snapshot."""
+    eligible = [candidate for candidate in candidates if not candidate["blockers"]]
+    catalog = {}
+    for candidate in eligible:
+        snapshot_id = candidate["snapshot"]["snapshot_id"]
+        for mac, vlan, port in endpoint_observations(candidate):
+            key = (mac, vlan, port)
+            catalog.setdefault(key, []).append(snapshot_id)
+    catalog_rows = [
+        {"mac": key[0], "vlan_id": int(key[1]), "interface": key[2], "snapshot_ids": sorted(set(snapshot_ids))}
+        for key, snapshot_ids in sorted(catalog.items(), key=lambda item: (item[0][2], item[0][0], item[0][1]))
+    ]
+    history = {
+        "catalog": catalog_rows,
+        "catalog_digest": sha256_bytes(canonical_bytes(catalog_rows)),
+        "supporting_snapshots": sorted(
+            ({"snapshot_id": item["snapshot"]["snapshot_id"], "collection_digest": item["envelope"]["collection_digest"]} for item in eligible),
+            key=lambda item: item["snapshot_id"],
+        ),
+    }
+    all_identities = {(mac, port) for mac, _vlan, port in catalog}
+    for candidate in candidates:
+        observed = endpoint_observations(candidate)
+        observed_identities = {(mac, port) for mac, _vlan, port in observed}
+        missing = all_identities - observed_identities
+        candidate["historical_coverage"] = len(observed_identities & all_identities)
+        candidate["historical_total"] = len(all_identities)
+        candidate["historically_missing"] = sorted(
+            ((mac, ",".join(sorted(vlan for item_mac, vlan, item_port in catalog if (item_mac, item_port) == (mac, port))), port) for mac, port in missing),
+            key=lambda item: (item[2], item[0], item[1]),
+        )
+        candidate["history"] = history
+    return history
+
+
 def candidate_rank(candidate):
     snapshot = candidate["snapshot"]; policy = snapshot.get("collection_policy", {})
     review_count = sum(1 for finding in candidate["preview"]["findings"] if finding["severity"] == "REVIEW")
-    return (not bool(candidate["blockers"]), int(policy.get("duration_seconds", 0)), int(policy.get("samples", 0)), -review_count, snapshot.get("completed_at", ""))
+    return (not bool(candidate["blockers"]), candidate.get("historical_coverage", 0), -len(candidate.get("historically_missing", [])), int(policy.get("duration_seconds", 0)), int(policy.get("samples", 0)), -review_count, snapshot.get("completed_at", ""))
 
 
 def show_candidate(index, candidate, recommended, policy_id):
@@ -63,6 +99,9 @@ def show_candidate(index, candidate, recommended, policy_id):
     print("      Host: %s" % (snapshot.get("device", {}).get("hostname") or "unknown"))
     print("      Snapshot: %s | %ss | %s/%s successful samples" % (snapshot.get("snapshot_id"), collection_policy.get("duration_seconds", 0), successful, collection_policy.get("samples", 0)))
     print("      Endpoints: %s unique MACs on %s access ports | Findings: %s" % (preview["statistics"]["unique_endpoint_macs"], endpoint_ports, len(preview["findings"])))
+    print("      Historical coverage: %s/%s | Missing known observations: %s" % (candidate.get("historical_coverage", 0), candidate.get("historical_total", 0), len(candidate.get("historically_missing", []))))
+    for mac, vlan, port in candidate.get("historically_missing", []):
+        print("        Missing: %s %s VLAN %s" % (port, mac, vlan))
     print("      Policy %s: %s" % (policy_id, "ELIGIBLE" if not candidate["blockers"] else "NOT ELIGIBLE"))
     if candidate["blockers"]: print("      Blockers: %s" % "; ".join(code for code, _message in candidate["blockers"]))
 
@@ -77,6 +116,7 @@ def choose_candidate(candidates, incomplete, rejected, policy, interactive):
         for path, error in rejected: print("  - %s: %s" % (path.name, error))
         print()
     if not candidates: raise AnalysisError("no complete, integrity-valid old-switch collections were found")
+    prepare_history(candidates)
     ranked = sorted(candidates, key=candidate_rank, reverse=True)
     eligible = [candidate for candidate in ranked if not candidate["blockers"]]
     if not eligible:
@@ -162,7 +202,7 @@ def find_approval(migration_root, candidate, policy_digest):
     if approvals.is_dir():
         for path in sorted(approvals.glob("*/approval.json")):
             value = read_json(path)
-            if value.get("collection_digest") == candidate["envelope"]["collection_digest"] and value.get("policy_digest") == policy_digest and value.get("analysis_preview_digest") == preview_digest: return value, path
+            if value.get("collection_digest") == candidate["envelope"]["collection_digest"] and value.get("policy_digest") == policy_digest and value.get("analysis_preview_digest") == preview_digest and value.get("historical_evidence_catalog_digest") == candidate["history"]["catalog_digest"] and value.get("supporting_snapshots") == candidate["history"]["supporting_snapshots"]: return value, path
     return None, None
 
 
@@ -173,9 +213,10 @@ def approve(migration_root, candidate, policy, policy_digest, interactive, overr
     print("\nCollection digest: sha256:%s" % candidate["envelope"]["collection_digest"])
     if input("Use this snapshot and analysis as the approved old-switch baseline? [y/N]: ").strip().lower() not in ("y", "yes"): raise AnalysisError("baseline was not approved")
     approval = {
-        "schema_version": "1.0", "migration_id": candidate["snapshot"]["migration_id"], "snapshot_id": candidate["snapshot"]["snapshot_id"],
+        "schema_version": "1.1", "migration_id": candidate["snapshot"]["migration_id"], "snapshot_id": candidate["snapshot"]["snapshot_id"],
         "snapshot_schema_version": candidate["snapshot"]["schema_version"], "snapshot_sha256": candidate["envelope"]["snapshot_sha256"],
         "collection_digest": candidate["envelope"]["collection_digest"], "analysis_preview_digest": sha256_bytes(canonical_bytes(candidate["preview"])),
+        "historical_evidence_catalog_digest": candidate["history"]["catalog_digest"], "supporting_snapshots": candidate["history"]["supporting_snapshots"],
         "policy_id": policy["policy_id"], "policy_digest": policy_digest, "approved_by": getpass.getuser(), "approved_at": utc_now(),
         "reason": override_reason or "Selected recommended analyzer baseline", "waivers": [],
     }
@@ -214,7 +255,7 @@ def main(argv=None):
             override_reason = input("Reason for choosing a non-recommended snapshot: ").strip()
             if not override_reason: raise AnalysisError("an override reason is required")
         _approval, approval_digest, created = approve(migration_root, candidate, policy, policy_digest, interactive, override_reason)
-        result = analyze(candidate["snapshot"], candidate["envelope"], policy, policy_digest, approval_digest, __version__)
+        result = analyze(candidate["snapshot"], candidate["envelope"], policy, policy_digest, approval_digest, __version__, candidate["history"])
         destination, action = write_analysis(migration_root, result)
         print("\nApproval: %s" % ("CREATED" if created else "EXISTING")); print("Analysis: %s (%s)" % (result["result"], action)); print("Report: %s" % (destination / "report.md")); return 0
     except AnalysisError as exc:

@@ -291,3 +291,27 @@ def parse_lldp_neighbors_text(text: str, observed_at: str, raw_artifact: str) ->
 def _find(text: str, pattern: str) -> str | None:
     match = re.search(pattern, text)
     return match.group(1).strip() if match else None
+
+
+_MAC_SUMMARY_ROW = re.compile(r"^\s*(?P<vlan>\S+)\s+(?P<mac>(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})\s+(?P<flags>\S+)(?P<body>.*)$")
+_MAC_INTERFACE = re.compile(r"^(?:(?:[a-z]+-\d+/\d+/\d+)|(?:ae\d+))\.\d+$")
+
+
+def parse_mac_table_summary_text(text: str, observed_at: str | None, raw_artifact: str, interfaces: dict[str, InterfaceState] | None = None, vlans: dict[str, VlanState] | None = None) -> list[MacObservation]:
+    timestamp = observed_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    results: list[MacObservation] = []
+    vlan_map = vlans or {}
+    for line in text.splitlines():
+        match = _MAC_SUMMARY_ROW.match(line)
+        if not match:
+            continue
+        learned = next((token for token in match.group("body").split() if _MAC_INTERFACE.match(token)), None)
+        vlan_name = match.group("vlan")
+        vlan = vlan_map.get(vlan_name)
+        if not learned or vlan is None or vlan.vlan_id is None:
+            continue
+        parsed = split_interface(learned)
+        flags = match.group("flags")
+        mac_type = "static" if "S" in flags and "D" not in flags else "dynamic"
+        results.append(MacObservation(timestamp, normalize_mac(match.group("mac")), "default-switch", VlanRef(vlan_name, vlan.vlan_id), learned, str(parsed["physical"]), parsed["unit"] if isinstance(parsed["unit"], int) else None, classify_learning_interface(learned, interfaces), mac_type, raw_artifact))
+    return results

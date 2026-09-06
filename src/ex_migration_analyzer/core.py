@@ -77,7 +77,7 @@ def validate_collection(collection):
         if not required.is_file() or required.is_symlink():
             raise AnalysisError("missing or unsafe required file: %s" % required)
     snapshot = read_json(snapshot_path)
-    if snapshot.get("schema_version") not in ("1.2", "1.3"):
+    if snapshot.get("schema_version") not in ("1.2", "1.3", "1.4"):
         raise AnalysisError("unsupported snapshot schema %r" % snapshot.get("schema_version"))
     required_keys = (
         "snapshot_id", "migration_id", "device_role", "started_at", "completed_at",
@@ -145,7 +145,7 @@ def evaluate_policy(snapshot, policy):
     duration = int(snapshot.get("collection_policy", {}).get("duration_seconds", 0))
     sample_runs = snapshot.get("sample_runs")
     required_commands = policy.get("required_capabilities", [])
-    if snapshot["schema_version"] == "1.3":
+    if snapshot["schema_version"] in ("1.3", "1.4"):
         if not isinstance(sample_runs, list) or len(sample_runs) != samples:
             blockers.append(("SAMPLE_LEDGER_INVALID", "sample ledger does not match the declared sample count"))
             successful_samples = 0
@@ -157,6 +157,13 @@ def evaluate_policy(snapshot, policy):
                     for command in required_commands
                 )
             )
+        if snapshot["schema_version"] == "1.4":
+            reconciliation = snapshot.get("collection_policy", {}).get("mac_table_reconciliation")
+            if not isinstance(reconciliation, list) or len(reconciliation) != samples:
+                blockers.append(("MAC_RECONCILIATION_INVALID", "MAC-table reconciliation ledger does not match the declared sample count"))
+                successful_samples = 0
+            elif any(item.get("status") != "RECONCILED" for item in reconciliation):
+                blockers.append(("MAC_RECONCILIATION_FAILED", "one or more MAC-table samples could not be reconciled"))
     else:
         successful_samples = samples
     if successful_samples < int(observation.get("minimum_samples", 1)):
@@ -271,7 +278,7 @@ def _finding(severity, code, subject, message, evidence):
     return {"severity": severity, "code": code, "subject": subject, "message": message, "evidence": evidence}
 
 
-def analyze(snapshot, envelope, policy, policy_digest, approval_digest, analyzer_version):
+def analyze(snapshot, envelope, policy, policy_digest, approval_digest, analyzer_version, history=None):
     blockers, reviews = evaluate_policy(snapshot, policy)
     ports, excluded, correlation_findings = correlate(snapshot, policy)
     findings = [_finding("BLOCKER", code, "snapshot", message, []) for code, message in blockers]
@@ -285,6 +292,8 @@ def analyze(snapshot, envelope, policy, policy_digest, approval_digest, analyzer
         "policy_digest": policy_digest,
         "analyzer_version": analyzer_version,
     }
+    if history:
+        key["historical_evidence_catalog_digest"] = history["catalog_digest"]
     analysis_id = sha256_bytes(canonical_bytes(key))[:16]
     management = snapshot["management"]
     template_variables = {
@@ -301,7 +310,20 @@ def analyze(snapshot, envelope, policy, policy_digest, approval_digest, analyzer
         "snmp_engine_id": management.get("snmp", {}).get("engine_id"),
         "configured_vlans": sorted(snapshot["vlans"], key=lambda item: (item.get("vlan_id") is None, item.get("vlan_id") or 0, item["name"])),
     }
-    return {
+    if history:
+        by_port = defaultdict(list)
+        for item in history["catalog"]:
+            by_port[item["interface"]].append(item)
+        for port in ports:
+            historical = sorted(by_port.get(port["interface"], []), key=lambda item: (item["mac"], item["vlan_id"]))
+            port["historical_observations"] = historical
+            if port["unique_macs"]:
+                port["observation_history"] = "OBSERVED_IN_BASELINE"
+            elif historical:
+                port["observation_history"] = "HISTORICALLY_OBSERVED"
+            else:
+                port["observation_history"] = "NEVER_OBSERVED"
+    result = {
         "schema_version": "1.0", "analysis_id": analysis_id, "result": result,
         "inputs": dict(key, snapshot_id=snapshot["snapshot_id"], snapshot_schema_version=snapshot["schema_version"]),
         "template_variables": template_variables, "ports": ports,
@@ -312,6 +334,9 @@ def analyze(snapshot, envelope, policy, policy_digest, approval_digest, analyzer
             "unique_endpoint_macs": len({m for port in ports for m in port["unique_macs"]}),
         },
     }
+    if history:
+        result["historical_evidence"] = history
+    return result
 
 
 def render_report(analysis):
