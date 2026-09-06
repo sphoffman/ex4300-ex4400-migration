@@ -24,10 +24,10 @@ def targets_from_csv(path:Path)->list[Target]:
 
 def main():
  p=argparse.ArgumentParser(); s=p.add_subparsers(dest="cmd",required=True); c=s.add_parser("collect")
- source=c.add_mutually_exclusive_group(required=True); source.add_argument("--host",action="append",help="Old-switch address; repeat for multiple switches"); source.add_argument("--inventory",type=Path,help="CSV with old_address and optional new_fxp_address")
+ source=c.add_mutually_exclusive_group(required=False); source.add_argument("--host",action="append",help="Old-switch address; repeat for multiple switches"); source.add_argument("--inventory",type=Path,help="CSV with old_address and optional new_fxp_address")\n c.add_argument("address",nargs="?",help="Old-switch address for the normal single-device workflow")
  c.add_argument("--username"); c.add_argument("--output",default="snapshots"); c.add_argument("--migration-id",help="Optional assertion/override; valid only with one host")
  c.add_argument("--management-vlan",type=int,default=163); c.add_argument("--password-env"); c.add_argument("--duration",type=int,default=1800); c.add_argument("--interval",type=int,default=60); c.add_argument("--port",type=int,default=830); c.add_argument("--no-host-key-check",action="store_true",help="LAB ONLY: disable SSH host-key verification")
- a=p.parse_args(); targets=[Target(x) for x in a.host] if a.host else targets_from_csv(a.inventory)
+ a=p.parse_args()\n if a.address and (a.host or a.inventory): p.error("address cannot be combined with --host or --inventory")\n if a.address: targets=[Target(a.address)]\n elif a.host: targets=[Target(x) for x in a.host]\n elif a.inventory: targets=targets_from_csv(a.inventory)\n else:\n  address=input("Old-switch address: ").strip()\n  if not address: p.error("old-switch address must not be empty")\n  targets=[Target(address)]
  if a.migration_id and len(targets)!=1: p.error("--migration-id may be used only with a single host")
  username=a.username or input("Username: ").strip()
  if not username: p.error("username must not be empty")

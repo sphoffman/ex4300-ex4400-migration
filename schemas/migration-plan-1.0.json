@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ex-migration/migration-plan-1.0.json",
+  "title": "EX migration plan binding contract",
+  "type": "object",
+  "required": ["schema_version", "plan_id", "migration_id", "old_snapshot_approval_digest", "old_analysis_digest", "site_policy_digest", "boilerplate_template_digest", "decisions", "production_eligible"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "plan_id": {"type": "string"},
+    "migration_id": {"type": "string"},
+    "old_snapshot_approval_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "old_analysis_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "site_policy_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "boilerplate_template_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "decisions": {"type": "array", "items": {"type": "object"}},
+    "production_eligible": {"type": "boolean"},
+    "lab_mode": {"type": ["string", "null"]}
+  },
+  "additionalProperties": false
+}
+

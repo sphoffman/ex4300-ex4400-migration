@@ -106,7 +106,7 @@ class Collector:
   dot1x_detail_enabled=needs_dot1x_detail(config)
   if dhcp_binding_enabled: sampled_commands.append(DHCP_BINDING_COMMAND)
   if dot1x_detail_enabled: sampled_commands.append(DOT1X_DETAIL_COMMAND)
-  observations=[]; neighbors=[]; present=set(); sample=0; deadline=time.monotonic()+self.duration
+  observations=[]; neighbors=[]; sample_runs=[]; present=set(); sample=0; deadline=time.monotonic()+self.duration
   while True:
    stamp=utc()
    for n,c in enumerate(sampled_commands):
@@ -133,7 +133,7 @@ class Collector:
   if not dot1x_detail_enabled: capabilities[DOT1X_DETAIL_COMMAND]="not_collected_not_configured"
   failed={c for c,v in capabilities.items() if v=="unsupported_or_failed"}
   collection_policy={"duration_seconds":self.duration,"interval_seconds":self.interval,"samples":sample,"management_vlan_id":self.management_vlan_id,"conditional_collection":{"legacy_switching_options":LEGACY_SWITCH_OPTIONS_COMMAND in attempted_commands,"dhcp_security_bindings":dhcp_binding_enabled,"dot1x_sessions":dot1x_detail_enabled}}
-  snap=Snapshot(run,migration_id,self.device_role,started,utc(),"COLLECTED",ident,management,collection_policy,capabilities,{"status":"unsupported" if "show virtual-chassis status" in failed else "collected"},list(interfaces.values()),list(vlans.values()),voice,observations,neighbors,artifacts,sorted(set(warnings)),errors)
+  snap=Snapshot(run,migration_id,self.device_role,started,utc(),"COLLECTED",ident,management,collection_policy,capabilities,{"status":"unsupported" if "show virtual-chassis status" in failed else "collected"},list(interfaces.values()),list(vlans.values()),voice,observations,neighbors,artifacts,sorted(set(warnings)),errors,sample_runs=sample_runs)
   name=f"{started.replace(':','').replace('-','')[:15]}Z_{safe(ident.hostname or 'unknown')}_{run}"; final=collections/name
   (base/"snapshot.json").write_text(json.dumps(snap.to_dict(),indent=2)+"\n"); (base/"report.md").write_text(render_report(snap)); (base/"errors.json").write_text(json.dumps(errors,indent=2)+"\n")
   integ={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in base.iterdir() if p.is_file()}; (base/"integrity.json").write_text(json.dumps(integ,indent=2)+"\n"); os.replace(base,final)

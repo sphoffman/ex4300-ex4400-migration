@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "snapshot_root": "snapshots",
+  "analysis_policy": "policies/production-old-v1.json",
+  "default_management_vlan_id": 163,
+  "default_collection_duration_seconds": 1800,
+  "default_collection_interval_seconds": 60,
+  "require_host_key_verification": true
+}
+

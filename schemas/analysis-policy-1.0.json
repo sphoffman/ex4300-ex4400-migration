@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ex-migration/analysis-policy-1.0.json",
+  "title": "EX migration analysis policy",
+  "type": "object",
+  "required": ["schema_version", "policy_id", "policy_version", "accepted_snapshot_schemas", "observation", "required_capabilities", "require_virtual_chassis"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "policy_id": {"type": "string", "minLength": 1},
+    "policy_version": {"type": "string", "minLength": 1},
+    "accepted_snapshot_schemas": {"type": "array", "items": {"type": "string"}, "minItems": 1, "uniqueItems": true},
+    "observation": {
+      "type": "object",
+      "required": ["minimum_samples", "minimum_duration_seconds"],
+      "properties": {
+        "minimum_samples": {"type": "integer", "minimum": 1},
+        "minimum_duration_seconds": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "required_capabilities": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "require_virtual_chassis": {"type": "boolean"}
+  },
+  "additionalProperties": false
+}
+

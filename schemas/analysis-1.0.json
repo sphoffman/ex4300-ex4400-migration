@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ex-migration/analysis-1.0.json",
+  "title": "EX migration offline analysis",
+  "type": "object",
+  "required": ["schema_version", "analysis_id", "result", "inputs", "template_variables", "ports", "excluded_observations", "findings", "statistics"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "analysis_id": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+    "result": {"enum": ["READY", "REVIEW_REQUIRED", "BLOCKED"]},
+    "inputs": {"type": "object"},
+    "template_variables": {"type": "object"},
+    "ports": {"type": "array", "items": {"type": "object"}},
+    "excluded_observations": {"type": "array", "items": {"type": "object"}},
+    "findings": {"type": "array", "items": {"type": "object"}},
+    "statistics": {"type": "object"}
+  },
+  "additionalProperties": false
+}
+

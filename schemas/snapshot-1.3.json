@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ex-migration/snapshot-1.3.json",
+  "title": "EX migration discovery snapshot 1.3",
+  "type": "object",
+  "required": ["schema_version", "snapshot_id", "migration_id", "device_role", "started_at", "completed_at", "device", "management", "collection_policy", "capabilities", "interfaces", "vlans", "voice_policy", "mac_observations", "lldp_neighbors", "sample_runs", "raw_artifacts", "warnings", "errors"],
+  "properties": {
+    "schema_version": {"const": "1.3"},
+    "snapshot_id": {"type": "string", "minLength": 1},
+    "migration_id": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$"},
+    "device_role": {"const": "old-switch"},
+    "started_at": {"type": "string", "format": "date-time"},
+    "completed_at": {"type": "string", "format": "date-time"},
+    "device": {"type": "object"},
+    "management": {"type": "object"},
+    "collection_policy": {"type": "object"},
+    "capabilities": {"type": "object"},
+    "interfaces": {"type": "array", "items": {"type": "object"}},
+    "vlans": {"type": "array", "items": {"type": "object"}},
+    "voice_policy": {"type": "object"},
+    "mac_observations": {"type": "array", "items": {"type": "object"}},
+    "lldp_neighbors": {"type": "array", "items": {"type": "object"}},
+    "sample_runs": {"type": "array", "items": {"type": "object"}},
+    "raw_artifacts": {"type": "array", "items": {"type": "object"}},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "errors": {"type": "array", "items": {"type": "object"}}
+  }
+}
+
