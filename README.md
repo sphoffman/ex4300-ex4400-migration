@@ -90,9 +90,12 @@ old_address,new_fxp_address
 ex-migration-discovery collect --inventory switches.csv
 ```
 
-Credentials are obtained once per batch. A failed device is reported without
-discarding successful collections from other devices, and the command exits
-nonzero when any target fails.
+Credentials are obtained once per batch. Collections run concurrently with a bounded
+worker pool (four workers by default from `config/site.json`). Use `--workers 1`
+to force serial collection, or `--workers N` for a one-run override. Each worker
+uses its own PyEZ device session. A failed device is reported without discarding
+successful collections from other devices, and the command exits nonzero when
+any target fails.
 
 ## Output
 
@@ -129,6 +132,22 @@ come from `config/site.json`. The attached production policy accepts schema 1.3
 collections with a successful per-sample ledger; `lab-smoke-v1` is explicit and
 not suitable for production approval. The analyzer never generates or applies
 configuration.
+
+To make the lab policy the local default without weakening the tracked production
+default, create the ignored local settings file once:
+
+```bash
+cp config/site.local.example.json config/site.local.json
+```
+
+After that, `ex-migration-analyzer run dh4301` uses the lab policy automatically.
+An explicit `--policy` still overrides settings, and
+`EX_MIGRATION_ANALYSIS_POLICY` can provide a per-environment override.
+
+When more than one completed snapshot exists, the guided output also compares the
+selected snapshot with the closest other collection and lists missing, newly
+observed, or same-port VLAN-changed MAC evidence. Collections remain independent;
+the comparison never merges their observations into the approved baseline.
 
 Single-device discovery also accepts the address positionally:
 

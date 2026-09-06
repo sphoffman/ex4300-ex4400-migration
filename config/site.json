@@ -5,6 +5,6 @@
   "default_management_vlan_id": 163,
   "default_collection_duration_seconds": 1800,
   "default_collection_interval_seconds": 60,
+  "collection_workers": 4,
   "require_host_key_verification": true
 }
-

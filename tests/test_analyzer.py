@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from ex_migration_analyzer.core import AnalysisError, analyze, canonical_bytes, correlate, validate_collection
-from ex_migration_analyzer.cli import candidate_rank, inspect_candidates
+from ex_migration_analyzer.cli import candidate_rank, inspect_candidates, load_settings
 
 
 def write_collection(tmp_path, migration_id="dh4301", vlan_id=100, extra_vlan=None):
@@ -121,3 +121,11 @@ def test_analysis_id_is_deterministic(tmp_path):
     first = analyze(snapshot, envelope, policy, "p", "a", "0.3.0")
     second = analyze(snapshot, envelope, policy, "p", "a", "0.3.0")
     assert first == second
+
+
+def test_local_site_policy_overrides_tracked_default(tmp_path):
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "site.json").write_text('{"analysis_policy":"policies/production-old-v1.json"}')
+    (config / "site.local.json").write_text('{"analysis_policy":"policies/lab-smoke-v1.json"}')
+    assert load_settings(config / "site.json")["analysis_policy"] == "policies/lab-smoke-v1.json"

@@ -1,7 +1,6 @@
-.venv/
 __pycache__/
-*.pyc
+*.py[cod]
 .pytest_cache/
 snapshots/
-.env
+config/site.local.json
 
