@@ -108,13 +108,16 @@ class Collector:
   if dot1x_detail_enabled: sampled_commands.append(DOT1X_DETAIL_COMMAND)
   observations=[]; neighbors=[]; sample_runs=[]; present=set(); sample=0; deadline=time.monotonic()+self.duration
   while True:
-   stamp=utc()
+   stamp=utc(); sample_run={"sample_index":sample,"observed_at":stamp,"commands":[]}
    for n,c in enumerate(sampled_commands):
-    text,path=grab(c,f"observations/{sample:04d}",n)
+    error_count=len(errors); text,path=grab(c,f"observations/{sample:04d}",n)
+    text_failed=any(e["command"]==c and e["format"]=="text" for e in errors[error_count:])
+    status="SUCCESS" if path and not text_failed else "FAILED"
+    sample_run["commands"].append({"command":c,"status":status,"text_artifact":path or None})
     if c.startswith("show ethernet-switching table"): observations+=parse_mac_table_text(text,stamp,path,interfaces)
     elif c=="show interfaces terse": present|=parse_interfaces_terse(text,interfaces)
     elif c=="show lldp neighbors detail": neighbors+=parse_lldp_neighbors_text(text,stamp,path)
-   sample+=1
+   sample_run["completed_at"]=utc(); sample_runs.append(sample_run); sample+=1
    if time.monotonic()>=deadline: break
    time.sleep(min(self.interval,max(0,deadline-time.monotonic())))
   interfaces={k:v for k,v in interfaces.items() if k in present}

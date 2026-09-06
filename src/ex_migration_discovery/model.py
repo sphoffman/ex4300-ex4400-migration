@@ -140,6 +140,7 @@ class Snapshot:
     raw_artifacts: list[dict[str, Any]]
     warnings: list[str]
     errors: list[dict[str, Any]]
+    sample_runs: list[dict[str, Any]] = field(default_factory=list)
     schema_version: str = SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
