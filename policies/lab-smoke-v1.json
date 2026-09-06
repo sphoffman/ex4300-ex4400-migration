@@ -14,5 +14,6 @@
     "show lldp neighbors detail",
     "show lacp interfaces"
   ],
-  "require_virtual_chassis": false
+  "require_virtual_chassis": false,
+  "production_eligible": false
 }

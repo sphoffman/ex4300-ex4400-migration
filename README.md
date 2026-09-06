@@ -197,3 +197,20 @@ fact that connection/static-discovery overhead is additional. On an interactive
 terminal it refreshes per-target phases and an observation countdown. Redirected
 output records only phase changes and completed samples to keep logs concise.
 The countdown begins when each target enters operational sampling.
+
+
+## Finding review and silent-port classification
+
+Operationally down access ports with no configured VLAN and no MAC are
+`UNUSED_ACCESS_PORT` audit records and do not require review. An operationally
+up, unassigned port with no MAC is `ACTIVE_UNASSIGNED_SILENT`; a configured
+port without a current MAC remains `CONFIGURED_NO_MAC`. Historical observations
+remain attached to the port and can be accepted explicitly.
+
+After a review-required analysis, the normal guided `run` command records a
+disposition for every finding in an immutable, integrity-protected review record
+under the analysis directory. Choices are constrained by finding type. Lab-only
+limitations can be acknowledged only by a policy marked
+`production_eligible: false`; active probing is recorded as a request and is
+not executed by the analyzer. Re-running unchanged inputs reuses the exact
+digest-bound review.

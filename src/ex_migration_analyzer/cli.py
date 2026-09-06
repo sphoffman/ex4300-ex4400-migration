@@ -212,6 +212,80 @@ def write_analysis(migration_root, analysis):
     return destination, "CREATED"
 
 
+def finding_choices(finding, analysis, policy):
+    if finding["code"] == "VIRTUAL_CHASSIS_UNSUPPORTED" and not policy.get("production_eligible", True):
+        return ["ACKNOWLEDGED_LAB_LIMITATION", "REQUIRES_INVESTIGATION", "BLOCKED"]
+    port = next((item for item in analysis.get("ports", []) if item["interface"] == finding["subject"]), None)
+    if finding["code"] == "CONFIGURED_NO_MAC" and port and port.get("observation_history") == "HISTORICALLY_OBSERVED":
+        return ["ACCEPT_HISTORICAL_EVIDENCE", "ACTIVE_PROBE_REQUESTED", "REQUIRES_INVESTIGATION", "BLOCKED"]
+    if finding["code"] in ("CONFIGURED_NO_MAC", "ACTIVE_UNASSIGNED_SILENT"):
+        return ["REQUIRES_INVESTIGATION", "ACTIVE_PROBE_REQUESTED", "BLOCKED"]
+    return ["REQUIRES_INVESTIGATION", "BLOCKED"]
+
+
+def find_existing_review(destination, analysis_digest, findings_digest, policy_digest):
+    reviews = destination / "reviews"
+    if reviews.is_dir():
+        for path in sorted(reviews.glob("*/review.json"), reverse=True):
+            value = read_json(path)
+            if value.get("analysis_digest") == analysis_digest and value.get("findings_digest") == findings_digest and value.get("policy_digest") == policy_digest:
+                return value, path
+    return None, None
+
+
+def review_findings(destination, analysis, policy, policy_digest, interactive):
+    findings = [item for item in analysis["findings"] if item["severity"] == "REVIEW"]
+    if not findings:
+        return None, "NOT_REQUIRED"
+    analysis_path = destination / "analysis.json"
+    analysis_digest = sha256_file(analysis_path)
+    findings_digest = sha256_bytes(canonical_bytes(findings))
+    existing, _path = find_existing_review(destination, analysis_digest, findings_digest, policy_digest)
+    if existing:
+        return existing, "EXISTING"
+    if not interactive:
+        raise AnalysisError("review-required findings have no matching disposition record")
+    print("\nFinding review")
+    decisions = []
+    for index, finding in enumerate(findings, 1):
+        choices = finding_choices(finding, analysis, policy)
+        print("  [%d/%d] %s [%s]: %s" % (index, len(findings), finding["subject"], finding["code"], finding["message"]))
+        for number, choice in enumerate(choices, 1):
+            marker = " (recommended)" if number == 1 else ""
+            print("        %d. %s%s" % (number, choice, marker))
+        answer = input("      Disposition [1]: ").strip() or "1"
+        try:
+            disposition = choices[int(answer) - 1]
+        except (ValueError, IndexError):
+            raise AnalysisError("invalid finding disposition")
+        note = ""
+        if disposition in ("REQUIRES_INVESTIGATION", "BLOCKED"):
+            note = input("      Note: ").strip()
+            if not note:
+                raise AnalysisError("a note is required for %s" % disposition)
+        decisions.append({
+            "finding_digest": sha256_bytes(canonical_bytes(finding)), "severity": finding["severity"],
+            "code": finding["code"], "subject": finding["subject"], "disposition": disposition,
+            "note": note or None,
+        })
+    dispositions = {item["disposition"] for item in decisions}
+    review_result = "BLOCKED" if "BLOCKED" in dispositions else "ACTION_REQUIRED" if dispositions & {"REQUIRES_INVESTIGATION", "ACTIVE_PROBE_REQUESTED"} else "ACCEPTED"
+    review = {
+        "schema_version": "1.0", "migration_id": analysis["template_variables"]["migration_id"],
+        "analysis_id": analysis["analysis_id"], "analysis_digest": analysis_digest,
+        "findings_digest": findings_digest, "historical_evidence_catalog_digest": analysis.get("historical_evidence", {}).get("catalog_digest"),
+        "policy_id": policy["policy_id"], "policy_digest": policy_digest,
+        "decisions": decisions, "result": review_result,
+        "production_eligible": bool(policy.get("production_eligible", True)) and "ACKNOWLEDGED_LAB_LIMITATION" not in dispositions and review_result == "ACCEPTED",
+        "reviewed_by": getpass.getuser(), "reviewed_at": utc_now(),
+    }
+    review["review_id"] = sha256_bytes(canonical_bytes(review))[:16]
+    review_path = destination / "reviews" / review["review_id"] / "review.json"
+    atomic_json(review_path, review)
+    atomic_json(review_path.parent / "integrity.json", {"review.json": sha256_file(review_path)})
+    return review, "CREATED"
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Offline EX migration analyzer"); parser.add_argument("command", choices=("run",)); parser.add_argument("migration_id", nargs="?")
     parser.add_argument("--settings", type=Path, default=Path("config/site.json")); parser.add_argument("--policy", type=Path); parser.add_argument("--non-interactive", action="store_true")
@@ -231,7 +305,13 @@ def main(argv=None):
         _approval, approval_digest, created = approve(migration_root, candidate, policy, policy_digest, interactive, override_reason)
         result = analyze(candidate["snapshot"], candidate["envelope"], policy, policy_digest, approval_digest, __version__, candidate["history"])
         destination, action = write_analysis(migration_root, result)
-        print("\nApproval: %s" % ("CREATED" if created else "EXISTING")); print("Analysis: %s (%s)" % (result["result"], action)); print("Report: %s" % (destination / "report.md")); return 0
+        review, review_action = review_findings(destination, result, policy, policy_digest, interactive)
+        print("\nApproval: %s" % ("CREATED" if created else "EXISTING")); print("Analysis: %s (%s)" % (result["result"], action))
+        if review:
+            print("Finding review: %s (%s) | production eligible: %s" % (review["result"], review_action, str(review["production_eligible"]).lower()))
+            print("Review record: %s" % (destination / "reviews" / review["review_id"] / "review.json"))
+        else: print("Finding review: NOT_REQUIRED")
+        print("Report: %s" % (destination / "report.md")); return 0
     except AnalysisError as exc:
         print("ERROR: %s" % exc, file=sys.stderr); return 2
 

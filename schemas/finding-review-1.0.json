@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ex-migration/finding-review-1.0.json",
+  "title": "EX migration analysis finding review",
+  "type": "object",
+  "required": ["schema_version", "review_id", "migration_id", "analysis_id", "analysis_digest", "findings_digest", "policy_id", "policy_digest", "decisions", "result", "production_eligible", "reviewed_by", "reviewed_at"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "review_id": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+    "migration_id": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$"},
+    "analysis_id": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+    "analysis_digest": {"$ref": "#/$defs/digest"},
+    "findings_digest": {"$ref": "#/$defs/digest"},
+    "historical_evidence_catalog_digest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+    "policy_id": {"type": "string"},
+    "policy_digest": {"$ref": "#/$defs/digest"},
+    "decisions": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["finding_digest", "severity", "code", "subject", "disposition", "note"], "properties": {"finding_digest": {"$ref": "#/$defs/digest"}, "severity": {"const": "REVIEW"}, "code": {"type": "string"}, "subject": {"type": "string"}, "disposition": {"enum": ["ACKNOWLEDGED_LAB_LIMITATION", "ACCEPT_HISTORICAL_EVIDENCE", "ACTIVE_PROBE_REQUESTED", "REQUIRES_INVESTIGATION", "BLOCKED"]}, "note": {"type": ["string", "null"]}}, "additionalProperties": false}},
+    "result": {"enum": ["ACCEPTED", "ACTION_REQUIRED", "BLOCKED"]},
+    "production_eligible": {"type": "boolean"},
+    "reviewed_by": {"type": "string", "minLength": 1},
+    "reviewed_at": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+  "additionalProperties": false
+}

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from ex_migration_analyzer.core import AnalysisError, analyze, canonical_bytes, correlate, validate_collection
-from ex_migration_analyzer.cli import candidate_rank, inspect_candidates, load_settings, prepare_history
+from ex_migration_analyzer.cli import candidate_rank, inspect_candidates, load_settings, prepare_history, review_findings
 
 
 def write_collection(tmp_path, migration_id="dh4301", vlan_id=100, extra_vlan=None):
@@ -109,9 +109,19 @@ def test_no_phone_is_normal(tmp_path):
 def test_access_port_without_vlan_or_mac_is_distinct(tmp_path):
     _, snapshot = write_collection(tmp_path)
     snapshot["interfaces"][1]["untagged_vlan"] = None
+    snapshot["interfaces"][1]["oper_status"] = "down"
     ports, _, findings = correlate(snapshot, {})
-    assert ports[1]["disposition"] == "ACCESS_NO_VLAN_NO_MAC"
-    assert any(item["code"] == "ACCESS_NO_VLAN_NO_MAC" for item in findings)
+    assert ports[1]["disposition"] == "UNUSED_ACCESS_PORT"
+    assert not any(item["subject"] == "ge-0/0/3" for item in findings)
+
+
+def test_operational_unassigned_port_requires_review(tmp_path):
+    _, snapshot = write_collection(tmp_path)
+    snapshot["interfaces"][1]["untagged_vlan"] = None
+    snapshot["interfaces"][1]["oper_status"] = "up"
+    ports, _, findings = correlate(snapshot, {})
+    assert ports[1]["disposition"] == "ACTIVE_UNASSIGNED_SILENT"
+    assert any(item["code"] == "ACTIVE_UNASSIGNED_SILENT" for item in findings)
 
 
 def test_analysis_id_is_deterministic(tmp_path):
@@ -144,3 +154,23 @@ def test_history_uses_all_eligible_snapshots(tmp_path):
     assert len(history["catalog"]) == 2
     assert candidates[0]["historical_coverage"] == 1
     assert len(candidates[0]["historically_missing"]) == 1
+
+
+def test_lab_limitation_review_is_digest_bound(tmp_path, monkeypatch):
+    destination = tmp_path / "analysis"
+    destination.mkdir()
+    analysis = {
+        "analysis_id": "1" * 16,
+        "template_variables": {"migration_id": "dh4301"},
+        "historical_evidence": {"catalog_digest": "2" * 64},
+        "ports": [],
+        "findings": [{"severity": "REVIEW", "code": "VIRTUAL_CHASSIS_UNSUPPORTED", "subject": "snapshot", "message": "unsupported", "evidence": []}],
+    }
+    (destination / "analysis.json").write_text(json.dumps(analysis))
+    monkeypatch.setattr("builtins.input", lambda _prompt: "")
+    review, action = review_findings(destination, analysis, {"policy_id": "lab", "production_eligible": False}, "3" * 64, True)
+    assert action == "CREATED"
+    assert review["result"] == "ACCEPTED"
+    assert review["production_eligible"] is False
+    assert review["decisions"][0]["disposition"] == "ACKNOWLEDGED_LAB_LIMITATION"
+    assert (destination / "reviews" / review["review_id"] / "integrity.json").is_file()

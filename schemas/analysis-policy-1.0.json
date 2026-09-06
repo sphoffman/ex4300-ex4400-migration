@@ -3,7 +3,7 @@
   "$id": "https://example.invalid/ex-migration/analysis-policy-1.0.json",
   "title": "EX migration analysis policy",
   "type": "object",
-  "required": ["schema_version", "policy_id", "policy_version", "accepted_snapshot_schemas", "observation", "required_capabilities", "require_virtual_chassis"],
+  "required": ["schema_version", "policy_id", "policy_version", "accepted_snapshot_schemas", "observation", "required_capabilities", "require_virtual_chassis", "production_eligible"],
   "properties": {
     "schema_version": {"const": "1.0"},
     "policy_id": {"type": "string", "minLength": 1},
@@ -19,8 +19,8 @@
       "additionalProperties": false
     },
     "required_capabilities": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
-    "require_virtual_chassis": {"type": "boolean"}
+    "require_virtual_chassis": {"type": "boolean"},
+    "production_eligible": {"type": "boolean"}
   },
   "additionalProperties": false
 }
-
