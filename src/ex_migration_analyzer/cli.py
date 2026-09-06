@@ -99,6 +99,12 @@ def show_candidate(index, candidate, recommended, policy_id):
     print("      Host: %s" % (snapshot.get("device", {}).get("hostname") or "unknown"))
     print("      Snapshot: %s | %ss | %s/%s successful samples" % (snapshot.get("snapshot_id"), collection_policy.get("duration_seconds", 0), successful, collection_policy.get("samples", 0)))
     print("      Endpoints: %s unique MACs on %s access ports | Findings: %s" % (preview["statistics"]["unique_endpoint_macs"], endpoint_ports, len(preview["findings"])))
+    reconciliation = collection_policy.get("mac_table_reconciliation", [])
+    if reconciliation:
+        reconciled = sum(1 for item in reconciliation if item.get("status") == "RECONCILED")
+        summary_only = sum(len(item.get("summary_only", [])) for item in reconciliation)
+        detail_only = sum(len(item.get("detail_only", [])) for item in reconciliation)
+        print("      MAC reconciliation: %s/%s samples | summary-only rows: %s | detail-only rows: %s" % (reconciled, len(reconciliation), summary_only, detail_only))
     print("      Historical coverage: %s/%s | Missing known observations: %s" % (candidate.get("historical_coverage", 0), candidate.get("historical_total", 0), len(candidate.get("historically_missing", []))))
     for mac, vlan, port in candidate.get("historically_missing", []):
         print("        Missing: %s %s VLAN %s" % (port, mac, vlan))
