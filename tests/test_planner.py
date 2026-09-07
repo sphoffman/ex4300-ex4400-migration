@@ -2,6 +2,7 @@ import pytest
 
 from ex_migration_analyzer.core import canonical_bytes, sha256_bytes
 from ex_migration_planner.core import PlanError, build_plan
+from ex_migration_planner.cli import approve_plan, write_plan
 
 
 def sample_analysis():
@@ -40,6 +41,8 @@ def test_plan_is_deterministic_and_preserves_unobserved_vlan():
     assert next(v for v in first["vlan_intents"] if v["name"] == "UNUSED-TEST")["observed"] is False
     assert first["qfx_intent"]["required_non_management_vlan_ids"] == [100, 300]
     assert first["safety"]["device_writes_allowed"] is False
+    assert first["statistics"]["configured_unobserved_vlans"] == 1
+    assert first["statistics"]["template_default_ports"] == 1
 
 
 def test_plan_requires_accepted_digest_bound_review():
@@ -62,3 +65,20 @@ def test_unused_and_endpoint_actions_are_distinct():
     actions = {item["old_interface"]: item["planned_action"] for item in plan["port_intents"]}
     assert actions["ge-0/0/2"] == "CORRELATE_AFTER_CABLE_MOVE"
     assert actions["ge-0/0/10"] == "LEAVE_TEMPLATE_DEFAULT"
+
+
+def test_standard_plan_approval_uses_one_prompt_and_audit_reason(tmp_path, monkeypatch):
+    analysis = sample_analysis(); digest = sha256_bytes(canonical_bytes(analysis))
+    plan = build_plan(analysis, digest, sample_review(digest), "4" * 64, "0.6.1")
+    destination, _action = write_plan(tmp_path, plan)
+    prompts = []
+
+    def answer(prompt):
+        prompts.append(prompt)
+        return "y"
+
+    monkeypatch.setattr("builtins.input", answer)
+    approval, action = approve_plan(destination, plan, True)
+    assert action == "CREATED"
+    assert len(prompts) == 1
+    assert approval["reason"] == "Approved generated migration intent without modification"

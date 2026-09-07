@@ -66,7 +66,7 @@ def build_plan(analysis, analysis_digest, review, review_digest, planner_version
         },
         "qfx_intent": {"status": "REQUIRES_FUTURE_SITE_POLICY", "operator_supplied_ports_allowed": False, "required_non_management_vlan_ids": sorted(v["vlan_id"] for v in vlans if v["vlan_id"] not in (None, management_vlan)), "requirements": ["DISCOVER_LOCAL_PORTS_WITH_LLDP_AND_LACP", "REQUIRE_PHYSICAL_PORT_SYMMETRY", "VERIFY_DETERMINISTIC_AE_AND_ESI", "ADD_VLANS_ONLY_AFTER_VALIDATION"]},
         "safety": {"configuration_rendering_allowed": False, "device_connections_allowed": False, "device_writes_allowed": False, "collections_mutable": False, "stale_if_any_input_digest_changes": True},
-        "statistics": {"configured_vlans": len(vlans), "configured_unobserved_vlans": sum(1 for v in vlans if not v["observed"] and v["vlan_id"] != management_vlan), "access_ports": len(port_intents), "correlate_after_move": sum(1 for p in port_intents if p["planned_action"] == "CORRELATE_AFTER_CABLE_MOVE"), "operator_holds": sum(1 for p in port_intents if p["planned_action"] == "HOLD_FOR_OPERATOR_RESOLUTION")},
+        "statistics": {"configured_vlans": len(vlans), "configured_unobserved_vlans": sum(1 for v in vlans if not v["observed"] and v["vlan_id"] != management_vlan), "access_ports": len(port_intents), "correlate_after_move": sum(1 for p in port_intents if p["planned_action"] == "CORRELATE_AFTER_CABLE_MOVE"), "template_default_ports": sum(1 for p in port_intents if p["planned_action"] == "LEAVE_TEMPLATE_DEFAULT"), "operator_holds": sum(1 for p in port_intents if p["planned_action"] == "HOLD_FOR_OPERATOR_RESOLUTION")},
     }
     return plan
 

@@ -87,12 +87,29 @@ def approve_plan(destination, plan, interactive):
         value = read_json(path); integrity = read_json(path.parent / "integrity.json")
         if value.get("plan_digest") == plan_digest and sha256_file(path) == integrity.get("approval.json"): return value, "EXISTING"
     if not interactive: raise PlanError("no matching plan approval exists; interactive approval is required")
-    print("\nPlan summary"); print("  Plan: %s" % plan["plan_id"]); print("  Eligibility: %s" % plan["eligibility"]["status"])
-    print("  VLANs: %d (%d configured but unobserved)" % (plan["statistics"]["configured_vlans"], plan["statistics"]["configured_unobserved_vlans"]))
-    print("  Endpoint correlations: %d | Operator holds: %d" % (plan["statistics"]["correlate_after_move"], plan["statistics"]["operator_holds"]))
-    print("  Configuration rendering and device writes: DISABLED")
-    if input("Approve this offline migration intent plan? [y/N]: ").strip().lower() not in ("y", "yes"): raise PlanError("plan was not approved")
-    reason = input("Reason [Approved migration intent]: ").strip() or "Approved migration intent"
+    variables = plan["template_variables"]; statistics = plan["statistics"]
+    unobserved = [v for v in plan["vlan_intents"] if not v["observed"] and v["vlan_id"] != variables.get("management_vlan_id")]
+    print("\nMigration intent awaiting approval")
+    print("  Migration: %s" % plan["migration_id"]); print("  Snapshot: %s" % plan["inputs"]["snapshot_id"])
+    print("  Analysis: %s" % plan["inputs"]["analysis_id"]); print("  Plan: %s" % plan["plan_id"])
+    print("  Eligibility: %s" % plan["eligibility"]["status"])
+    print("\n  Pre-stage intent:")
+    print("    - Preserve all %d configured VLANs" % statistics["configured_vlans"])
+    print("    - Configure management identity and transport from approved variables")
+    print("    - Do not assign endpoint-specific VLANs or descriptions")
+    print("\n  Post-move intent:")
+    print("    - Correlate %d endpoint ports using approved MAC history" % statistics["correlate_after_move"])
+    print("    - Leave %d unused ports at template defaults" % statistics["template_default_ports"])
+    print("    - Operator holds: %d" % statistics["operator_holds"])
+    print("\n  Configured but unobserved:")
+    if unobserved:
+        for vlan in unobserved: print("    - %s (VLAN %s) - preserved" % (vlan["name"], vlan["vlan_id"]))
+    else: print("    - None")
+    print("\n  Report: %s" % (destination / "report.md"))
+    print("\nThis approval records the exact migration intent only.")
+    print("It does not authorize configuration generation or device writes.")
+    if input("\nApprove this exact migration intent? [y/N]: ").strip().lower() not in ("y", "yes"): raise PlanError("plan was not approved")
+    reason = "Approved generated migration intent without modification"
     approval = {"schema_version": "1.0", "migration_id": plan["migration_id"], "plan_id": plan["plan_id"], "plan_digest": plan_digest, "input_analysis_digest": plan["inputs"]["analysis_digest"], "production_eligible": plan["eligibility"]["production_eligible"], "approved_by": getpass.getuser(), "approved_at": utc_now(), "reason": reason}
     approval["approval_id"] = sha256_bytes(canonical_bytes(approval)); approval["approval_id"] = approval["approval_id"][:16]
     path = destination / "approvals" / approval["approval_id"] / "approval.json"; atomic_json(path, approval)

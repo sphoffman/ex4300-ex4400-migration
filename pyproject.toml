@@ -4,7 +4,7 @@ build-backend="setuptools.build_meta"
 
 [project]
 name="ex-migration-discovery"
-version="0.6.0"
+version="0.6.1"
 description="Read-only discovery and offline analysis for Juniper EX migrations"
 requires-python=">=3.8"
 dependencies=["junos-eznc>=2.7.3,<3", "lxml>=5,<7"]

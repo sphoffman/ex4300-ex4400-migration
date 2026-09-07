@@ -228,4 +228,7 @@ VLANs, and separates pre-stage intent from post-move endpoint correlation. It
 contains no configuration renderer, device connection, or device-write code.
 QFX port selection remains unresolved until a future site-policy contract and
 LLDP/LACP validation exist. Any change to a bound input digest makes the plan
-stale rather than silently updating it.
+stale rather than silently updating it. Before approval, the CLI names the bound
+snapshot and analysis, summarizes both migration phases, lists configured-but-
+unobserved VLANs, and displays the report path. Routine approval asks one explicit
+question; its standard audit reason is recorded automatically.
