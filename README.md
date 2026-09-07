@@ -214,3 +214,18 @@ limitations can be acknowledged only by a policy marked
 `production_eligible: false`; active probing is recorded as a request and is
 not executed by the analyzer. Re-running unchanged inputs reuses the exact
 digest-bound review.
+
+
+## Offline migration intent plans
+
+After an analysis has an accepted finding review, build its deterministic intent
+plan with `python -m ex_migration_planner.cli build <migration-id>`. The planner
+validates the analysis, baseline approval, review, and integrity records before
+writing `plans/<plan-id>/plan.json`, `report.md`, and a digest-bound approval.
+
+The plan preserves every configured VLAN, including configured-but-unobserved
+VLANs, and separates pre-stage intent from post-move endpoint correlation. It
+contains no configuration renderer, device connection, or device-write code.
+QFX port selection remains unresolved until a future site-policy contract and
+LLDP/LACP validation exist. Any change to a bound input digest makes the plan
+stale rather than silently updating it.

@@ -293,6 +293,7 @@ def analyze(snapshot, envelope, policy, policy_digest, approval_digest, analyzer
         "collection_digest": envelope["collection_digest"],
         "approval_digest": approval_digest,
         "policy_digest": policy_digest,
+        "policy_production_eligible": bool(policy.get("production_eligible", False)),
         "analyzer_version": analyzer_version,
     }
     if history:

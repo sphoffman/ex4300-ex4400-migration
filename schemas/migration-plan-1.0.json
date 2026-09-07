@@ -1,21 +1,38 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://example.invalid/ex-migration/migration-plan-1.0.json",
-  "title": "EX migration plan binding contract",
+  "title": "EX migration offline intent plan",
   "type": "object",
-  "required": ["schema_version", "plan_id", "migration_id", "old_snapshot_approval_digest", "old_analysis_digest", "site_policy_digest", "boilerplate_template_digest", "decisions", "production_eligible"],
+  "required": ["schema_version", "plan_id", "migration_id", "planner_version", "inputs", "eligibility", "template_variables", "vlan_intents", "port_intents", "phase_intents", "qfx_intent", "safety", "statistics"],
   "properties": {
     "schema_version": {"const": "1.0"},
-    "plan_id": {"type": "string"},
-    "migration_id": {"type": "string"},
-    "old_snapshot_approval_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "old_analysis_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "site_policy_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "boilerplate_template_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "decisions": {"type": "array", "items": {"type": "object"}},
-    "production_eligible": {"type": "boolean"},
-    "lab_mode": {"type": ["string", "null"]}
+    "plan_id": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+    "migration_id": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$"},
+    "planner_version": {"type": "string"},
+    "inputs": {
+      "type": "object",
+      "required": ["analysis_id", "analysis_digest", "snapshot_id", "collection_digest", "snapshot_approval_digest", "finding_review_digest", "analysis_policy_digest"],
+      "properties": {
+        "analysis_id": {"type": "string"}, "analysis_digest": {"$ref": "#/$defs/digest"},
+        "snapshot_id": {"type": "string"}, "collection_digest": {"$ref": "#/$defs/digest"},
+        "snapshot_approval_digest": {"$ref": "#/$defs/digest"},
+        "finding_review_digest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+        "analysis_policy_digest": {"$ref": "#/$defs/digest"}
+      }, "additionalProperties": false
+    },
+    "eligibility": {
+      "type": "object", "required": ["status", "production_eligible", "reasons"],
+      "properties": {"status": {"enum": ["PRODUCTION_ELIGIBLE", "LAB_ONLY"]}, "production_eligible": {"type": "boolean"}, "reasons": {"type": "array", "items": {"type": "string"}}},
+      "additionalProperties": false
+    },
+    "template_variables": {"type": "object"},
+    "vlan_intents": {"type": "array", "items": {"type": "object", "required": ["name", "vlan_id", "classification", "observed", "irb_interface"], "properties": {"name": {"type": "string"}, "vlan_id": {"type": ["integer", "null"]}, "classification": {"enum": ["TEMPLATE_VARIABLE", "VALIDATION_ONLY"]}, "observed": {"type": "boolean"}, "irb_interface": {"type": ["string", "null"]}}, "additionalProperties": false}},
+    "port_intents": {"type": "array", "items": {"type": "object"}},
+    "phase_intents": {"type": "object"},
+    "qfx_intent": {"type": "object"},
+    "safety": {"type": "object"},
+    "statistics": {"type": "object"}
   },
+  "$defs": {"digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
   "additionalProperties": false
 }
-

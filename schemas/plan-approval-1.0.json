@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ex-migration/plan-approval-1.0.json",
+  "title": "EX migration intent-plan approval",
+  "type": "object",
+  "required": ["schema_version", "approval_id", "migration_id", "plan_id", "plan_digest", "input_analysis_digest", "production_eligible", "approved_by", "approved_at", "reason"],
+  "properties": {
+    "schema_version": {"const": "1.0"}, "approval_id": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+    "migration_id": {"type": "string"}, "plan_id": {"type": "string"},
+    "plan_digest": {"$ref": "#/$defs/digest"}, "input_analysis_digest": {"$ref": "#/$defs/digest"},
+    "production_eligible": {"type": "boolean"}, "approved_by": {"type": "string", "minLength": 1},
+    "approved_at": {"type": "string", "format": "date-time"}, "reason": {"type": "string", "minLength": 1}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+  "additionalProperties": false
+}
