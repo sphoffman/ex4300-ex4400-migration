@@ -1,0 +1,52 @@
+# DESIGN TEMPLATE ONLY - no renderer or device-write path exists.
+set version 26.2R1.7
+set system host-name {{new_hostname}}
+set system services netconf ssh
+set system management-instance
+set system syslog source-address {{management_ip}}
+set system ntp source-address {{management_ip}}
+set chassis redundancy graceful-switchover
+set chassis aggregated-devices ethernet device-count 1
+set interfaces interface-range edge_ports member "ge-[0-9]/0/[2-47]"
+set interfaces interface-range edge_ports unit 0 family ethernet-switching interface-mode access
+set interfaces interface-range edge_ports unit 0 family ethernet-switching storm-control ACCESS_STORM
+set interfaces irb unit {{management_vlan_id}} family inet address {{management_ip}}/24
+set interfaces ge-0/0/0 gigether-options 802.3ad ae0
+set interfaces ge-0/0/1 gigether-options 802.3ad ae0
+set interfaces ae0 aggregated-ether-options lacp active
+set interfaces ae0 unit 0 family ethernet-switching interface-mode trunk
+set interfaces ae0 unit 0 family ethernet-switching vlan members all
+set interfaces lo0 unit 0 family inet
+set snmp name {{new_hostname}}
+set snmp location {{snmp_location}}
+set snmp engine-id local {{snmp_engine_id}}
+set snmp trap-options source-address {{management_ip}}
+set forwarding-options storm-control-profiles ACCESS_STORM all bandwidth-percentage 2
+set forwarding-options storm-control-profiles ACCESS_STORM all no-multicast
+set routing-options static route 0.0.0.0/0 next-hop {{management_gateway}}
+set routing-options nonstop-routing
+deactivate routing-options nonstop-routing
+set protocols lldp port-id-subtype interface-name
+set protocols lldp interface all
+set protocols lldp-med interface all
+set protocols igmp-snooping vlan all
+set protocols layer2-control nonstop-bridging
+set protocols rstp interface ae0 disable
+set protocols rstp interface all edge
+set protocols rstp bpdu-block-on-edge
+set switch-options mac-notification
+set switch-options voip interface edge_ports vlan {{voice_vlan}}
+{% for vlan in configured_vlans %}
+set vlans {{vlan.name}} vlan-id {{vlan.vlan_id}}
+{% if vlan.classification == "data" %}
+set vlans {{vlan.name}} forwarding-options dhcp-security group DHCP_TRUST overrides trusted
+set vlans {{vlan.name}} forwarding-options dhcp-security group DHCP_TRUST interface ae0.0
+{% endif %}
+{% endfor %}
+set vlans {{voice_vlan}} vlan-id {{voice_vlan_id}}
+set vlans {{voice_vlan}} forwarding-options dhcp-security group DHCP_TRUST overrides trusted
+set vlans {{voice_vlan}} forwarding-options dhcp-security group DHCP_TRUST interface ae0.0
+set vlans {{management_vlan}} description management
+set vlans {{management_vlan}} vlan-id {{management_vlan_id}}
+set vlans {{management_vlan}} l3-interface irb.{{management_vlan_id}}
+set vlans {{temporary_recovery_vlan_name}} vlan-id {{temporary_recovery_vlan_id}}

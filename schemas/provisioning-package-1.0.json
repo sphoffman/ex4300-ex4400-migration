@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ex-migration/provisioning-package-1.0.json",
+  "title": "Digest-bound renderable provisioning package",
+  "type": "object",
+  "required": ["schema_version", "package_id", "migration_id", "created_at", "inputs", "eligibility", "provisioning_mode", "variables", "phases", "artifacts", "safety"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "package_id": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+    "migration_id": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "inputs": {
+      "type": "object",
+      "required": ["plan_digest", "plan_approval_digest", "template_digest", "template_contract_digest", "site_policy_digest", "settings_digest", "renderer_version"],
+      "properties": {
+        "plan_digest": {"$ref": "#/$defs/digest"}, "plan_approval_digest": {"$ref": "#/$defs/digest"},
+        "template_digest": {"$ref": "#/$defs/digest"}, "template_contract_digest": {"$ref": "#/$defs/digest"},
+        "site_policy_digest": {"$ref": "#/$defs/digest"}, "settings_digest": {"$ref": "#/$defs/digest"},
+        "renderer_version": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "eligibility": {"type": "object", "required": ["status", "production_eligible", "reasons"], "properties": {"status": {"enum": ["PRODUCTION_ELIGIBLE", "LAB_ONLY"]}, "production_eligible": {"type": "boolean"}, "reasons": {"type": "array", "items": {"type": "string"}}}, "additionalProperties": false},
+    "provisioning_mode": {"enum": ["local-fxp0-mac", "asserted", "in-place-lab"]},
+    "variables": {"type": "object"},
+    "phases": {"type": "object", "required": ["pre_stage", "cutover", "post_move"], "properties": {"pre_stage": {"type": "object"}, "cutover": {"type": "object"}, "post_move": {"type": "object"}}, "additionalProperties": false},
+    "artifacts": {"type": "array", "items": {"type": "object", "required": ["path", "sha256"], "properties": {"path": {"type": "string"}, "sha256": {"$ref": "#/$defs/digest"}}, "additionalProperties": false}},
+    "safety": {"type": "object", "required": ["rendering_allowed", "device_connections_allowed", "device_writes_allowed", "stale_if_any_input_digest_changes"], "properties": {"rendering_allowed": {"const": true}, "device_connections_allowed": {"const": false}, "device_writes_allowed": {"const": false}, "stale_if_any_input_digest_changes": {"const": true}}, "additionalProperties": false}
+  },
+  "allOf": [{"if": {"properties": {"provisioning_mode": {"enum": ["asserted", "in-place-lab"]}}, "required": ["provisioning_mode"]}, "then": {"properties": {"eligibility": {"properties": {"status": {"const": "LAB_ONLY"}, "production_eligible": {"const": false}}, "required": ["status", "production_eligible"]}}}}],
+  "$defs": {"digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+  "additionalProperties": false
+}

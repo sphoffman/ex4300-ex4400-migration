@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ex-migration/ex4400-template-contract-1.0.json",
+  "title": "Authoritative EX4400 template contract",
+  "type": "object",
+  "required": ["schema_version", "template_id", "template_version", "render_format", "variables", "phase_contract", "safety"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "template_id": {"type": "string", "minLength": 1},
+    "template_version": {"type": "string", "minLength": 1},
+    "render_format": {"const": "junos-set"},
+    "variables": {
+      "type": "object",
+      "required": ["required_scalars", "required_collections", "bootstrap_only", "metadata_only"],
+      "properties": {
+        "required_scalars": {"const": ["new_hostname", "management_ip", "management_gateway", "management_vlan", "management_vlan_id", "voice_vlan", "voice_vlan_id", "snmp_location", "snmp_engine_id", "temporary_recovery_vlan_name", "temporary_recovery_vlan_id"]},
+        "required_collections": {"const": ["configured_vlans", "post_move_endpoint_assignments"]},
+        "bootstrap_only": {"const": ["fxp0_management_ip", "fxp0_prefix_length", "fxp0_management_gateway", "virtual_chassis", "bootstrap_authentication"]},
+        "metadata_only": {"const": ["migration_id", "old_hostname", "plan_id"]}
+      },
+      "additionalProperties": false
+    },
+    "phase_contract": {
+      "type": "object",
+      "required": ["pre_stage", "post_move"],
+      "properties": {
+        "pre_stage": {
+          "type": "object",
+          "required": ["include", "exclude"],
+          "properties": {
+            "include": {"type": "array", "contains": {"const": "ALL_CONFIGURED_VLANS"}},
+            "exclude": {"type": "array", "contains": {"const": "ENDPOINT_DATA_VLAN_ASSIGNMENTS"}}
+          },
+          "additionalProperties": false
+        },
+        "post_move": {"type": "object"}
+      },
+      "additionalProperties": false
+    },
+    "safety": {
+      "type": "object",
+      "required": ["old_configuration_replay_allowed", "root_configuration_retrieval_allowed", "credentials_allowed"],
+      "properties": {
+        "old_configuration_replay_allowed": {"const": false},
+        "root_configuration_retrieval_allowed": {"const": false},
+        "credentials_allowed": {"const": false}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

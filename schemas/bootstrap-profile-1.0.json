@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ex-migration/bootstrap-profile-1.0.json",
+  "title": "EX4400 day-zero bootstrap profile",
+  "type": "object",
+  "required": ["schema_version", "profile_id", "environment", "provisioning_mode", "production_eligible", "fxp0_management_ip", "fxp0_prefix_length", "fxp0_management_gateway", "virtual_chassis"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "profile_id": {"type": "string", "minLength": 1},
+    "environment": {"enum": ["production", "lab"]},
+    "provisioning_mode": {"enum": ["local-fxp0-mac", "asserted", "in-place-lab"]},
+    "production_eligible": {"type": "boolean"},
+    "fxp0_management_ip": {"type": "string", "pattern": "^[0-9]{1,3}(\\.[0-9]{1,3}){3}$"},
+    "fxp0_prefix_length": {"type": "integer", "minimum": 0, "maximum": 32},
+    "fxp0_management_gateway": {"type": "string", "pattern": "^[0-9]{1,3}(\\.[0-9]{1,3}){3}$"},
+    "virtual_chassis": {
+      "type": "object",
+      "required": ["member_count", "members"],
+      "properties": {
+        "member_count": {"type": "integer", "minimum": 1},
+        "members": {"type": "array", "items": {"type": "object", "required": ["member_id", "serial_number"], "properties": {"member_id": {"type": "integer", "minimum": 0}, "serial_number": {"type": "string", "minLength": 1}, "role": {"enum": ["routing-engine", "line-card"]}}, "additionalProperties": false}}
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {"if": {"properties": {"provisioning_mode": {"enum": ["asserted", "in-place-lab"]}}, "required": ["provisioning_mode"]}, "then": {"properties": {"environment": {"const": "lab"}, "production_eligible": {"const": false}}}},
+    {"if": {"properties": {"environment": {"const": "production"}}, "required": ["environment"]}, "then": {"properties": {"provisioning_mode": {"const": "local-fxp0-mac"}, "production_eligible": {"const": true}}}}
+  ],
+  "additionalProperties": false
+}

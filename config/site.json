@@ -1,10 +1,14 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "snapshot_root": "snapshots",
   "analysis_policy": "policies/production-old-v1.json",
   "default_management_vlan_id": 163,
   "default_collection_duration_seconds": 1800,
   "default_collection_interval_seconds": 60,
   "collection_workers": 4,
-  "require_host_key_verification": true
+  "require_host_key_verification": true,
+  "ex4400_template": "templates/ex4400/ex4400.set.j2",
+  "ex4400_template_contract": "templates/ex4400/contract-v1.json",
+  "temporary_recovery_vlan_name": "TEMP-RECOVERY",
+  "temporary_recovery_vlan_id": 3999
 }

@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0",
+  "profile_id": "lab-in-place-v1",
+  "environment": "lab",
+  "provisioning_mode": "in-place-lab",
+  "production_eligible": false,
+  "fxp0_management_ip": "10.0.0.15",
+  "fxp0_prefix_length": 24,
+  "fxp0_management_gateway": "10.0.0.2",
+  "virtual_chassis": {
+    "member_count": 1,
+    "members": []
+  }
+}

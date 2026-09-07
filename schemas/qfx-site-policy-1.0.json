@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ex-migration/qfx-site-policy-1.0.json",
+  "title": "QFX5700 migration site policy",
+  "type": "object",
+  "required": ["schema_version", "site_policy_id", "environment", "production_eligible", "qfx_pair", "stage_port_pools", "excluded_interfaces", "management_vlan", "temporary_recovery_vlan", "port_to_ae", "esi", "lacp_system_id", "validation"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "site_policy_id": {"type": "string", "minLength": 1},
+    "environment": {"enum": ["production", "lab"]},
+    "production_eligible": {"type": "boolean"},
+    "qfx_pair": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "object", "required": ["role", "management_address", "expected_hostname"], "properties": {"role": {"enum": ["qfx-a", "qfx-b"]}, "management_address": {"type": "string"}, "expected_hostname": {"type": "string"}, "expected_model": {"const": "QFX5700"}}, "additionalProperties": false}},
+    "stage_port_pools": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "array", "items": {"type": "string"}}},
+    "excluded_interfaces": {"type": "array", "items": {"type": "string"}},
+    "management_vlan": {"$ref": "#/$defs/vlan"},
+    "temporary_recovery_vlan": {"$ref": "#/$defs/vlan"},
+    "port_to_ae": {"type": "object", "required": ["method", "ae_min", "ae_max"], "properties": {"method": {"type": "string"}, "ae_min": {"type": "integer", "minimum": 1}, "ae_max": {"type": "integer", "minimum": 1}}, "additionalProperties": false},
+    "esi": {"type": "object", "required": ["method"], "properties": {"method": {"type": "string"}}, "additionalProperties": true},
+    "lacp_system_id": {"type": "object", "required": ["method"], "properties": {"method": {"type": "string"}}, "additionalProperties": true},
+    "validation": {"type": "object", "required": ["require_interface_symmetry", "require_lldp", "require_lacp_partner", "operator_supplied_ports_allowed"], "properties": {"require_interface_symmetry": {"const": true}, "require_lldp": {"const": true}, "require_lacp_partner": {"const": true}, "operator_supplied_ports_allowed": {"const": false}}, "additionalProperties": true}
+  },
+  "$defs": {"vlan": {"type": "object", "required": ["name", "vlan_id"], "properties": {"name": {"type": "string", "minLength": 1}, "vlan_id": {"type": "integer", "minimum": 1, "maximum": 4094}}, "additionalProperties": false}},
+  "additionalProperties": false
+}
