@@ -1,6 +1,6 @@
 # Provisioning design boundary
 
-Release 0.9.1 adds a guarded **LAB-ONLY EX4400 pre-stage write path** on top of
+Release 0.9.2 adds a guarded **LAB-ONLY EX4400 pre-stage write path** on top of
 the deterministic offline renderer introduced in 0.8.x. The renderer itself
 remains version 0.8.1 so an already-approved 0.8.1 package/render does not become
 stale merely because live-write orchestration or lab transport handling changes.
@@ -58,7 +58,7 @@ snapshots/migrations/<migration-id>/bootstrap-identities/<identity-id>/
   integrity.json
 ```
 
-Release 0.9.1 also distinguishes the **logical Junos management address** from the
+Release 0.9.2 distinguishes the **logical Junos management address** from the
 **transport endpoint used to reach the device**. This is needed for vrnetlab/
 vJunos-switch, where the Junos VM retains logical management address `10.0.0.15`
 while containerlab exposes the VM through the container's management address. In a
@@ -77,6 +77,13 @@ override**; it must reconnect through the endpoint pinned by the selected identi
 If that endpoint changes, the operator must perform a new read-only `identify` and
 approve the new binding. Normal physical hardware simply omits the override, in
 which case logical and transport addresses are the same.
+
+vJunos-switch is built from an EX9214 reference platform and reports `EX9214` as
+its model. Release 0.9.2 accepts that model alias **only** when an explicit lab
+transport endpoint different from the logical `fxp0` address is being pinned. A
+direct bootstrap connection still requires an actual EX4400-family model and will
+reject EX9214. The vJunos EX9214 alias is additionally limited to the single-member
+lab bootstrap profile; it cannot become production eligible.
 
 Interactive identity enrollment remains restricted to a lab bootstrap profile.
 Production identity enrollment remains fail-closed until an independently pre-bound
@@ -121,7 +128,7 @@ snapshots/migrations/<migration-id>/packages/<package-id>/renders/<render-id>/
 
 ## Guarded EX4400 pre-stage write
 
-`ex-migration-provisioner run <migration-id>` is LAB-ONLY in release 0.9.1. Before
+`ex-migration-provisioner run <migration-id>` is LAB-ONLY in release 0.9.2. Before
 loading configuration it revalidates the package/render digest chain and bootstrap
 profile, loads the newest approved bootstrap identity (or an explicit identity ID),
 reads the SSH server key again, and fails closed unless the pinned host key,
@@ -190,7 +197,7 @@ The successful preflight is saved as `qfx-preflight.json` and digest-bound into 
 package. Operator-supplied QFX ports remain prohibited.
 
 No QFX connection occurs in `identify` or `run`, and no QFX write implementation
-exists in 0.9.1. The future QFX transaction remains a separate coordinated two-QFX
+exists in 0.9.2. The future QFX transaction remains a separate coordinated two-QFX
 candidate/commit-confirmed workflow with stronger partner-identity validation.
 
 ## Operator flow
