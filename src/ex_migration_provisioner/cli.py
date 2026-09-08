@@ -7,27 +7,34 @@ from pathlib import Path
 from ex_migration_analyzer.core import sha256_file, utc_now
 
 from . import cli_base as base
-from .preflight import (
-    print_pre_stage_qfx_preflight,
-    scope_pre_stage_qfx_preflight,
+from .prestage import (
+    build_pre_stage_package,
+    choose_package_compat,
+    package_candidates_compat,
+    validate_pre_cutover_site_policy,
+    verify_package_inputs_compat,
+    write_pre_stage_package,
 )
+
+
+# Keep legacy package support for immutable historical 1.0 artifacts, while all
+# new pre-cutover packages use schema 1.1 and contain no live QFX preflight.
+if not hasattr(base, "_verify_package_inputs_legacy"):
+    base._verify_package_inputs_legacy = base._verify_package_inputs
+base.package_candidates = package_candidates_compat
+base.choose_package = choose_package_compat
+base._verify_package_inputs = verify_package_inputs_compat
 
 
 def _bound_transport(identity):
     connection = identity.get("observed", {}).get("connection", {})
     logical_address = str(connection.get("address") or "")
-    transport_address = str(
-        connection.get("transport_address") or logical_address
-    )
+    transport_address = str(connection.get("transport_address") or logical_address)
     port = int(connection.get("port", 830))
     if not logical_address:
-        raise base.ProvisioningError(
-            "approved bootstrap identity has no logical management address"
-        )
+        raise base.ProvisioningError("approved bootstrap identity has no logical management address")
     if not transport_address:
-        raise base.ProvisioningError(
-            "approved bootstrap identity has no transport address"
-        )
+        raise base.ProvisioningError("approved bootstrap identity has no transport address")
     return logical_address, transport_address, port
 
 
@@ -41,26 +48,20 @@ def _planned_old_hostname(migration_root):
     ).strip()
     if not hostname:
         raise base.ProvisioningError(
-            "approved migration plan has no source-switch hostname; "
-            "bootstrap identity cannot be safely distinguished from the old switch"
+            "approved migration plan has no source-switch hostname; bootstrap identity cannot be safely distinguished from the old switch"
         )
     return hostname
 
 
 def _reject_source_switch(migration_root, observed):
     old_hostname = _planned_old_hostname(migration_root)
-    observed_hostname = str(
-        observed.get("device", {}).get("hostname") or ""
-    ).strip()
+    observed_hostname = str(observed.get("device", {}).get("hostname") or "").strip()
     if not observed_hostname:
-        raise base.ProvisioningError(
-            "bootstrap target hostname could not be observed"
-        )
+        raise base.ProvisioningError("bootstrap target hostname could not be observed")
     if observed_hostname.lower() == old_hostname.lower():
         raise base.ProvisioningError(
-            "bootstrap target hostname %r matches the approved migration source "
-            "switch hostname; refusing to bind or use the old EX4300 as the "
-            "new-switch target" % observed_hostname
+            "bootstrap target hostname %r matches the approved migration source switch hostname; refusing to bind or use the old EX4300 as the new-switch target"
+            % observed_hostname
         )
     return True
 
@@ -94,33 +95,23 @@ def _stale_recovery_error(migration_id, changed):
         "provisioning artifacts are stale: %s changed" % ", ".join(changed),
         "",
         "Recovery:",
-        "  1. Rerun prepare %s to refresh the read-only QFX preflight and package."
-        % migration_id,
-        "  2. Rerun render %s to create a new digest-bound render."
-        % migration_id,
+        "  1. Rerun prepare %s to rebuild the offline pre-cutover package." % migration_id,
+        "     prepare does not connect to the QFX pair; QFX attachment is discovered only after cutover.",
+        "  2. Rerun render %s to create a new digest-bound render." % migration_id,
     ]
     if bootstrap_changed:
-        lines.append(
-            "  3. Rerun identify %s because the bootstrap profile changed."
-            % migration_id
-        )
-        lines.append(
-            "  4. Retry run with the new render and newly approved identity."
-        )
+        lines.append("  3. Rerun identify %s because the bootstrap profile changed." % migration_id)
+        lines.append("  4. Retry run with the new render and newly approved identity.")
     else:
         lines.append(
-            "  3. Retry run with the new render ID, or omit --render-id to "
-            "select the newest valid render."
+            "  3. Retry run with the new render ID, or omit --render-id to select the newest valid render."
         )
         lines.append(
-            "  The existing approved bootstrap identity may be reused; run will "
-            "still revalidate its host key and chassis identity."
+            "  The existing approved bootstrap identity may be reused; run will still revalidate its host key and chassis identity."
         )
     lines.extend([
-        "  Discovery, analyzer, and planner do not need to be rerun unless their "
-        "own inputs changed.",
-        "  Existing stale packages/renders remain immutable history; do not edit "
-        "or delete them to recover.",
+        "  Discovery, analyzer, and planner do not need to be rerun unless their own inputs changed.",
+        "  Existing stale packages/renders remain immutable history; do not edit or delete them to recover.",
     ])
     return base.ProvisioningError("\n".join(lines))
 
@@ -141,17 +132,13 @@ def _provisioning_artifact_precheck(
     if render_id is not None:
         selected_render = base.choose_render(migration_root, render_id)
         package_id = selected_render["manifest"].get("package_id")
-        manifest_renderer = (
-            selected_render["manifest"].get("inputs", {}).get("renderer_version")
-        )
+        manifest_renderer = selected_render["manifest"].get("inputs", {}).get("renderer_version")
     else:
         selected_render = None
         manifest_renderer = None
 
     selected_package = base.choose_package(migration_root, package_id)
-    changed = _package_stale_inputs(
-        selected_package["package"], settings, paths
-    )
+    changed = _package_stale_inputs(selected_package["package"], settings, paths)
     if selected_render is not None and manifest_renderer != base.RENDERER_VERSION:
         changed.append("render_renderer_version")
     if changed:
@@ -159,24 +146,67 @@ def _provisioning_artifact_precheck(
     return selected_package, selected_render
 
 
+def _prepare_parser():
+    parser = argparse.ArgumentParser(
+        prog="ex-migration-provisioner prepare",
+        description=(
+            "Offline-build the EX4400 pre-cutover package from the approved migration plan, "
+            "bootstrap profile, template contract, and static site policy. No QFX connection "
+            "or migration attachment discovery occurs in this phase."
+        ),
+    )
+    parser.add_argument("migration_id")
+    parser.add_argument("--settings", type=Path, default=Path("config/site.json"))
+    parser.add_argument("--site-policy", type=Path)
+    parser.add_argument("--bootstrap", type=Path)
+    return parser
+
+
 def _prepare(argv):
-    if "-h" in argv or "--help" in argv:
-        return base.main(["prepare"] + argv)
+    args = _prepare_parser().parse_args(argv)
+    settings = base.load_settings(args.settings)
+    migration_root = Path(settings["snapshot_root"]) / "migrations" / args.migration_id
+    selected = base.choose_approved_plan(migration_root)
 
-    original_run_qfx_preflight = base.run_qfx_preflight
-    original_print_preflight = base._print_preflight
+    paths = base._provisioning_paths(settings)
+    if args.site_policy:
+        paths["site_policy"] = args.site_policy
+    if args.bootstrap:
+        paths["bootstrap"] = args.bootstrap
+    base._require_paths(paths)
 
-    def scoped_run_qfx_preflight(*args, **kwargs):
-        raw = original_run_qfx_preflight(*args, **kwargs)
-        return scope_pre_stage_qfx_preflight(raw)
+    policy = validate_pre_cutover_site_policy(base.read_json(paths["site_policy"]))
+    bootstrap = base.read_json(paths["bootstrap"])
+    base._validate_input_alignment(settings, policy, bootstrap)
 
-    base.run_qfx_preflight = scoped_run_qfx_preflight
-    base._print_preflight = print_pre_stage_qfx_preflight
-    try:
-        return base.main(["prepare"] + argv)
-    finally:
-        base.run_qfx_preflight = original_run_qfx_preflight
-        base._print_preflight = original_print_preflight
+    package = build_pre_stage_package(
+        selected["plan"],
+        selected["plan_digest"],
+        selected["approval"],
+        selected["approval_digest"],
+        base.sha256_bytes(base.canonical_bytes(settings)),
+        base.sha256_file(paths["template"]),
+        base.sha256_file(paths["contract"]),
+        policy,
+        base.sha256_file(paths["site_policy"]),
+        bootstrap,
+        base.sha256_file(paths["bootstrap"]),
+        base.RENDERER_VERSION,
+        created_at=utc_now(),
+    )
+    destination, action = write_pre_stage_package(migration_root, package)
+
+    print("EX4400 pre-cutover package preparation")
+    print("  QFX connections: not attempted")
+    print("  QFX attachment: UNKNOWN until post-cutover LLDP discovery")
+    print("  LACP force-up: prohibited by site policy")
+    print("\nProvisioning package: %s (%s)" % (package["package_id"], action))
+    print("Plan: %s" % selected["plan"]["plan_id"])
+    print("Eligibility: %s" % package["eligibility"]["status"])
+    print("Package: %s" % (destination / "package.json"))
+    print("Rendering allowed by package contract: yes")
+    print("Device writes authorized: no")
+    return 0
 
 
 def _identify_parser():
@@ -184,8 +214,8 @@ def _identify_parser():
         prog="ex-migration-provisioner identify",
         description=(
             "Read-only observe and operator-bind the bootstrap EX4400 identity. "
-            "For vJunos labs, --transport-address may name the reachable "
-            "containerlab management endpoint while fxp0 remains 10.0.0.15."
+            "For vJunos labs, --transport-address may name the reachable containerlab "
+            "management endpoint while fxp0 remains 10.0.0.15."
         ),
     )
     parser.add_argument("migration_id")
@@ -197,8 +227,8 @@ def _identify_parser():
     parser.add_argument(
         "--transport-address",
         help=(
-            "LAB ONLY: reachable transport endpoint for vJunos/vrnetlab; "
-            "does not change the logical fxp0 address in the bootstrap profile"
+            "LAB ONLY: reachable transport endpoint for vJunos/vrnetlab; does not change "
+            "the logical fxp0 address in the bootstrap profile"
         ),
     )
     return parser
@@ -207,9 +237,7 @@ def _identify_parser():
 def _identify(argv):
     args = _identify_parser().parse_args(argv)
     settings = base.load_settings(args.settings)
-    migration_root = (
-        Path(settings["snapshot_root"]) / "migrations" / args.migration_id
-    )
+    migration_root = Path(settings["snapshot_root"]) / "migrations" / args.migration_id
     paths = base._provisioning_paths(settings)
     if args.bootstrap:
         paths["bootstrap"] = args.bootstrap
@@ -217,15 +245,12 @@ def _identify(argv):
     bootstrap = base.read_json(paths["bootstrap"])
     if bootstrap.get("environment") != "lab":
         raise base.ProvisioningError(
-            "--transport-address and interactive bootstrap identity enrollment "
-            "are currently restricted to lab profiles"
+            "--transport-address and interactive bootstrap identity enrollment are currently restricted to lab profiles"
         )
 
     logical_address = str(bootstrap["fxp0_management_ip"])
     transport_address = str(args.transport_address or logical_address)
-    allow_vjunos_switch = bool(
-        args.transport_address and transport_address != logical_address
-    )
+    allow_vjunos_switch = bool(args.transport_address and transport_address != logical_address)
     username, password = base._credentials(args, "EX4400")
     fingerprint = base.ssh_host_key_fingerprint(transport_address, args.port)
 
@@ -252,9 +277,7 @@ def _identify(argv):
     except base.ProvisioningError:
         raise
     except Exception as exc:
-        raise base.ProvisioningError(
-            "EX4400 bootstrap identity observation failed: %s" % exc
-        )
+        raise base.ProvisioningError("EX4400 bootstrap identity observation failed: %s" % exc)
     finally:
         try:
             dev.close()
@@ -277,12 +300,10 @@ def _identify(argv):
             member["model"],
         ))
     print(
-        "\nThis record pins the logical fxp0 identity, reachable transport "
-        "endpoint, SSH host key, and chassis identity required for a live write."
+        "\nThis record pins the logical fxp0 identity, reachable transport endpoint, SSH host key, and chassis identity required for a live write."
     )
     answer = input(
-        "Bind exactly this bootstrap identity to migration %s? [y/N]: "
-        % args.migration_id
+        "Bind exactly this bootstrap identity to migration %s? [y/N]: " % args.migration_id
     ).strip().lower()
     if answer not in ("y", "yes"):
         print("Bootstrap identity was not approved; no identity artifact created.")
@@ -295,9 +316,7 @@ def _identify(argv):
         observed,
         utc_now(),
     )
-    destination, identity, action = base._write_identity(
-        migration_root, identity
-    )
+    destination, identity, action = base._write_identity(migration_root, identity)
     print("\nBootstrap identity: %s (%s)" % (identity["identity_id"], action))
     print("  Identity: %s" % (destination / "identity.json"))
     print("  Eligibility: LAB_ONLY")
@@ -315,9 +334,7 @@ def _run_selector(argv):
     parser.add_argument("--port", type=int, default=830)
     args, _unknown = parser.parse_known_args(argv)
     settings = base.load_settings(args.settings)
-    migration_root = (
-        Path(settings["snapshot_root"]) / "migrations" / args.migration_id
-    )
+    migration_root = Path(settings["snapshot_root"]) / "migrations" / args.migration_id
     _provisioning_artifact_precheck(
         args.migration_id,
         settings,
@@ -327,9 +344,7 @@ def _run_selector(argv):
     )
     selected = base.choose_identity(migration_root, args.identity_id)
     _reject_source_switch(migration_root, selected["identity"]["observed"])
-    logical_address, transport_address, bound_port = _bound_transport(
-        selected["identity"]
-    )
+    logical_address, transport_address, bound_port = _bound_transport(selected["identity"])
     return args, logical_address, transport_address, bound_port
 
 
@@ -340,9 +355,7 @@ def _render_precheck(argv):
     parser.add_argument("--package-id")
     args, _unknown = parser.parse_known_args(argv)
     settings = base.load_settings(args.settings)
-    migration_root = (
-        Path(settings["snapshot_root"]) / "migrations" / args.migration_id
-    )
+    migration_root = Path(settings["snapshot_root"]) / "migrations" / args.migration_id
     _provisioning_artifact_precheck(
         args.migration_id,
         settings,
@@ -357,12 +370,8 @@ def _run(argv):
 
     args, logical_address, transport_address, bound_port = _run_selector(argv)
     if int(args.port) != int(bound_port):
-        raise base.ProvisioningError(
-            "--port does not match the transport port pinned by identify"
-        )
+        raise base.ProvisioningError("--port does not match the transport port pinned by identify")
 
-    # Normal hardware uses the logical fxp0 address directly. Only a lab identity
-    # that explicitly pinned a different transport endpoint needs redirection.
     if transport_address == logical_address:
         return base.main(["run"] + argv)
 
