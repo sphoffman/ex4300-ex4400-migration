@@ -429,6 +429,9 @@ def main(argv=None):
     if not values:
         return base.main(values)
     command = values[0]
+    if command == "discover-attachment":
+        from . import attachment_cli
+        return attachment_cli.main(values[1:])
     if command == "prepare":
         try:
             return _prepare(values[1:])
