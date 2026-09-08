@@ -58,7 +58,9 @@ def policy():
             {"role": "qfx-b", "management_address": "10.255.3.15", "expected_hostname": "BD-2", "expected_model": "ptx10001-36mr"},
         ],
         "stage_port_pools": {"lab-established": ["et-0/0/3", "et-0/0/4", "et-0/0/5"]}, "excluded_interfaces": [],
-        "management_vlan": {"name": "MGMT", "vlan_id": 163}, "temporary_recovery_vlan": {"name": "TEMP-RECOVERY", "vlan_id": 3999},
+        "management_vlan": {"name": "MGMT", "vlan_id": 163},
+        "voice_vlan": {"name": "voip", "vlan_id": 1111},
+        "temporary_recovery_vlan": {"name": "TEMP-RECOVERY", "vlan_id": 3999},
         "port_to_ae": {"method": "explicit-migration-id-map", "ae_min": 0, "ae_max": 2, "assignments": [
             {"migration_id": "dh4301", "physical_interface": "et-0/0/3", "ae_interface": "ae0"},
             {"migration_id": "nh5302", "physical_interface": "et-0/0/4", "ae_interface": "ae1"},
@@ -81,12 +83,35 @@ def devices_for(migration_id="sw1203", neighbor="sw1203"):
 def digest(char): return char * 64
 
 
-def package_for(preflight):
-    qfx_policy = policy()
-    plan = {"plan_id": "0123456789abcdef", "migration_id": "sw1203", "eligibility": {"production_eligible": False}, "template_variables": {"migration_id": "sw1203", "hostname": "sw4403"}}
+def plan_variables():
+    return {
+        "migration_id": "sw1203",
+        "old_hostname": "home1-ex4300-vc-fd-sw1203",
+        "new_hostname": "home1-ex4400-vc-fd-sw1203",
+        "management_vlan_id": 163,
+        "management_vlan_name": "v163",
+        "management_interface": "irb.163",
+        "management_ip": "10.100.163.30",
+        "management_prefix": "10.100.163.30/24",
+        "management_gateway": "10.100.163.1",
+        "snmp_location": "<home><1><sw1203>",
+        "snmp_engine_id": "10.100.163.30",
+        "configured_vlans": [
+            {"name": "v100", "vlan_id": 100},
+            {"name": "v163", "vlan_id": 163},
+            {"name": "v200", "vlan_id": 200},
+            {"name": "UNUSED-TEST", "vlan_id": 300},
+            {"name": "voip", "vlan_id": 1111},
+        ],
+    }
+
+
+def package_for(preflight, qfx_policy=None, variables=None):
+    qfx_policy = qfx_policy or policy()
+    plan = {"plan_id": "0123456789abcdef", "migration_id": "sw1203", "eligibility": {"production_eligible": False}, "template_variables": variables or plan_variables()}
     approval = {"plan_id": plan["plan_id"], "plan_digest": digest("a"), "production_eligible": False}
     bootstrap = {"environment": "lab", "provisioning_mode": "in-place-lab", "production_eligible": False}
-    return build_package(plan, digest("a"), approval, digest("c"), digest("d"), digest("e"), digest("f"), qfx_policy, digest("1"), bootstrap, digest("2"), preflight, digest("b"), "0.7.1")
+    return build_package(plan, digest("a"), approval, digest("c"), digest("d"), digest("e"), digest("f"), qfx_policy, digest("1"), bootstrap, digest("2"), preflight, digest("b"), "0.8.0")
 
 
 def test_qfx_preflight_passes_for_established_sw1203_mapping():
@@ -120,7 +145,7 @@ def test_qfx_policy_requires_explicit_assignment_and_forbids_operator_ports():
     with pytest.raises(ProvisioningError): validate_site_policy(broken)
 
 
-def test_package_binds_site_policy_bootstrap_and_preflight_digests():
+def test_package_binds_site_policy_bootstrap_preflight_and_render_variables():
     preflight = run_qfx_preflight(policy(), "sw1203", devices_for(), observed_at="2026-09-08T01:00:00Z")
     package = package_for(preflight)
     assert package["eligibility"]["status"] == "LAB_ONLY"
@@ -129,14 +154,30 @@ def test_package_binds_site_policy_bootstrap_and_preflight_digests():
     assert package["inputs"]["qfx_preflight_digest"] == sha256_bytes(canonical_bytes(preflight))
     assert package["variables"]["qfx"]["physical_interface"] == "et-0/0/5"
     assert package["variables"]["qfx"]["ae_interface"] == "ae2"
+    assert package["variables"]["voice_vlan"] == "voip"
+    assert package["variables"]["voice_vlan_id"] == 1111
+    assert package["variables"]["temporary_recovery_vlan_name"] == "TEMP-RECOVERY"
+    classifications = {item["vlan_id"]: item["classification"] for item in package["variables"]["configured_vlans"]}
+    assert classifications == {100: "data", 163: "management", 200: "data", 300: "data", 1111: "voice"}
     assert package["artifacts"] == [{"path": "qfx-preflight.json", "sha256": digest("b")}]
     assert package["safety"]["device_writes_allowed"] is False
 
 
-def test_preflight_and_package_validate_against_repository_schemas():
+def test_package_fails_closed_if_voice_vlan_does_not_match_policy():
+    preflight = run_qfx_preflight(policy(), "sw1203", devices_for(), observed_at="2026-09-08T01:00:00Z")
+    variables = plan_variables()
+    variables["configured_vlans"][-1] = {"name": "wrong-voice", "vlan_id": 1111}
+    with pytest.raises(ProvisioningError):
+        package_for(preflight, variables=variables)
+
+
+def test_preflight_package_and_site_policy_validate_against_repository_schemas():
     preflight = run_qfx_preflight(policy(), "sw1203", devices_for(), observed_at="2026-09-08T01:00:00Z")
     package = package_for(preflight)
     preflight_schema = json.loads((ROOT / "schemas/qfx-preflight-1.0.json").read_text())
     package_schema = json.loads((ROOT / "schemas/provisioning-package-1.0.json").read_text())
-    Draft202012Validator.check_schema(preflight_schema); Draft202012Validator.check_schema(package_schema)
-    Draft202012Validator(preflight_schema).validate(preflight); Draft202012Validator(package_schema).validate(package)
+    policy_schema = json.loads((ROOT / "schemas/qfx-site-policy-1.0.json").read_text())
+    for schema in (preflight_schema, package_schema, policy_schema): Draft202012Validator.check_schema(schema)
+    Draft202012Validator(preflight_schema).validate(preflight)
+    Draft202012Validator(package_schema).validate(package)
+    Draft202012Validator(policy_schema).validate(policy())
