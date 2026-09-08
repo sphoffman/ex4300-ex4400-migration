@@ -83,6 +83,15 @@ def devices_for(migration_id="sw1203", neighbor="sw1203"):
 def digest(char): return char * 64
 
 
+def bootstrap():
+    return {
+        "environment": "lab",
+        "provisioning_mode": "in-place-lab",
+        "production_eligible": False,
+        "virtual_chassis": {"member_count": 1, "members": []},
+    }
+
+
 def plan_variables():
     return {
         "migration_id": "sw1203",
@@ -106,12 +115,12 @@ def plan_variables():
     }
 
 
-def package_for(preflight, qfx_policy=None, variables=None):
+def package_for(preflight, qfx_policy=None, variables=None, bootstrap_profile=None):
     qfx_policy = qfx_policy or policy()
     plan = {"plan_id": "0123456789abcdef", "migration_id": "sw1203", "eligibility": {"production_eligible": False}, "template_variables": variables or plan_variables()}
     approval = {"plan_id": plan["plan_id"], "plan_digest": digest("a"), "production_eligible": False}
-    bootstrap = {"environment": "lab", "provisioning_mode": "in-place-lab", "production_eligible": False}
-    return build_package(plan, digest("a"), approval, digest("c"), digest("d"), digest("e"), digest("f"), qfx_policy, digest("1"), bootstrap, digest("2"), preflight, digest("b"), "0.8.0")
+    bootstrap_profile = bootstrap_profile or bootstrap()
+    return build_package(plan, digest("a"), approval, digest("c"), digest("d"), digest("e"), digest("f"), qfx_policy, digest("1"), bootstrap_profile, digest("2"), preflight, digest("b"), "0.8.1")
 
 
 def test_qfx_preflight_passes_for_established_sw1203_mapping():
@@ -157,10 +166,35 @@ def test_package_binds_site_policy_bootstrap_preflight_and_render_variables():
     assert package["variables"]["voice_vlan"] == "voip"
     assert package["variables"]["voice_vlan_id"] == 1111
     assert package["variables"]["temporary_recovery_vlan_name"] == "TEMP-RECOVERY"
+    assert package["variables"]["recovery_interface"] == "ge-0/0/47"
+    assert package["phases"]["pre_stage"]["ex4400_recovery_interface"] == "ge-0/0/47"
     classifications = {item["vlan_id"]: item["classification"] for item in package["variables"]["configured_vlans"]}
     assert classifications == {100: "data", 163: "management", 200: "data", 300: "data", 1111: "voice"}
     assert package["artifacts"] == [{"path": "qfx-preflight.json", "sha256": digest("b")}]
     assert package["safety"]["device_writes_allowed"] is False
+
+
+def test_package_selects_recovery_port_on_highest_declared_vc_member():
+    preflight = run_qfx_preflight(policy(), "sw1203", devices_for(), observed_at="2026-09-08T01:00:00Z")
+    profile = bootstrap()
+    profile["virtual_chassis"] = {
+        "member_count": 3,
+        "members": [
+            {"member_id": 0, "serial_number": "A"},
+            {"member_id": 2, "serial_number": "B"},
+            {"member_id": 4, "serial_number": "C"},
+        ],
+    }
+    package = package_for(preflight, bootstrap_profile=profile)
+    assert package["variables"]["recovery_interface"] == "ge-4/0/47"
+
+
+def test_package_fails_closed_if_multimember_vc_inventory_is_not_explicit():
+    preflight = run_qfx_preflight(policy(), "sw1203", devices_for(), observed_at="2026-09-08T01:00:00Z")
+    profile = bootstrap()
+    profile["virtual_chassis"] = {"member_count": 2, "members": []}
+    with pytest.raises(ProvisioningError):
+        package_for(preflight, bootstrap_profile=profile)
 
 
 def test_package_fails_closed_if_voice_vlan_does_not_match_policy():
