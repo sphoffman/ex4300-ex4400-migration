@@ -1,13 +1,14 @@
 # Provisioning design boundary
 
-Release 0.9.0 adds a guarded **LAB-ONLY EX4400 pre-stage write path** on top of
+Release 0.9.1 adds a guarded **LAB-ONLY EX4400 pre-stage write path** on top of
 the deterministic offline renderer introduced in 0.8.x. The renderer itself
 remains version 0.8.1 so an already-approved 0.8.1 package/render does not become
-stale merely because live-write orchestration was added. The `prepare` path may
-connect to the QFX pair only for read-only preflight. `render` performs no device
-connections. `identify` connects read-only to the bootstrap EX4400. `run` is the
-only command currently allowed to write, and it can write only the bootstrap
-EX4400 pre-stage configuration. QFX writes remain disabled.
+stale merely because live-write orchestration or lab transport handling changes.
+The `prepare` path may connect to the QFX pair only for read-only preflight.
+`render` performs no device connections. `identify` connects read-only to the
+bootstrap EX4400. `run` is the only command currently allowed to write, and it can
+write only the bootstrap EX4400 pre-stage configuration. QFX writes remain
+disabled.
 
 ## Artifact chain
 
@@ -45,11 +46,11 @@ It fails closed rather than guessing when a multi-member inventory is incomplete
 ## Bootstrap identity binding
 
 Before a write session can be opened, `ex-migration-provisioner identify
-<migration-id>` reads the SSH server host key and connects read-only to the EX4400
-through bootstrap `fxp0`. It records the bootstrap address/port, SHA256 SSH host-key
-fingerprint, hostname, model, chassis serial, and Virtual Chassis member
-serial/model inventory. The operator must explicitly approve that exact observed
-identity. The resulting immutable artifact is stored under:
+<migration-id>` reads the SSH server host key and connects read-only to the EX4400.
+It records the logical bootstrap address/port, SHA256 SSH host-key fingerprint,
+hostname, model, chassis serial, and Virtual Chassis member serial/model inventory.
+The operator must explicitly approve that exact observed identity. The resulting
+immutable artifact is stored under:
 
 ```
 snapshots/migrations/<migration-id>/bootstrap-identities/<identity-id>/
@@ -57,10 +58,30 @@ snapshots/migrations/<migration-id>/bootstrap-identities/<identity-id>/
   integrity.json
 ```
 
-Release 0.9.0 permits interactive identity enrollment only under a lab bootstrap
-profile. Production identity enrollment remains fail-closed until an independently
-pre-bound serial/host-key trust source is implemented. Reachability to an IP
-address alone never authorizes a write.
+Release 0.9.1 also distinguishes the **logical Junos management address** from the
+**transport endpoint used to reach the device**. This is needed for vrnetlab/
+vJunos-switch, where the Junos VM retains logical management address `10.0.0.15`
+while containerlab exposes the VM through the container's management address. In a
+lab, the operator may therefore run:
+
+```
+ex-migration-provisioner identify <migration-id> \
+  --transport-address <containerlab-management-ip>
+```
+
+The bootstrap profile remains unchanged and continues to bind logical `fxp0` to
+`10.0.0.15`. The approved identity separately records the reachable transport
+endpoint. The transport override is part of the operator-approved identity and is
+therefore included in the deterministic identity ID. `run` accepts **no transport
+override**; it must reconnect through the endpoint pinned by the selected identity.
+If that endpoint changes, the operator must perform a new read-only `identify` and
+approve the new binding. Normal physical hardware simply omits the override, in
+which case logical and transport addresses are the same.
+
+Interactive identity enrollment remains restricted to a lab bootstrap profile.
+Production identity enrollment remains fail-closed until an independently pre-bound
+serial/host-key trust source is implemented. Reachability to an IP address alone
+never authorizes a write.
 
 ## Pre-stage render
 
@@ -100,13 +121,15 @@ snapshots/migrations/<migration-id>/packages/<package-id>/renders/<render-id>/
 
 ## Guarded EX4400 pre-stage write
 
-`ex-migration-provisioner run <migration-id>` is LAB-ONLY in release 0.9.0. Before
+`ex-migration-provisioner run <migration-id>` is LAB-ONLY in release 0.9.1. Before
 loading configuration it revalidates the package/render digest chain and bootstrap
 profile, loads the newest approved bootstrap identity (or an explicit identity ID),
 reads the SSH server key again, and fails closed unless the pinned host key,
 bootstrap address/port, hostname, model, and VC serial/model inventory still match.
-The NETCONF session is opened only after the independently read SSH fingerprint
-matches the approved identity.
+For a vJunos identity, the transport endpoint is taken only from the approved
+identity artifact; `run` provides no CLI transport override. The NETCONF session is
+opened only after the independently read SSH fingerprint matches the approved
+identity.
 
 The configuration transaction uses the shared candidate database with an explicit
 lock. The rendered `set` statements are loaded with **merge**, preserving day-zero
@@ -167,7 +190,7 @@ The successful preflight is saved as `qfx-preflight.json` and digest-bound into 
 package. Operator-supplied QFX ports remain prohibited.
 
 No QFX connection occurs in `identify` or `run`, and no QFX write implementation
-exists in 0.9.0. The future QFX transaction remains a separate coordinated two-QFX
+exists in 0.9.1. The future QFX transaction remains a separate coordinated two-QFX
 candidate/commit-confirmed workflow with stronger partner-identity validation.
 
 ## Operator flow
@@ -177,12 +200,12 @@ The current safety-first lab flow is:
 ```
 prepare <migration-id>
 render <migration-id>
-identify <migration-id>
+identify <migration-id> [--transport-address <lab-endpoint>]
 run <migration-id>
 ```
 
 `prepare` and `render` may already have been completed under renderer 0.8.1; adding
-the 0.9.0 live-write tooling does not invalidate an otherwise current 0.8.1 render.
-`status` and `recover` remain future work. Active silent-port probing remains a
-separate, explicit, fail-closed change-run component and is not part of read-only
-discovery, QFX preflight, offline rendering, or EX4400 pre-stage writes.
+0.9.x live-write or lab-transport tooling does not invalidate an otherwise current
+0.8.1 render. `status` and `recover` remain future work. Active silent-port probing
+remains a separate, explicit, fail-closed change-run component and is not part of
+read-only discovery, QFX preflight, offline rendering, or EX4400 pre-stage writes.
