@@ -71,6 +71,9 @@ def _identify(argv):
 
     logical_address = str(bootstrap["fxp0_management_ip"])
     transport_address = str(args.transport_address or logical_address)
+    allow_vjunos_switch = bool(
+        args.transport_address and transport_address != logical_address
+    )
     username, password = base._credentials(args, "EX4400")
     fingerprint = base.ssh_host_key_fingerprint(transport_address, args.port)
 
@@ -86,7 +89,11 @@ def _identify(argv):
     try:
         dev.open(auto_probe=10, hostkey_verify=False)
         observed = base.observe_ex4400_identity(
-            dev, logical_address, args.port, fingerprint
+            dev,
+            logical_address,
+            args.port,
+            fingerprint,
+            allow_vjunos_switch=allow_vjunos_switch,
         )
         observed["connection"]["transport_address"] = transport_address
     except base.ProvisioningError:
@@ -206,7 +213,13 @@ def _run(argv):
         return original_fingerprint(target, port, timeout)
 
     def observed_with_transport(dev, address, port, host_key_sha256):
-        observed = original_observe(dev, address, port, host_key_sha256)
+        observed = original_observe(
+            dev,
+            address,
+            port,
+            host_key_sha256,
+            allow_vjunos_switch=True,
+        )
         if str(address) == logical_address and int(port) == int(bound_port):
             observed["connection"]["transport_address"] = transport_address
         return observed
