@@ -31,14 +31,14 @@ def identity(transport_address=None):
             "connection": connection,
             "device": {
                 "hostname": "vjunos-switch",
-                "model": "VJUNOS-SWITCH",
+                "model": "EX9214",
                 "serial_number": "VM1234",
                 "members": [
                     {
                         "member_id": 0,
                         "status": "Prsnt",
                         "serial_number": "VM1234",
-                        "model": "VJUNOS-SWITCH",
+                        "model": "EX9214",
                     }
                 ],
             },
