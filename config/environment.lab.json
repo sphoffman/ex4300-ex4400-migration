@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "environment": "lab",
+  "inband_validation": {
+    "mode": "lab-probe",
+    "target_port": 830,
+    "timeout_seconds": 5,
+    "probe": {
+      "host": "10.255.3.29",
+      "port": 22,
+      "username": "lab",
+      "host_key_verification": "accept-ephemeral-lab-key"
+    }
+  }
+}
