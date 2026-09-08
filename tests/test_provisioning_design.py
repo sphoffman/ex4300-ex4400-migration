@@ -51,6 +51,9 @@ def test_template_excludes_bootstrap_and_device_write_material():
     assert "{{management_ip}}/24" not in template
     assert 'set interfaces interface-range edge_ports member "ge-[0-9]/0/[2-47]"' in template
     assert "set interfaces {{recovery_interface}} unit 0 family ethernet-switching vlan members {{temporary_recovery_vlan_name}}" in template
+    assert "set protocols layer2-control nonstop-bridging" in template
+    assert 'provisioning_mode == "in-place-lab"' in template
+    assert "deactivate protocols layer2-control" in template
 
 
 def test_contract_keeps_bootstrap_variables_outside_template():
@@ -61,9 +64,11 @@ def test_contract_keeps_bootstrap_variables_outside_template():
     assert "management_prefix" in required
     assert "voice_vlan" in required
     assert "recovery_interface" in required
+    assert "provisioning_mode" in required
     assert "fxp0_management_ip" in bootstrap
     assert not required.intersection(bootstrap)
     assert "TEMPORARY_RECOVERY_PORT_OVERLAY" in contract["phase_contract"]["pre_stage"]["include"]
+    assert "PLATFORM_AWARE_NONSTOP_BRIDGING" in contract["phase_contract"]["pre_stage"]["include"]
     assert contract["safety"]["credentials_allowed"] is False
 
 
