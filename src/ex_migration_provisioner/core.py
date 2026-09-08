@@ -4,6 +4,7 @@ import re
 from copy import deepcopy
 
 from ex_migration_analyzer.core import canonical_bytes, sha256_bytes, utc_now
+from ex_migration_discovery.parsers import parse_lldp_neighbors_text
 
 
 class ProvisioningError(RuntimeError):
@@ -134,9 +135,14 @@ def _lacp_operational(text, physical):
     )
 
 
-def _lldp_system_name(text):
-    match = re.search(r"(?im)^\s*System name\s*:\s*(\S.*?)\s*$", text or "")
-    return match.group(1).strip() if match else None
+def _lldp_system_name(text, physical):
+    neighbors = parse_lldp_neighbors_text(text or "", "", "")
+    matches = [
+        item.get("remote_system_name")
+        for item in neighbors
+        if item.get("local_interface") == physical and item.get("remote_system_name")
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def observe_qfx(dev, device_policy, assignment, policy):
@@ -149,7 +155,7 @@ def observe_qfx(dev, device_policy, assignment, policy):
     ae_config = dev.cli("show configuration interfaces %s | display set" % ae, warning=False)
     terse = dev.cli("show interfaces %s terse" % physical, warning=False)
     lacp = dev.cli("show lacp interfaces %s extensive" % ae, warning=False)
-    lldp = dev.cli("show lldp neighbors interface %s detail" % physical, warning=False)
+    lldp = dev.cli("show lldp neighbors detail", warning=False)
 
     observed_hostname = str(facts.get("hostname") or "")
     observed_model = str(facts.get("model") or "")
@@ -161,7 +167,7 @@ def observe_qfx(dev, device_policy, assignment, policy):
     esi_all_active = bool(re.search(
         r"(?m)^set interfaces %s esi all-active\s*$" % re.escape(ae), ae_config or ""
     ))
-    neighbor = _lldp_system_name(lldp)
+    neighbor = _lldp_system_name(lldp, physical)
 
     checks = {
         "hostname_matches": observed_hostname.lower() == str(device_policy["expected_hostname"]).lower(),
