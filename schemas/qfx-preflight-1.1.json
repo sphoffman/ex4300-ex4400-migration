@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ex-migration/qfx-preflight-1.1.json",
+  "title": "Read-only QFX EX4400 pre-stage readiness result",
+  "type": "object",
+  "required": ["schema_version", "readiness_scope", "migration_id", "site_policy_id", "observed_at", "assignment", "devices", "pair_checks", "required_device_checks", "required_pair_checks", "deferred_checks", "revalidation_required", "result"],
+  "properties": {
+    "schema_version": {"const": "1.1"},
+    "readiness_scope": {"const": "EX4400_PRE_STAGE"},
+    "migration_id": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$"},
+    "site_policy_id": {"type": "string", "minLength": 1},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "assignment": {
+      "type": "object",
+      "required": ["migration_id", "physical_interface", "ae_interface"],
+      "properties": {
+        "migration_id": {"type": "string", "minLength": 1},
+        "physical_interface": {"type": "string", "pattern": "^et-[0-9]+/[0-9]+/[0-9]+$"},
+        "ae_interface": {"type": "string", "pattern": "^ae[0-9]+$"}
+      },
+      "additionalProperties": false
+    },
+    "devices": {
+      "type": "array", "minItems": 2, "maxItems": 2,
+      "items": {
+        "type": "object",
+        "required": ["role", "management_address", "expected_hostname", "expected_model", "observed_hostname", "observed_model", "physical_interface", "ae_interface", "configured_ae", "expected_lacp_system_id", "configured_lacp_system_id", "lldp_neighbor_system_name", "checks", "deferred_checks", "result"],
+        "properties": {
+          "role": {"enum": ["qfx-a", "qfx-b"]},
+          "management_address": {"type": "string"},
+          "expected_hostname": {"type": "string"},
+          "expected_model": {"type": "string"},
+          "observed_hostname": {"type": "string"},
+          "observed_model": {"type": "string"},
+          "physical_interface": {"type": "string"},
+          "ae_interface": {"type": "string"},
+          "configured_ae": {"type": ["string", "null"]},
+          "expected_lacp_system_id": {"type": "string"},
+          "configured_lacp_system_id": {"type": ["string", "null"]},
+          "lldp_neighbor_system_name": {"type": ["string", "null"]},
+          "checks": {"type": "object", "additionalProperties": {"type": "boolean"}},
+          "deferred_checks": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+          "result": {"enum": ["PASS", "FAIL"]}
+        },
+        "additionalProperties": false
+      }
+    },
+    "pair_checks": {
+      "type": "object",
+      "required": ["interface_symmetry", "ae_symmetry", "lacp_system_id_symmetry", "lldp_neighbor_symmetry"],
+      "properties": {
+        "interface_symmetry": {"type": "boolean"},
+        "ae_symmetry": {"type": "boolean"},
+        "lacp_system_id_symmetry": {"type": "boolean"},
+        "lldp_neighbor_symmetry": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "required_device_checks": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "required_pair_checks": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "deferred_checks": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "revalidation_required": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "result": {"enum": ["PASS", "FAIL"]}
+  },
+  "additionalProperties": false
+}
