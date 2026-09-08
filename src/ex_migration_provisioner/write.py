@@ -20,15 +20,20 @@ def _require(condition, message):
         raise WriteError(message)
 
 
-# Production identity enrollment is not enabled in 0.9.0. The lab path accepts
-# either real EX4400 hardware or the vJunos-switch platform used to exercise the
-# workflow. An EX4300 or unrelated Junos platform still fails closed.
-_LAB_TARGET_MODEL = re.compile(r"^(?:EX4400(?:-|$)|VJUNOS-SWITCH$)", re.IGNORECASE)
+_EX4400_MODEL = re.compile(r"^EX4400(?:-|$)", re.IGNORECASE)
+_VJUNOS_SWITCH_MODEL = re.compile(r"^(?:VJUNOS-SWITCH|EX9214)$", re.IGNORECASE)
 _VC_MEMBER = re.compile(
     r"^\s*(\d+)(?:\s+\(FPC\s+\d+\))?\s+"
     r"(Prsnt|NotPrsnt|Unprvsnd)\s+(\S+)\s+(\S+)(?:\s+|$)",
     re.IGNORECASE,
 )
+
+
+def _allowed_target_model(model, allow_vjunos_switch=False):
+    value = str(model or "")
+    if _EX4400_MODEL.match(value):
+        return True
+    return bool(allow_vjunos_switch and _VJUNOS_SWITCH_MODEL.match(value))
 
 
 def ssh_host_key_fingerprint(host, port=830, timeout=10):
@@ -88,7 +93,13 @@ def parse_virtual_chassis_status(text):
     return sorted(members, key=lambda item: item["member_id"])
 
 
-def observe_ex4400_identity(dev, address, port, host_key_sha256):
+def observe_ex4400_identity(
+    dev,
+    address,
+    port,
+    host_key_sha256,
+    allow_vjunos_switch=False,
+):
     facts = getattr(dev, "facts", {}) or {}
     hostname = str(facts.get("hostname") or "")
     model = str(facts.get("model") or "")
@@ -110,8 +121,8 @@ def observe_ex4400_identity(dev, address, port, host_key_sha256):
     _require(hostname, "EX4400 bootstrap hostname could not be observed")
     _require(model, "EX4400 model could not be observed")
     _require(
-        bool(_LAB_TARGET_MODEL.match(model)),
-        "bootstrap target model %r is not an EX4400-compatible lab target" % model,
+        _allowed_target_model(model, allow_vjunos_switch),
+        "bootstrap target model %r is not an EX4400-compatible target" % model,
     )
     _require(
         host_key_sha256 and host_key_sha256.startswith("SHA256:"),
@@ -120,6 +131,13 @@ def observe_ex4400_identity(dev, address, port, host_key_sha256):
     _require(
         members,
         "EX4400 virtual-chassis member inventory could not be observed",
+    )
+    _require(
+        all(
+            _allowed_target_model(item.get("model"), allow_vjunos_switch)
+            for item in members
+        ),
+        "virtual-chassis member model is not an EX4400-compatible target",
     )
 
     return {
@@ -169,9 +187,25 @@ def build_bootstrap_identity(
             "production requires independently pre-bound serial and SSH host-key identity"
         ),
     )
+
+    connection = observed.get("connection", {})
+    logical_address = str(connection.get("address") or "")
+    transport_address = str(connection.get("transport_address") or logical_address)
+    allow_vjunos_switch = bool(
+        logical_address
+        and transport_address
+        and transport_address != logical_address
+    )
+
+    device = observed.get("device", {})
+    _require(
+        _allowed_target_model(device.get("model"), allow_vjunos_switch),
+        "observed target model is not valid for this bootstrap transport",
+    )
+
     vc = bootstrap.get("virtual_chassis", {})
     expected_count = int(vc.get("member_count", 0))
-    members = observed.get("device", {}).get("members", [])
+    members = device.get("members", [])
     _require(
         expected_count >= 1,
         "bootstrap profile has invalid virtual-chassis member count",
@@ -189,11 +223,28 @@ def build_bootstrap_identity(
     )
     _require(
         all(
-            _LAB_TARGET_MODEL.match(str(item.get("model", "")))
+            _allowed_target_model(item.get("model"), allow_vjunos_switch)
             for item in members
         ),
-        "every observed virtual-chassis member must be an EX4400-compatible lab target",
+        "every observed virtual-chassis member must match the allowed target platform",
     )
+
+    # vJunos-switch is a single virtual switch built from an EX9214 reference
+    # platform. The EX9214 alias is allowed only when a separate lab transport
+    # endpoint was explicitly pinned; direct/bootstrap-address enrollment never
+    # accepts EX9214 as a substitute for real EX4400 hardware.
+    if any(
+        _VJUNOS_SWITCH_MODEL.match(str(item.get("model", "")))
+        for item in members
+    ):
+        _require(
+            allow_vjunos_switch,
+            "vJunos EX9214 identity requires an explicit lab transport override",
+        )
+        _require(
+            expected_count == 1,
+            "vJunos-switch identity binding supports only a single-member lab target",
+        )
 
     declared = vc.get("members") or []
     if declared:
