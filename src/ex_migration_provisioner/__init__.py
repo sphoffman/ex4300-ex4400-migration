@@ -1,4 +1,4 @@
-"""Digest-bound provisioning preparation, rendering, and guarded EX4400 pre-stage writes."""
+"""Digest-bound EX migration preparation, guarded writes, and attachment discovery."""
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 RENDERER_VERSION = "0.8.2"
