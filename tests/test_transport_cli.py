@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from jsonschema import Draft202012Validator
 
 from ex_migration_provisioner import cli
@@ -55,6 +56,16 @@ def identity(transport_address=None):
     }
 
 
+def _approved_plan(old_hostname="home1-ex4300-vc-fd-sw1203"):
+    return {
+        "plan": {
+            "template_variables": {
+                "old_hostname": old_hostname,
+            }
+        }
+    }
+
+
 def test_bound_transport_defaults_to_logical_fxp0_for_hardware():
     logical, transport, port = cli._bound_transport(identity())
     assert logical == "10.0.0.15"
@@ -85,3 +96,37 @@ def test_bootstrap_identity_schema_allows_pinned_transport_address():
     )
     Draft202012Validator.check_schema(schema)
     Draft202012Validator(schema).validate(identity("10.255.3.19"))
+
+
+def test_source_switch_hostname_is_rejected(monkeypatch):
+    monkeypatch.setattr(
+        cli.base,
+        "choose_approved_plan",
+        lambda _root: _approved_plan(),
+    )
+    value = identity("10.255.3.18")["observed"]
+    value["device"]["hostname"] = "home1-ex4300-vc-fd-sw1203"
+    with pytest.raises(cli.base.ProvisioningError, match="source switch hostname"):
+        cli._reject_source_switch(Path("/tmp/sw1203"), value)
+
+
+def test_non_source_bootstrap_hostname_is_allowed(monkeypatch):
+    monkeypatch.setattr(
+        cli.base,
+        "choose_approved_plan",
+        lambda _root: _approved_plan(),
+    )
+    value = identity("10.255.3.19")["observed"]
+    assert cli._reject_source_switch(Path("/tmp/sw1203"), value) is True
+
+
+def test_missing_old_hostname_fails_closed(monkeypatch):
+    monkeypatch.setattr(
+        cli.base,
+        "choose_approved_plan",
+        lambda _root: {"plan": {"template_variables": {}}},
+    )
+    with pytest.raises(cli.base.ProvisioningError, match="no source-switch hostname"):
+        cli._reject_source_switch(
+            Path("/tmp/sw1203"), identity("10.255.3.19")["observed"]
+        )
