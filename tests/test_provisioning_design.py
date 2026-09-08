@@ -3,6 +3,8 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
+from ex_migration_provisioner.prestage import validate_pre_cutover_site_policy
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -19,7 +21,9 @@ def test_new_design_json_is_parseable():
         "schemas/ex4400-template-contract-1.0.json",
         "schemas/bootstrap-profile-1.0.json",
         "schemas/qfx-site-policy-1.0.json",
+        "schemas/qfx-site-policy-1.1.json",
         "schemas/provisioning-package-1.0.json",
+        "schemas/provisioning-package-1.1.json",
         "schemas/render-manifest-1.0.json",
         "templates/ex4400/contract-v1.json",
     ]
@@ -73,14 +77,16 @@ def test_contract_keeps_bootstrap_variables_outside_template():
 
 
 def test_lab_qfx_site_policy_validates_against_schema():
-    schema = load("schemas/qfx-site-policy-1.0.json")
+    schema = load("schemas/qfx-site-policy-1.1.json")
     policy = load("config/qfx-site-policy.lab.json")
     Draft202012Validator.check_schema(schema)
     Draft202012Validator(schema).validate(policy)
+    assert validate_pre_cutover_site_policy(policy) == policy
 
 
-def test_lab_qfx_site_policy_matches_established_topology():
+def test_lab_qfx_site_policy_defers_attachment_until_post_cutover():
     policy = load("config/qfx-site-policy.lab.json")
+    assert policy["schema_version"] == "1.1"
     assert policy["environment"] == "lab"
     assert policy["production_eligible"] is False
 
@@ -100,17 +106,14 @@ def test_lab_qfx_site_policy_matches_established_topology():
         },
     }
 
-    assignments = {
-        item["migration_id"]: (item["physical_interface"], item["ae_interface"])
-        for item in policy["port_to_ae"]["assignments"]
+    assert "port_to_ae" not in policy
+    assert "lacp_system_id" not in policy
+    assert policy["ae_pool"] == {
+        "method": "discover-from-existing-qfx-config",
+        "ae_min": 0,
+        "ae_max": 2,
+        "migration_assignment_prebound": False,
     }
-    assert assignments == {
-        "dh4301": ("et-0/0/3", "ae0"),
-        "nh5302": ("et-0/0/4", "ae1"),
-        "sw1203": ("et-0/0/5", "ae2"),
-    }
-    assert policy["port_to_ae"]["ae_min"] == 0
-    assert policy["port_to_ae"]["ae_max"] == 2
     assert set(policy["stage_port_pools"]["lab-established"]) == {
         "et-0/0/3",
         "et-0/0/4",
@@ -120,30 +123,35 @@ def test_lab_qfx_site_policy_matches_established_topology():
     assert policy["management_vlan"] == {"name": "MGMT", "vlan_id": 163}
     assert policy["voice_vlan"] == {"name": "voip", "vlan_id": 1111}
     assert policy["temporary_recovery_vlan"] == {"name": "TEMP-RECOVERY", "vlan_id": 3999}
-
+    assert policy["precutover_qfx_baseline"] == {
+        "required_vlan_ids": [163, 3999],
+        "lacp_mode": "active",
+        "force_up": False,
+    }
     assert policy["esi"] == {
         "method": "auto-derive-type-1-lacp",
         "all_active": True,
     }
-    assert policy["lacp_system_id"] == {
-        "method": "explicit-per-ae",
-        "values": {
-            "ae0": "00:01:02:03:04:00",
-            "ae1": "00:01:02:03:04:01",
-            "ae2": "00:01:02:03:04:02",
-        },
-    }
 
     validation = policy["validation"]
+    assert validation["attachment_discovered_post_cutover"] is True
     assert validation["require_interface_symmetry"] is True
     assert validation["require_lldp"] is True
     assert validation["require_lacp_partner"] is True
+    assert validation["require_matching_ae"] is True
     assert validation["require_matching_lacp_system_id"] is True
     assert validation["operator_supplied_ports_allowed"] is False
 
 
+def test_qfx_policy_rejects_force_up():
+    policy = load("config/qfx-site-policy.lab.json")
+    policy["precutover_qfx_baseline"]["force_up"] = True
+    schema = load("schemas/qfx-site-policy-1.1.json")
+    assert not Draft202012Validator(schema).is_valid(policy)
+
+
 def test_qfx_site_policy_lab_model_exception_does_not_relax_production():
-    schema = load("schemas/qfx-site-policy-1.0.json")
+    schema = load("schemas/qfx-site-policy-1.1.json")
     policy = load("config/qfx-site-policy.lab.json")
     production = json.loads(json.dumps(policy))
     production["environment"] = "production"
