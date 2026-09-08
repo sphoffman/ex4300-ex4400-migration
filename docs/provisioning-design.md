@@ -1,169 +1,165 @@
 # Provisioning design boundary
 
-Release 0.10.0 realigns the provisioner to the actual physical migration sequence.
-The important rule is simple: **the EX4400 is fully pre-staged before it is connected
-to the QFX pair, so no pre-cutover command may depend on live QFX state or a known
-QFX attachment.**
+Release 0.11.0 follows the actual physical EX4300-to-EX4400 migration sequence.
+The central rule is that the EX4400 is fully pre-staged before it is connected to
+the QFX pair, so pre-cutover work cannot depend on live QFX state or a known QFX
+attachment.
 
-Renderer version remains 0.8.2. The EX4400 render semantics are unchanged; the
-change is to package scope and migration sequencing.
+Renderer version remains 0.8.2. Release 0.11.0 adds read-only post-cutover QFX
+attachment discovery; QFX writes remain disabled.
 
 ## Agreed migration sequence
 
 ### 1. Discover and plan from the existing EX4300
 
-Run discovery/analyzer/planner against the live EX4300 while the existing network is
-still intact. The approved plan carries the discovered VLAN inventory, management
-identity, endpoint correlations, and post-move port intent.
+Run discovery, analyzer, and planner against the live EX4300 while the existing
+network is intact. The approved plan carries discovered VLAN inventory, management
+identity, endpoint correlations, and post-move endpoint intent.
 
-No EX4400 or QFX write is part of this phase.
+### 2. Day-zero/bootstrap the replacement EX4400 over fxp0
 
-### 2. Day-zero/bootstrap the replacement EX4400 over `fxp0`
+Before production cabling is moved, the replacement EX4400 is reachable over its
+temporary fxp0 path. Day-zero provisioning is responsible for Virtual Chassis
+formation/member numbering, initial credentials, SSH/NETCONF, temporary fxp0
+addressing, and the minimum state required to reach the replacement switch.
 
-Before production cabling is moved, the new EX4400 is reachable through temporary
-`fxp0` connectivity provided by the existing environment. Day-zero provisioning is
-responsible for:
-
-- Virtual Chassis formation/member numbering;
-- initial administrative credentials;
-- SSH/NETCONF;
-- temporary `fxp0` addressing;
-- other minimum bootstrap state needed to reach the replacement switch.
-
-Those settings are intentionally outside the migration render. `identify` then pins
-the exact replacement-switch identity: logical management address, reachable
-transport endpoint, SSH host key, chassis serial/model, hostname, and VC member
-inventory.
+`identify` then pins the replacement-switch identity: logical management address,
+reachable transport endpoint, SSH host key, chassis serial/model, hostname, and VC
+member inventory.
 
 ### 3. Pre-stage the EX4400 before cutover
 
-`prepare`, `render`, and `run` build and apply everything that can safely be known
-before physical cutover:
+`prepare`, `render`, and `run` apply everything safely knowable before the move:
 
 - target hostname;
 - management IRB/default route;
 - all approved VLAN definitions, including configured-but-unobserved VLANs;
 - voice VLAN and DHCP-trust intent;
 - SNMP/syslog/NTP identity;
-- LLDP/LLDP-MED, RSTP, storm control, IGMP snooping, and other boilerplate;
-- EX4400 `ae0` with both uplink members and normal active LACP;
-- `TEMP-RECOVERY` VLAN and the dedicated recovery-port overlay.
+- LLDP/LLDP-MED, RSTP, storm control, IGMP snooping, and boilerplate;
+- EX4400 ae0 with both uplink members and normal active LACP;
+- TEMP-RECOVERY VLAN and the dedicated recovery-port overlay.
 
-Endpoint-specific data-VLAN memberships and descriptions remain excluded until
-after physical cutover.
+Endpoint-specific data-VLAN memberships and descriptions remain excluded.
 
-**No QFX connection occurs in this phase.**
+**No QFX connection occurs in this phase.** `prepare` is fully offline with respect
+to the QFX pair.
 
 ### 4. Perform the physical cutover
 
-Move the physical topology:
+Move the EX4300 uplinks to the EX4400, move the upstream ends from the EX9200
+environment to the QFX5700 pair, and move endpoint/client cables to the EX4400.
 
-- EX4300 uplinks to the EX4400;
-- upstream ends from the EX9200 environment to the QFX5700 pair;
-- endpoint/client cables from EX4300 to EX4400.
-
-The QFX pair is assumed to have been independently pre-provisioned before migration
-work begins. Migration-facing physical ports already map to prebuilt AEs, and those
-AEs already carry the minimum migration baseline needed for initial connectivity:
+The QFX pair is independently pre-provisioned before migration work begins.
+Migration-facing physical ports already map to prebuilt AEs. Those AEs initially
+carry exactly the migration baseline required to establish connectivity:
 management VLAN 163 and TEMP-RECOVERY VLAN 3999.
 
-The migration workflow does **not** know which physical QFX port/AE a specific
-closet will use before the cables are moved.
+The migration workflow does not know which physical QFX port or AE a closet will
+use until after these cables are moved.
 
-### 5. Post-cutover QFX attachment discovery
+### 5. Discover and bind the post-cutover QFX attachment
 
-Only after the new physical cabling exists does the migration automation connect
-read-only to the QFX pair.
+After the physical cabling exists, run:
 
-The discovery algorithm will:
+```text
+ex-migration-provisioner discover-attachment <migration-id>
+```
 
-1. locate the target EX4400 by LLDP on each QFX;
-2. require the discovered physical interface number to be the same on both QFXs;
-3. verify the discovered interface is inside an allowed migration-facing port pool
-   and not excluded/reserved;
-4. read the existing QFX interface configuration to learn which `aeN` owns that
-   physical interface;
-5. require both QFXs to resolve to the same `aeN`;
-6. read and compare the already-configured LACP system ID/ESI/LACP baseline;
-7. bind that observed attachment into an immutable post-cutover discovery artifact.
+This command is read-only. It connects to both QFXs and:
 
-Physical interfaces and AE numbers are therefore **observed after cutover**, not
-operator-entered and not pre-bound to migration IDs.
+1. derives the expected target EX4400 hostname from the approved migration plan;
+2. finds exactly one LLDP neighbor with that hostname on each QFX;
+3. requires each discovered local interface to be in the allowed migration-facing
+   port pool and not excluded;
+4. requires the physical interface name to be identical on both QFXs;
+5. reads the existing physical-interface configuration to learn its configured
+   aeN rather than allocating or accepting an operator-supplied AE;
+6. requires the learned aeN to be identical on both QFXs and inside the allowed AE
+   range;
+7. verifies active LACP with no force-up, all-active auto-derived ESI, and a
+   configured LACP system ID;
+8. requires the LACP system ID to match across the QFX pair;
+9. requires the discovered AE to contain exactly the pre-cutover migration baseline
+   VLAN IDs 163 and 3999;
+10. requires the physical member to be collecting/distributing under normal LACP.
+
+A passing observation is shown to the operator for explicit approval. Approval
+creates an immutable artifact under:
+
+```text
+snapshots/migrations/<migration-id>/qfx-attachments/<attachment-id>/
+  attachment.json
+  integrity.json
+```
+
+The artifact binds the approved plan digest, site-policy digest, QFX SSH host-key
+fingerprints, QFX identities, target EX hostname, LLDP evidence, physical interface,
+existing AE, LACP system ID, baseline VLANs, and pair checks. It authorizes no QFX
+or EX4400 writes.
+
+If either cable is landed on the wrong physical port/AE, discovery fails and no
+attachment artifact is created.
 
 ### 6. Post-cutover provisioning and validation
 
-After the attachment is discovered and approved, the post-cutover transaction can
-add the migration's required production VLANs to the discovered QFX AE and apply the
-endpoint-specific EX4400 interface configuration.
+The next implementation phase will consume the approved attachment artifact rather
+than rediscovering or accepting a port from the operator. It will:
 
-QFX changes must be a coordinated two-device transaction with locks, commit-check,
-exact diff approval, commit-confirmed, symmetric validation, and rollback of both
-sides on failure/asymmetry.
+1. revalidate the pinned QFX identities/host keys and discovered attachment;
+2. coordinate both QFX candidate databases;
+3. add the migration's production VLANs to the discovered AE on both QFXs;
+4. commit-check both candidates and present exact diffs for approval;
+5. commit-confirm both devices as one coordinated transaction;
+6. validate symmetry, LLDP, normal LACP, and EX4400 in-band management;
+7. apply endpoint descriptions/data-VLAN memberships to the EX4400;
+8. validate endpoint/VLAN state;
+9. retain TEMP-RECOVERY for the old-switch recovery window and clean it up only
+   after migration completion.
 
-The expected order is:
-
-1. validate discovered QFX attachment;
-2. provision the discovered AE on both QFXs with the required production VLANs;
-3. validate normal dual-sided LACP and LLDP;
-4. prove EX4400 in-band management over VLAN 163;
-5. apply endpoint descriptions/data-VLAN memberships on the EX4400;
-6. validate endpoint/VLAN state;
-7. retain TEMP-RECOVERY for the old-switch recovery window, then remove the
-   migration-only overlay when complete.
+QFX failure/asymmetry must roll back both QFXs; one-sided success is not an
+acceptable outcome.
 
 ## Normal LACP is the cabling safety mechanism
 
-Migration AEs use normal active LACP. `force-up` is explicitly prohibited by the
-site policy.
+Migration AEs use normal active LACP. `force-up` is explicitly prohibited by site
+policy.
 
-Each prebuilt AE on the QFX pair is expected to present a distinct LACP system ID,
-while matching AE numbers across the two QFXs present the same system ID. If the two
-EX4400 uplink cables are accidentally landed on different prebuilt AEs, the EX4400
-sees incompatible LACP partner identities. Both links therefore cannot participate
-in one valid aggregate; the incompatible link remains non-forwarding/detached while
-a compatible member can still provide a management path.
+Matching AE numbers across the QFX pair are expected to present the same LACP
+system ID, while different AEs present different system IDs. If an EX4400's two
+uplinks are accidentally landed on different prebuilt AEs, the EX4400 sees
+incompatible partner identities. The incompatible member cannot participate in the
+same valid aggregate, which protects forwarding while still allowing the valid
+member to provide a troubleshooting/management path.
 
-That is preferable to `force-up`: normal LACP both protects production forwarding
-and leaves enough connectivity for LLDP/QFX discovery to identify the cabling
-mistake.
-
-Post-cutover automation must still independently verify LLDP, physical-interface
-symmetry, AE symmetry, LACP system-ID symmetry, and collecting/distributing state
-before any production VLAN write is authorized.
+Post-cutover discovery independently proves physical-interface symmetry, AE
+symmetry, LACP system-ID symmetry, and collecting/distributing state before the
+attachment can be approved.
 
 ## QFX site policy 1.1
 
-The QFX policy no longer contains a migration-ID-to-port/AE mapping. It binds only
-facts that are known before cutover:
+The site policy contains no migration-ID-to-port/AE assignment. It binds only facts
+known before cutover:
 
-- QFX pair identities/management addresses;
+- QFX pair identities and management addresses;
 - allowed migration-facing physical-port pools and exclusions;
 - permitted AE range;
 - management, voice, and TEMP-RECOVERY VLAN identities;
-- expected pre-cutover QFX baseline (VLAN 163 + 3999, active LACP, no force-up);
+- expected pre-cutover baseline: VLAN 163 + 3999, active LACP, no force-up;
 - ESI method;
-- required post-cutover LLDP/LACP/symmetry validation rules.
+- required post-cutover LLDP/LACP/symmetry checks.
 
-The attachment method is explicitly `discover-from-existing-qfx-config`, and
-`migration_assignment_prebound` must be false.
+Attachment method is `discover-from-existing-qfx-config`, and
+`migration_assignment_prebound` must remain false.
 
 ## Pre-cutover package 1.1
 
-`prepare <migration-id>` is now fully offline. It accepts no QFX username/password,
-NETCONF port, or host-key override because it performs no QFX connection.
+`prepare <migration-id>` accepts no QFX credentials or NETCONF options and opens no
+QFX connection. It binds the approved plan/approval, template/contract, static site
+policy, bootstrap profile, settings, renderer version, and normalized EX4400 render
+variables.
 
-The package binds:
-
-- approved plan and approval digests;
-- EX4400 template/contract digests;
-- static QFX site-policy digest;
-- bootstrap-profile digest;
-- effective settings digest;
-- renderer version;
-- normalized render variables.
-
-It deliberately contains no QFX preflight artifact or QFX preflight digest. Its QFX
-metadata records:
+It contains no QFX preflight artifact/digest. Its QFX state is explicitly:
 
 ```text
 attachment_state: UNKNOWN_UNTIL_POST_CUTOVER_DISCOVERY
@@ -172,50 +168,24 @@ ae_interface: null
 force_up: false
 ```
 
-Its safety contract explicitly states that QFX connections are disallowed and that
-no QFX attachment is pre-bound.
-
-Legacy package schema 1.0 artifacts remain immutable historical records and can
-still be read for audit/history, but new `prepare` runs create schema 1.1 packages.
-
-## EX4400 bootstrap identity
-
-Before a write session can be opened, `identify <migration-id>` reads the SSH server
-host key and connects read-only to the EX4400. It records the logical bootstrap
-address/port, SHA256 SSH host-key fingerprint, hostname, model, chassis serial, and
-VC member serial/model inventory. The operator explicitly approves that exact
-identity.
-
-For vJunos/vrnetlab, the logical Junos `fxp0` address remains `10.0.0.15`, while an
-explicit lab transport endpoint can point at the containerlab management address.
-The transport endpoint is pinned into the identity; `run` accepts no arbitrary
-transport override.
-
-The vJunos EX9214 model alias remains lab-only and single-member-only.
+Legacy package 1.0 artifacts remain immutable history; new prepare runs create
+package schema 1.1.
 
 ## EX4400 write safety
 
-`run` is the only currently implemented write command and remains LAB_ONLY. It:
+`run` remains the only implemented write command and remains LAB_ONLY. It revalidates
+package/render/identity integrity, SSH host key, and chassis/VC identity; locks the
+candidate; performs merge + commit-check; displays the exact candidate diff and
+SHA256 for explicit approval; uses commit confirmed; validates migration-critical
+running state; rolls back on failure; and confirms only after validation passes.
 
-- revalidates package/render/identity integrity;
-- rechecks SSH host key and chassis/VC identity;
-- locks the candidate;
-- loads the render with merge;
-- runs commit-check;
-- displays the exact candidate diff and SHA256;
-- requires explicit operator approval;
-- commits with `commit confirmed`;
-- validates migration-critical running state;
-- explicitly rolls back on validation failure;
-- issues final confirmation only after validation passes.
-
-QFX connections and writes remain disabled in this command.
+`run` never connects to or writes the QFX pair.
 
 ## Stale artifact recovery
 
-Packages/renders are immutable and digest-bound. If a template, contract, settings
-file, site policy, bootstrap profile, or renderer version changes, the operator is
-told to rebuild only the affected downstream artifacts:
+Packages and renders are immutable and digest-bound. If a template, contract,
+settings file, site policy, bootstrap profile, or renderer version changes, rebuild
+only the affected downstream artifacts:
 
 ```text
 prepare <migration-id>
@@ -223,13 +193,12 @@ render <migration-id>
 run <migration-id>
 ```
 
-`prepare` is offline and never refreshes a QFX preflight. If the bootstrap profile
-changes, `identify` must also be repeated. Discovery/analyzer/planner are rerun only
-when their own inputs changed.
+If the bootstrap profile changes, `identify` must also be repeated. Discovery,
+analyzer, and planner are rerun only when their own inputs change.
 
 ## Current implementation boundary
 
-Implemented now:
+Implemented in 0.11.0:
 
 ```text
 EX4300 discovery/analyzer/planner
@@ -239,20 +208,22 @@ EX4400 day-zero identity binding
 offline pre-cutover package/render
         ->
 guarded EX4400 pre-stage write
+        ->
+physical cutover (operator action)
+        ->
+read-only QFX LLDP attachment discovery
+        ->
+approved physical-port/AE binding artifact
 ```
 
 Next implementation target:
 
 ```text
-physical cutover
-        ->
-read-only QFX LLDP attachment discovery
-        ->
-approved discovered physical-port/AE binding
-        ->
 coordinated dual-QFX VLAN transaction
+        ->
+EX4400 in-band validation
         ->
 EX4400 post-move endpoint provisioning
         ->
-end-to-end validation/recovery cleanup
+end-to-end validation and recovery cleanup
 ```
