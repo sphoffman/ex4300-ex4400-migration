@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ex-migration/prestage-transaction-1.0.json",
+  "title": "Guarded EX4400 pre-stage write transaction",
+  "type": "object",
+  "required": ["schema_version", "transaction_id", "migration_id", "created_at", "phase", "tool_version", "inputs", "target", "candidate", "approval", "commit", "validation", "safety"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "transaction_id": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+    "migration_id": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string", "minLength": 1},
+    "phase": {"const": "pre_stage"},
+    "tool_version": {"type": "string", "minLength": 1},
+    "inputs": {
+      "type": "object",
+      "required": ["package_id", "package_digest", "render_id", "render_manifest_digest", "render_config_digest", "identity_id", "identity_digest", "bootstrap_profile_digest"],
+      "properties": {
+        "package_id": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+        "package_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "render_id": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+        "render_manifest_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "render_config_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "identity_id": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+        "identity_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "bootstrap_profile_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "target": {"type": "object"},
+    "candidate": {
+      "type": "object",
+      "required": ["load_operation", "commit_check", "diff_sha256"],
+      "properties": {
+        "load_operation": {"const": "merge"},
+        "commit_check": {"const": "PASS"},
+        "diff_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "approval": {
+      "type": "object",
+      "required": ["approved", "approved_at", "scope"],
+      "properties": {
+        "approved": {"const": true},
+        "approved_at": {"type": "string", "minLength": 1},
+        "scope": {"const": "exact-candidate-diff"}
+      },
+      "additionalProperties": false
+    },
+    "commit": {
+      "type": "object",
+      "required": ["mode", "confirm_minutes", "status", "confirmed"],
+      "properties": {
+        "mode": {"const": "confirmed"},
+        "confirm_minutes": {"type": "integer", "minimum": 1, "maximum": 60},
+        "status": {"enum": ["APPROVED_NOT_COMMITTED", "CONFIRMED_PENDING_VALIDATION", "ROLLED_BACK_AFTER_VALIDATION_FAILURE", "AUTO_ROLLBACK_PENDING", "COMMITTED_AND_CONFIRMED"]},
+        "confirmed": {"type": "boolean"},
+        "commit_confirmed_at": {"type": "string"},
+        "rollback_at": {"type": "string"},
+        "rollback_error": {"type": "string"},
+        "confirmed_at": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "validation": {
+      "type": "object",
+      "required": ["result", "checks"],
+      "properties": {
+        "result": {"enum": ["PENDING", "PASS", "FAIL"]},
+        "checks": {"type": "array", "items": {"type": "string"}},
+        "error": {"type": "string"},
+        "validated_at": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "safety": {
+      "type": "object",
+      "required": ["ex4400_write_authorized", "qfx_connections_allowed", "qfx_writes_allowed", "rollback_on_validation_failure"],
+      "properties": {
+        "ex4400_write_authorized": {"const": true},
+        "qfx_connections_allowed": {"const": false},
+        "qfx_writes_allowed": {"const": false},
+        "rollback_on_validation_failure": {"const": true}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
