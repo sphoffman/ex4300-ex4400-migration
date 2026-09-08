@@ -1,8 +1,8 @@
 # Provisioning design boundary
 
-Release 0.8.0 adds deterministic **offline EX4400 pre-stage rendering** on top of
+Release 0.8.1 adds deterministic **offline EX4400 pre-stage rendering** on top of
 the read-only provisioning preparation introduced in 0.7.x. The `prepare` path
-may connect to the QFX pair only for read-only preflight. The new `render` path
+may connect to the QFX pair only for read-only preflight. The `render` path
 performs no device connections. No EX4400 or QFX configuration lock, load,
 commit, or write implementation exists.
 
@@ -30,15 +30,27 @@ from the migration template. Lab defaults are `10.0.0.15/24` with gateway
 `10.0.0.2`. Production uses `local-fxp0-mac`; asserted and in-place-lab modes are
 lab-only and can never regain production eligibility downstream.
 
+The bootstrap VC topology also determines the recovery access port. A single-member
+lab resolves to `ge-0/0/47`. For a multi-member VC, the member inventory must be
+explicit and complete; the package selects port 47 on the highest declared member.
+It fails closed rather than guessing when a multi-member inventory is incomplete.
+
 ## Pre-stage
 
 Through `fxp0`, pre-stage eventually applies the authoritative boilerplate, all
 approved configured VLANs (including configured-but-unobserved VLANs), voice and
 management VLANs, `TEMP-RECOVERY` VLAN 3999, management IRB/default route/SNMP
-identity, and `ae0` with `vlan members all`. Endpoint descriptions and access-VLAN
+identity, and `ae0` with `vlan members all`. Endpoint descriptions and data-VLAN
 assignments remain excluded.
 
-`ex-migration-provisioner render <migration-id>` now renders that EX4400 pre-stage
+The recovery port is the sole intentional physical-port VLAN assignment in
+pre-stage. It remains part of the normal `edge_ports` range and receives a temporary
+access-VLAN overlay for `TEMP-RECOVERY`. For the single-member lab this renders as
+`ge-0/0/47 -> TEMP-RECOVERY`. Once the migration and old-switch recovery window are
+complete, removing that one VLAN-membership statement returns port 47 to the same
+ordinary edge-port behavior as the other client ports.
+
+`ex-migration-provisioner render <migration-id>` renders that EX4400 pre-stage
 configuration offline from the newest integrity-valid provisioning package (or an
 explicit `--package-id`). Before rendering it revalidates the current settings,
 template, template contract, QFX site policy, bootstrap profile, QFX preflight,
@@ -47,9 +59,10 @@ input makes the package stale and rendering fails closed.
 
 The rendered configuration uses the discovered management prefix rather than
 assuming `/24`. Static validation rejects unresolved template syntax, credential
-material, `fxp0` configuration, endpoint descriptions, endpoint data-VLAN
-assignments, missing or unapproved VLAN definitions, missing management identity,
-missing `ae0` trunking, and missing DHCP-trust intent. A successful render creates:
+material, `fxp0` configuration, endpoint descriptions, any physical access-VLAN
+assignment other than the exact package-bound TEMP-RECOVERY overlay, missing or
+unapproved VLAN definitions, missing management identity, missing `ae0` trunking,
+and missing DHCP-trust intent. A successful render creates:
 
 ```
 snapshots/migrations/<migration-id>/packages/<package-id>/renders/<render-id>/
@@ -96,7 +109,7 @@ write phase.
 ## Operator flow
 
 The intended final public CLI remains `prepare`, `run`, `status`, and `recover`.
-During the safety-first implementation sequence, release 0.8.0 also exposes an
+During the safety-first implementation sequence, release 0.8.1 also exposes an
 explicit `render` command so rendered artifacts can be inspected before any `run`
 implementation exists. `run`, `status`, and `recover` remain future work. Active
 silent-port probing remains a separate, explicit, fail-closed change-run component
