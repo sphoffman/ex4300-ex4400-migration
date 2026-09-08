@@ -1,13 +1,14 @@
 {
   "schema_version": "1.0",
   "template_id": "campus-ex4400-v1",
-  "template_version": "1.0.0-design",
+  "template_version": "1.1.0",
   "render_format": "junos-set",
   "variables": {
-    "required_scalars": ["new_hostname", "management_ip", "management_gateway", "management_vlan", "management_vlan_id", "voice_vlan", "voice_vlan_id", "snmp_location", "snmp_engine_id", "temporary_recovery_vlan_name", "temporary_recovery_vlan_id"],
-    "required_collections": ["configured_vlans", "post_move_endpoint_assignments"],
+    "required_scalars": ["new_hostname", "management_ip", "management_prefix", "management_gateway", "management_vlan_name", "management_vlan_id", "voice_vlan", "voice_vlan_id", "snmp_location", "snmp_engine_id", "temporary_recovery_vlan_name", "temporary_recovery_vlan_id"],
+    "required_collections": ["configured_vlans"],
+    "post_move_required_collections": ["post_move_endpoint_assignments"],
     "bootstrap_only": ["fxp0_management_ip", "fxp0_prefix_length", "fxp0_management_gateway", "virtual_chassis", "bootstrap_authentication"],
-    "metadata_only": ["migration_id", "old_hostname", "plan_id"]
+    "metadata_only": ["migration_id", "old_hostname", "plan_id", "qfx"]
   },
   "phase_contract": {
     "pre_stage": {
