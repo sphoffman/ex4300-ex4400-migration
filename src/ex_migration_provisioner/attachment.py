@@ -24,10 +24,16 @@ _SYSTEM_ID = re.compile(
     r"(?im)^set interfaces (?P<ae>ae\d+) aggregated-ether-options lacp "
     r"system-id (?P<value>[0-9a-f]{2}(?::[0-9a-f]{2}){5})\s*$"
 )
-_VLAN_DEF = re.compile(r"(?m)^set vlans (?P<name>\S+) vlan-id (?P<id>\d+)\s*$")
+_VLAN_DEF = re.compile(
+    r"(?m)^set (?:routing-instances \S+ )?vlans (?P<name>\S+) "
+    r"vlan-id (?P<id>\d+)\s*$"
+)
 _VLAN_MEMBER = re.compile(
     r"(?m)^set interfaces (?P<ae>ae\d+) unit 0 family ethernet-switching "
     r"vlan members (?P<value>\S+)\s*$"
+)
+_LACP_CONFIGURED = re.compile(
+    r"(?m)^set interfaces (?P<ae>ae\d+) aggregated-ether-options lacp(?:\s|$)"
 )
 
 
@@ -68,28 +74,48 @@ def _system_id(config_text, ae):
     return matches[0] if len(matches) == 1 else None
 
 
-def _vlan_ids(vlan_config, ae_config, ae):
-    names = {
-        match.group("name"): int(match.group("id"))
-        for match in _VLAN_DEF.finditer(vlan_config or "")
+def _vlan_definitions(*config_texts):
+    by_name = {}
+    for config_text in config_texts:
+        for match in _VLAN_DEF.finditer(config_text or ""):
+            by_name.setdefault(match.group("name"), set()).add(int(match.group("id")))
+    resolved = {
+        name: next(iter(ids))
+        for name, ids in by_name.items()
+        if len(ids) == 1
     }
+    ambiguous = {
+        name: sorted(ids)
+        for name, ids in by_name.items()
+        if len(ids) > 1
+    }
+    return resolved, ambiguous
+
+
+def _vlan_ids(vlan_configs, ae_config, ae):
+    names, ambiguous = _vlan_definitions(*vlan_configs)
     tokens = [
         match.group("value")
         for match in _VLAN_MEMBER.finditer(ae_config or "")
         if match.group("ae") == ae
     ]
     if "all" in tokens:
-        return None, ["all"]
+        return None, ["all"], ambiguous
     ids = []
     unresolved = []
     for token in tokens:
         if token.isdigit():
             ids.append(int(token))
+        elif token in ambiguous:
+            unresolved.append("%s(ambiguous:%s)" % (
+                token,
+                ",".join(str(value) for value in ambiguous[token]),
+            ))
         elif token in names:
             ids.append(names[token])
         else:
             unresolved.append(token)
-    return sorted(set(ids)), sorted(set(unresolved))
+    return sorted(set(ids)), sorted(set(unresolved)), ambiguous
 
 
 def _lacp_operational(text, physical):
@@ -126,10 +152,12 @@ def observe_qfx_attachment(dev, device_policy, policy, expected_ex_hostname, hos
     ae = None
     ae_config = ""
     lacp_text = ""
-    vlan_config = ""
+    top_level_vlan_config = ""
+    routing_instance_vlan_config = ""
     system_id = None
     vlan_ids = None
     unresolved_vlans = []
+    ambiguous_vlans = {}
 
     if physical:
         physical_config = dev.cli(
@@ -146,9 +174,20 @@ def observe_qfx_attachment(dev, device_policy, policy, expected_ex_hostname, hos
             "show lacp interfaces %s extensive" % ae,
             warning=False,
         ) or ""
-        vlan_config = dev.cli("show configuration vlans | display set", warning=False) or ""
+        top_level_vlan_config = dev.cli(
+            "show configuration vlans | display set",
+            warning=False,
+        ) or ""
+        routing_instance_vlan_config = dev.cli(
+            'show configuration routing-instances | display set | match " vlan-id "',
+            warning=False,
+        ) or ""
         system_id = _system_id(ae_config, ae)
-        vlan_ids, unresolved_vlans = _vlan_ids(vlan_config, ae_config, ae)
+        vlan_ids, unresolved_vlans, ambiguous_vlans = _vlan_ids(
+            (top_level_vlan_config, routing_instance_vlan_config),
+            ae_config,
+            ae,
+        )
 
     ae_number = _ae_number(ae)
     ae_pool = policy["ae_pool"]
@@ -160,11 +199,10 @@ def observe_qfx_attachment(dev, device_policy, policy, expected_ex_hostname, hos
             ae_config,
         )
     )
-    lacp_active = bool(
-        ae and re.search(
-            r"(?m)^set interfaces %s aggregated-ether-options lacp active\s*$"
-            % re.escape(ae),
-            ae_config,
+    lacp_configured = bool(
+        ae and any(
+            match.group("ae") == ae
+            for match in _LACP_CONFIGURED.finditer(ae_config)
         )
     )
     esi_auto = bool(
@@ -192,11 +230,12 @@ def observe_qfx_attachment(dev, device_policy, policy, expected_ex_hostname, hos
         "physical_maps_to_one_ae": bool(ae),
         "ae_in_allowed_range": ae_number is not None
         and ae_pool["ae_min"] <= ae_number <= ae_pool["ae_max"],
-        "lacp_active": lacp_active,
+        "lacp_configured": lacp_configured,
         "lacp_force_up_absent": not force_up_present,
         "lacp_system_id_present": bool(system_id),
         "esi_auto_derive_type_1_lacp": esi_auto,
         "esi_all_active": esi_all_active,
+        "baseline_vlan_names_unambiguous": not ambiguous_vlans,
         "baseline_vlans_exact": vlan_ids == required_vlans and not unresolved_vlans,
         "lacp_collecting_distributing": bool(ae)
         and _lacp_operational(lacp_text, physical),
