@@ -69,6 +69,7 @@ def _render_jinja(template_text, variables):
 
 def validate_pre_stage_render(rendered, package):
     variables = package["variables"]
+    provisioning_mode = package.get("provisioning_mode")
     lines = [line.strip() for line in rendered.splitlines() if line.strip() and not line.lstrip().startswith("#")]
     line_set = set(lines)
 
@@ -80,6 +81,23 @@ def validate_pre_stage_render(rendered, package):
         _require(not any(token in line for line in lines), "pre-stage render contains forbidden credential material: %s" % token)
     _require(not any(re.search(r"(^|\s)fxp0(?:\s|\.|$)", line) for line in lines), "migration template must not configure fxp0")
     _require(not any(re.match(r"^set interfaces ge-\d+/\d+/\d+ description ", line) for line in lines), "pre-stage render contains endpoint descriptions")
+
+    nonstop_statement = "set protocols layer2-control nonstop-bridging"
+    nonstop_deactivation = "deactivate protocols layer2-control"
+    _require(
+        nonstop_statement in line_set,
+        "pre-stage render must declare layer2-control nonstop-bridging intent",
+    )
+    if provisioning_mode == "in-place-lab":
+        _require(
+            nonstop_deactivation in line_set,
+            "in-place-lab render must deactivate layer2-control for the vJunos platform constraint",
+        )
+    else:
+        _require(
+            nonstop_deactivation not in line_set,
+            "non-lab-in-place render must not deactivate layer2-control nonstop-bridging",
+        )
 
     recovery_interface = variables["recovery_interface"]
     _require(bool(re.fullmatch(r"ge-[0-9]/0/47", recovery_interface)), "recovery interface is outside the standard edge-port range")
@@ -154,6 +172,7 @@ def validate_pre_stage_render(rendered, package):
             "NO_CREDENTIAL_MATERIAL",
             "NO_FXP0_CONFIGURATION",
             "NO_ENDPOINT_DESCRIPTIONS",
+            "NONSTOP_BRIDGING_MODE_VALID",
             "ONLY_TEMP_RECOVERY_PHYSICAL_VLAN_ASSIGNMENT",
             "TEMP_RECOVERY_PORT_PRESENT",
             "ALL_APPROVED_VLANS_PRESENT",
@@ -167,7 +186,8 @@ def validate_pre_stage_render(rendered, package):
 def render_pre_stage(template_text, contract, package, renderer_version):
     validate_renderable_package(package, renderer_version)
     _validate_contract(contract)
-    variables = package.get("variables", {})
+    variables = dict(package.get("variables", {}))
+    variables["provisioning_mode"] = package.get("provisioning_mode")
     _validate_variables(contract, variables)
     rendered = _render_jinja(template_text, variables)
     validation = validate_pre_stage_render(rendered, package)
