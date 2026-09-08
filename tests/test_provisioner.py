@@ -16,9 +16,10 @@ class FakeDevice:
     def __init__(self, hostname, model, physical, ae, system_id, neighbor, up=True, lacp_up=True):
         self.facts = {"hostname": hostname, "model": model}
         self.physical = physical; self.ae = ae; self.system_id = system_id; self.neighbor = neighbor
-        self.up = up; self.lacp_up = lacp_up
+        self.up = up; self.lacp_up = lacp_up; self.commands = []
 
     def cli(self, command, warning=False):
+        self.commands.append(command)
         if command == "show configuration interfaces %s | display set" % self.physical:
             return "set interfaces %s ether-options 802.3ad %s\n" % (self.physical, self.ae)
         if command == "show configuration interfaces %s | display set" % self.ae:
@@ -32,8 +33,20 @@ class FakeDevice:
             return "%s %s\n" % (self.physical, "up up" if self.up else "down down")
         if command == "show lacp interfaces %s extensive" % self.ae:
             return "Aggregated interface: %s\n  %s Actor %s\n" % (self.ae, self.physical, "Collecting distributing" if self.lacp_up else "Detached")
-        if command == "show lldp neighbors interface %s detail" % self.physical:
-            return "Local Interface : %s\nSystem name : %s\n" % (self.physical, self.neighbor)
+        if command == "show lldp neighbors detail":
+            return "\n".join([
+                "LLDP Neighbor Information:",
+                "Local Interface    : et-0/0/0",
+                "Parent Interface   : -",
+                "Port ID            : ge-0/0/0",
+                "System name        : unrelated-switch",
+                "LLDP Neighbor Information:",
+                "Local Interface    : %s" % self.physical,
+                "Parent Interface   : -",
+                "Port ID            : ae0",
+                "System name        : %s" % self.neighbor,
+                "",
+            ])
         raise AssertionError("unexpected command: %s" % command)
 
 
@@ -73,14 +86,24 @@ def package_for(preflight):
     plan = {"plan_id": "0123456789abcdef", "migration_id": "sw1203", "eligibility": {"production_eligible": False}, "template_variables": {"migration_id": "sw1203", "hostname": "sw4403"}}
     approval = {"plan_id": plan["plan_id"], "plan_digest": digest("a"), "production_eligible": False}
     bootstrap = {"environment": "lab", "provisioning_mode": "in-place-lab", "production_eligible": False}
-    return build_package(plan, digest("a"), approval, digest("c"), digest("d"), digest("e"), digest("f"), qfx_policy, digest("1"), bootstrap, digest("2"), preflight, digest("b"), "0.7.0")
+    return build_package(plan, digest("a"), approval, digest("c"), digest("d"), digest("e"), digest("f"), qfx_policy, digest("1"), bootstrap, digest("2"), preflight, digest("b"), "0.7.1")
 
 
 def test_qfx_preflight_passes_for_established_sw1203_mapping():
-    value = run_qfx_preflight(policy(), "sw1203", devices_for(), observed_at="2026-09-08T01:00:00Z")
+    devices = devices_for()
+    value = run_qfx_preflight(policy(), "sw1203", devices, observed_at="2026-09-08T01:00:00Z")
     assert value["result"] == "PASS"
     assert value["assignment"] == {"migration_id": "sw1203", "physical_interface": "et-0/0/5", "ae_interface": "ae2"}
     assert all(value["pair_checks"].values())
+    for device in devices.values():
+        assert "show lldp neighbors detail" in device.commands
+        assert not any(command.startswith("show lldp neighbors interface ") for command in device.commands)
+
+
+def test_qfx_preflight_selects_lldp_neighbor_for_policy_interface():
+    devices = devices_for(neighbor="sw1203")
+    value = run_qfx_preflight(policy(), "sw1203", devices, observed_at="2026-09-08T01:00:00Z")
+    assert [item["lldp_neighbor_system_name"] for item in value["devices"]] == ["sw1203", "sw1203"]
 
 
 def test_qfx_preflight_fails_closed_on_asymmetric_lldp_neighbor():
