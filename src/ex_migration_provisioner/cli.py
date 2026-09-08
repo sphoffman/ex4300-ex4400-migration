@@ -157,7 +157,6 @@ def main(argv=None):
             password = getpass.getpass("QFX password: ")
 
         from jnpr.junos import Device
-        from jnpr.junos.exception import JunosError
 
         devices = {}
         opened = []
@@ -172,7 +171,9 @@ def main(argv=None):
                     devices[role] = dev
                     opened.append(dev)
                 preflight = run_qfx_preflight(policy, args.migration_id, devices)
-            except JunosError as exc:
+            except ProvisioningError:
+                raise
+            except Exception as exc:
                 raise ProvisioningError("QFX read-only connection/preflight failed: %s" % exc)
         finally:
             for dev in reversed(opened):
