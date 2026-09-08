@@ -7,6 +7,10 @@ from pathlib import Path
 from ex_migration_analyzer.core import sha256_file, utc_now
 
 from . import cli_base as base
+from .preflight import (
+    print_pre_stage_qfx_preflight,
+    scope_pre_stage_qfx_preflight,
+)
 
 
 def _bound_transport(identity):
@@ -153,6 +157,26 @@ def _provisioning_artifact_precheck(
     if changed:
         raise _stale_recovery_error(migration_id, changed)
     return selected_package, selected_render
+
+
+def _prepare(argv):
+    if "-h" in argv or "--help" in argv:
+        return base.main(["prepare"] + argv)
+
+    original_run_qfx_preflight = base.run_qfx_preflight
+    original_print_preflight = base._print_preflight
+
+    def scoped_run_qfx_preflight(*args, **kwargs):
+        raw = original_run_qfx_preflight(*args, **kwargs)
+        return scope_pre_stage_qfx_preflight(raw)
+
+    base.run_qfx_preflight = scoped_run_qfx_preflight
+    base._print_preflight = print_pre_stage_qfx_preflight
+    try:
+        return base.main(["prepare"] + argv)
+    finally:
+        base.run_qfx_preflight = original_run_qfx_preflight
+        base._print_preflight = original_print_preflight
 
 
 def _identify_parser():
@@ -396,6 +420,18 @@ def main(argv=None):
     if not values:
         return base.main(values)
     command = values[0]
+    if command == "prepare":
+        try:
+            return _prepare(values[1:])
+        except (
+            base.AnalysisError,
+            base.ProvisioningError,
+            base.WriteError,
+            OSError,
+            ValueError,
+        ) as exc:
+            print("ERROR: %s" % exc, file=sys.stderr)
+            return 2
     if command == "identify":
         try:
             return _identify(values[1:])
