@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ex-migration/qfx-vlan-plan-1.0.json",
+  "title": "Read-only post-cutover QFX AE VLAN-membership plan",
+  "type": "object",
+  "required": [
+    "schema_version", "qfx_plan_id", "migration_id", "created_at", "inputs",
+    "derivation", "devices", "pair_checks", "result", "safety"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "qfx_plan_id": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+    "migration_id": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "inputs": {
+      "type": "object",
+      "required": [
+        "migration_plan_digest", "attachment_id", "attachment_digest",
+        "site_policy_id", "site_policy_digest"
+      ],
+      "properties": {
+        "migration_plan_digest": {"$ref": "#/$defs/digest"},
+        "attachment_id": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+        "attachment_digest": {"$ref": "#/$defs/digest"},
+        "site_policy_id": {"type": "string", "minLength": 1},
+        "site_policy_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "derivation": {
+      "type": "object",
+      "required": [
+        "required_vlan_ids", "endpoint_data_vlan_ids", "voice_vlan_id",
+        "configured_but_not_required_vlan_ids"
+      ],
+      "properties": {
+        "required_vlan_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "integer"}},
+        "endpoint_data_vlan_ids": {"type": "array", "uniqueItems": true, "items": {"type": "integer"}},
+        "voice_vlan_id": {"type": ["integer", "null"]},
+        "configured_but_not_required_vlan_ids": {"type": "array", "uniqueItems": true, "items": {"type": "integer"}}
+      },
+      "additionalProperties": false
+    },
+    "devices": {
+      "type": "array", "minItems": 2, "maxItems": 2,
+      "items": {
+        "type": "object",
+        "required": [
+          "role", "management_address", "ssh_host_key_sha256", "physical_interface",
+          "ae_interface", "routing_instance", "current_baseline_vlan_ids",
+          "required_vlans", "resolution_failures", "statements", "checks", "result"
+        ],
+        "properties": {
+          "role": {"enum": ["qfx-a", "qfx-b"]},
+          "management_address": {"type": "string"},
+          "ssh_host_key_sha256": {"type": "string", "pattern": "^SHA256:"},
+          "physical_interface": {"type": "string"},
+          "ae_interface": {"type": "string", "pattern": "^ae[0-9]+$"},
+          "routing_instance": {"type": "string", "minLength": 1},
+          "current_baseline_vlan_ids": {"type": "array", "items": {"type": "integer"}},
+          "required_vlans": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["routing_instance", "name", "vlan_id"],
+              "properties": {
+                "routing_instance": {"type": "string"},
+                "name": {"type": "string"},
+                "vlan_id": {"type": "integer"}
+              },
+              "additionalProperties": false
+            }
+          },
+          "resolution_failures": {"type": "array", "maxItems": 0},
+          "statements": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+          "checks": {"type": "object", "minProperties": 1, "additionalProperties": {"const": true}},
+          "result": {"const": "PASS"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "pair_checks": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"const": true}
+    },
+    "result": {"const": "PASS"},
+    "safety": {
+      "type": "object",
+      "required": [
+        "read_only_observation", "qfx_writes_authorized", "ex4400_writes_authorized",
+        "operator_supplied_ports_used", "creates_vlan_definitions", "adds_ae_vlan_membership_only"
+      ],
+      "properties": {
+        "read_only_observation": {"const": true},
+        "qfx_writes_authorized": {"const": false},
+        "ex4400_writes_authorized": {"const": false},
+        "operator_supplied_ports_used": {"const": false},
+        "creates_vlan_definitions": {"const": false},
+        "adds_ae_vlan_membership_only": {"const": true}
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+  "additionalProperties": false
+}
