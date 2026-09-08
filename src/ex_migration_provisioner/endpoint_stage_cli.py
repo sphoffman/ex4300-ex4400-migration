@@ -50,6 +50,35 @@ def _parser():
     return parser
 
 
+def _bind_lab_identity_transport(profile, identity):
+    """Bind lab post-cutover transport to the already-approved device identity.
+
+    The environment profile describes the access method, not a particular switch.
+    Per-switch vrnetlab/containerlab addressing is already pinned by `identify` and
+    must have one authoritative source: the immutable bootstrap identity artifact.
+    """
+    if profile.get("environment") != "lab":
+        return profile
+    access = profile.get("postcutover_ex_access") or {}
+    if access.get("mode") != "transport-override":
+        return profile
+
+    connection = identity.get("observed", {}).get("connection", {})
+    logical = str(connection.get("address") or "").strip()
+    transport = str(connection.get("transport_address") or "").strip()
+    if not transport:
+        raise base.ProvisioningError(
+            "approved lab bootstrap identity has no pinned transport address; rerun identify with --transport-address"
+        )
+    if transport == logical:
+        raise base.ProvisioningError(
+            "approved lab bootstrap identity does not contain a distinct transport override; rerun identify with --transport-address"
+        )
+    access["transport_address"] = transport
+    profile["postcutover_ex_access"] = access
+    return profile
+
+
 def _member_identity(members):
     return [
         {
@@ -228,7 +257,9 @@ def run(argv):
         selected_plan["plan_digest"],
     )
 
-    profile = validate_postcutover_access(read_json(args.environment))
+    profile = read_json(args.environment)
+    profile = _bind_lab_identity_transport(profile, selected_identity["identity"])
+    profile = validate_postcutover_access(profile)
     management_ip = planned_management_ip(selected_plan["plan"])
     access = resolve_postcutover_access(profile, management_ip)
     environment_digest = sha256_file(args.environment)
