@@ -1,19 +1,21 @@
 # Provisioning design boundary
 
-Release 0.8.1 adds deterministic **offline EX4400 pre-stage rendering** on top of
-the read-only provisioning preparation introduced in 0.7.x. The `prepare` path
-may connect to the QFX pair only for read-only preflight. The `render` path
-performs no device connections. No EX4400 or QFX configuration lock, load,
-commit, or write implementation exists.
+Release 0.9.0 adds a guarded **LAB-ONLY EX4400 pre-stage write path** on top of
+the deterministic offline renderer introduced in 0.8.x. The renderer itself
+remains version 0.8.1 so an already-approved 0.8.1 package/render does not become
+stale merely because live-write orchestration was added. The `prepare` path may
+connect to the QFX pair only for read-only preflight. `render` performs no device
+connections. `identify` connects read-only to the bootstrap EX4400. `run` is the
+only command currently allowed to write, and it can write only the bootstrap
+EX4400 pre-stage configuration. QFX writes remain disabled.
 
 ## Artifact chain
 
-An approved migration-intent plan is not renderable by itself. A provisioning
-package binds the exact plan and plan-approval digests, EX4400 template and
-contract digests, QFX site-policy digest, bootstrap-profile digest, effective
-settings digest, read-only QFX preflight digest, provisioner/renderer version,
-normalized variables, artifacts, and validation result. Package approval and live
-phase authorization remain separate future records.
+An approved migration-intent plan is not renderable or writable by itself. A
+provisioning package binds the exact plan and plan-approval digests, EX4400
+template and contract digests, QFX site-policy digest, bootstrap-profile digest,
+effective settings digest, read-only QFX preflight digest, renderer version,
+normalized variables, artifacts, and validation result.
 
 The package normalizes the configured VLAN inventory for rendering. Management,
 voice, and temporary-recovery VLAN identities are explicit and digest-bound. The
@@ -21,6 +23,11 @@ approved plan must contain exactly the site-policy voice VLAN and management VLA
 all configured VLAN names and IDs must be unique and valid; and TEMP-RECOVERY must
 not collide with a configured VLAN. The renderer does not infer voice intent from
 a VLAN name.
+
+A render manifest then binds the package digest, template/contract digests,
+rendered configuration digest, phase, renderer version, and static-validation
+result. Live write authorization is not inherited from the render manifest; the
+write transaction creates a separate exact-diff approval record.
 
 ## Day-zero bootstrap
 
@@ -35,13 +42,33 @@ lab resolves to `ge-0/0/47`. For a multi-member VC, the member inventory must be
 explicit and complete; the package selects port 47 on the highest declared member.
 It fails closed rather than guessing when a multi-member inventory is incomplete.
 
-## Pre-stage
+## Bootstrap identity binding
 
-Through `fxp0`, pre-stage eventually applies the authoritative boilerplate, all
-approved configured VLANs (including configured-but-unobserved VLANs), voice and
-management VLANs, `TEMP-RECOVERY` VLAN 3999, management IRB/default route/SNMP
-identity, and `ae0` with `vlan members all`. Endpoint descriptions and data-VLAN
-assignments remain excluded.
+Before a write session can be opened, `ex-migration-provisioner identify
+<migration-id>` reads the SSH server host key and connects read-only to the EX4400
+through bootstrap `fxp0`. It records the bootstrap address/port, SHA256 SSH host-key
+fingerprint, hostname, model, chassis serial, and Virtual Chassis member
+serial/model inventory. The operator must explicitly approve that exact observed
+identity. The resulting immutable artifact is stored under:
+
+```
+snapshots/migrations/<migration-id>/bootstrap-identities/<identity-id>/
+  identity.json
+  integrity.json
+```
+
+Release 0.9.0 permits interactive identity enrollment only under a lab bootstrap
+profile. Production identity enrollment remains fail-closed until an independently
+pre-bound serial/host-key trust source is implemented. Reachability to an IP
+address alone never authorizes a write.
+
+## Pre-stage render
+
+Through `fxp0`, pre-stage applies the authoritative boilerplate, all approved
+configured VLANs (including configured-but-unobserved VLANs), voice and management
+VLANs, `TEMP-RECOVERY` VLAN 3999, management IRB/default route/SNMP identity, and
+`ae0` with `vlan members all`. Endpoint descriptions and data-VLAN assignments
+remain excluded.
 
 The recovery port is the sole intentional physical-port VLAN assignment in
 pre-stage. It remains part of the normal `edge_ports` range and receives a temporary
@@ -71,9 +98,46 @@ snapshots/migrations/<migration-id>/packages/<package-id>/renders/<render-id>/
   integrity.json
 ```
 
-The render ID is deterministic for the package/config/version inputs. Re-rendering
-unchanged inputs produces the same artifact and returns `UNCHANGED`. Render
-manifests explicitly state that device connections and device writes are disabled.
+## Guarded EX4400 pre-stage write
+
+`ex-migration-provisioner run <migration-id>` is LAB-ONLY in release 0.9.0. Before
+loading configuration it revalidates the package/render digest chain and bootstrap
+profile, loads the newest approved bootstrap identity (or an explicit identity ID),
+reads the SSH server key again, and fails closed unless the pinned host key,
+bootstrap address/port, hostname, model, and VC serial/model inventory still match.
+The NETCONF session is opened only after the independently read SSH fingerprint
+matches the approved identity.
+
+The configuration transaction uses the shared candidate database with an explicit
+lock. The rendered `set` statements are loaded with **merge**, preserving day-zero
+credentials and `fxp0` bootstrap configuration. It then performs `commit check`,
+calculates the candidate diff, displays that exact diff and its SHA256 digest, and
+requires explicit operator approval of that exact diff. Rejecting the prompt rolls
+back the candidate and performs no commit.
+
+After approval, the transaction record is written before device activation. The
+first device commit is always `commit confirmed` (10 minutes by default, adjustable
+within the guarded CLI range). While the automatic rollback timer is active, the
+code rechecks the pinned host key and hardware identity and reads only targeted,
+non-credential configuration hierarchies to prove every rendered statement is
+present, including the planned hostname. Only after those validations pass does it
+issue the final confirming commit. Validation failure triggers an explicit rollback
+to rollback 1; if that rollback cannot be completed, the original confirmed-commit
+timer remains the safety boundary.
+
+Each approved write creates:
+
+```
+snapshots/migrations/<migration-id>/transactions/<transaction-id>/
+  candidate.diff
+  transaction.json
+  integrity.json
+```
+
+The transaction binds the package, render manifest/config, bootstrap identity,
+bootstrap-profile digest, exact candidate-diff digest, operator approval, commit
+state, validation result, and rollback state. It explicitly records that QFX
+connections and QFX writes are disabled.
 
 ## Recovery handoff
 
@@ -83,8 +147,8 @@ the old production path is isolated, new EX in-band management is proven, and th
 QFX/EX uplink is validated, the cable moves from new EX `fxp0` to old EX `fxp0`.
 Its other end connects to `ge-<highest-active-VC-member>/0/47` on the new EX4400.
 That port remains in `edge_ports` and receives explicit `TEMP-RECOVERY` membership.
-Every ownership transition requires hostname, model, serial, chassis, and SSH
-host-key validation; reachability alone is insufficient.
+Every management-ownership transition requires hostname, model, serial/chassis,
+and SSH host-key validation; reachability alone is insufficient.
 
 ## QFX boundary
 
@@ -102,15 +166,23 @@ LLDP neighbor identity all match policy. A failed preflight creates no package.
 The successful preflight is saved as `qfx-preflight.json` and digest-bound into the
 package. Operator-supplied QFX ports remain prohibited.
 
-The initial QFX AE will eventually carry only the management and temporary-recovery
-VLANs. Adding the remaining approved VLANs is still a future separately authorized
-write phase.
+No QFX connection occurs in `identify` or `run`, and no QFX write implementation
+exists in 0.9.0. The future QFX transaction remains a separate coordinated two-QFX
+candidate/commit-confirmed workflow with stronger partner-identity validation.
 
 ## Operator flow
 
-The intended final public CLI remains `prepare`, `run`, `status`, and `recover`.
-During the safety-first implementation sequence, release 0.8.1 also exposes an
-explicit `render` command so rendered artifacts can be inspected before any `run`
-implementation exists. `run`, `status`, and `recover` remain future work. Active
-silent-port probing remains a separate, explicit, fail-closed change-run component
-and is not part of read-only discovery, QFX preflight, or offline rendering.
+The current safety-first lab flow is:
+
+```
+prepare <migration-id>
+render <migration-id>
+identify <migration-id>
+run <migration-id>
+```
+
+`prepare` and `render` may already have been completed under renderer 0.8.1; adding
+the 0.9.0 live-write tooling does not invalidate an otherwise current 0.8.1 render.
+`status` and `recover` remain future work. Active silent-port probing remains a
+separate, explicit, fail-closed change-run component and is not part of read-only
+discovery, QFX preflight, offline rendering, or EX4400 pre-stage writes.
