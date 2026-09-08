@@ -29,6 +29,10 @@
     "name": "MGMT",
     "vlan_id": 163
   },
+  "voice_vlan": {
+    "name": "voip",
+    "vlan_id": 1111
+  },
   "temporary_recovery_vlan": {
     "name": "TEMP-RECOVERY",
     "vlan_id": 3999
