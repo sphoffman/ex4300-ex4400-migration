@@ -4,8 +4,8 @@ build-backend="setuptools.build_meta"
 
 [project]
 name="ex-migration-discovery"
-version="0.13.0"
-description="Read-only discovery, analysis, planning, offline pre-cutover EX4400 preparation, guarded EX4400 pre-stage writes, post-cutover QFX attachment discovery, and coordinated dual-QFX VLAN staging for Juniper EX migrations"
+version="0.14.0"
+description="Read-only discovery, analysis, planning, offline pre-cutover EX4400 preparation, guarded EX4400 pre-stage writes, post-cutover QFX attachment discovery, coordinated dual-QFX VLAN staging, and portable in-band management validation for Juniper EX migrations"
 requires-python=">=3.8"
 dependencies=["junos-eznc>=2.7.3,<3", "lxml>=5,<7", "jinja2>=3.1,<4", "paramiko>=3,<5"]
 
@@ -19,6 +19,7 @@ ex-migration-planner="ex_migration_planner.cli:main"
 ex-migration-provisioner="ex_migration_provisioner.cli:main"
 ex-migration-qfx-plan="ex_migration_provisioner.qfx_plan_cli:main"
 ex-migration-qfx-stage="ex_migration_provisioner.qfx_stage_cli:main"
+ex-migration-inband="ex_migration_provisioner.inband_cli:main"
 
 [tool.setuptools.packages.find]
 where=["src"]
