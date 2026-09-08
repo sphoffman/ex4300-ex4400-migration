@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
-
 from ex_migration_analyzer.core import (
     atomic_json,
     canonical_bytes,
@@ -12,6 +10,7 @@ from ex_migration_analyzer.core import (
 )
 
 from . import cli_base as base
+from .core import _render_variables
 
 
 PACKAGE_SCHEMA_VERSION = "1.1"
@@ -156,7 +155,7 @@ def build_pre_stage_package(
     if bootstrap_profile.get("environment") != site_policy.get("environment"):
         raise base.ProvisioningError("bootstrap profile and QFX site policy environments differ")
 
-    variables = base._render_variables(plan, site_policy, bootstrap_profile)
+    variables = _render_variables(plan, site_policy, bootstrap_profile)
     variables["qfx"] = {
         "site_policy_id": site_policy["site_policy_id"],
         "attachment_state": "UNKNOWN_UNTIL_POST_CUTOVER_DISCOVERY",
