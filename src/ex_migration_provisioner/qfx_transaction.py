@@ -154,16 +154,8 @@ def validate_post_commit_device(dev, plan_device, expected_ex_hostname):
     }
 
 
-def validate_post_commit_pair(devices, qfx_plan):
-    expected_hostname = qfx_plan.get("expected_ex_hostname")
-    if not expected_hostname:
-        expected_hostname = qfx_plan.get("attachment_expected_ex_hostname")
-    if not expected_hostname:
-        # The attachment-bound observation already proved the target hostname. The
-        # plan schema predates this convenience field, so derive it from the live
-        # device plan only when callers explicitly supply it later.
-        raise ProvisioningError("QFX VLAN plan is missing expected EX hostname")
-
+def validate_post_commit_pair(devices, qfx_plan, expected_ex_hostname):
+    _require(expected_ex_hostname, "expected EX hostname is required for QFX validation")
     results = []
     for item in sorted(qfx_plan["devices"], key=lambda row: row["role"]):
         _require(item["role"] in devices, "missing connected QFX role %s" % item["role"])
@@ -171,7 +163,7 @@ def validate_post_commit_pair(devices, qfx_plan):
             validate_post_commit_device(
                 devices[item["role"]],
                 item,
-                expected_hostname,
+                expected_ex_hostname,
             )
         )
     passed = all(item["result"] == "PASS" for item in results)
