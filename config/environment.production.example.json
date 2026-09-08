@@ -1,0 +1,8 @@
+{
+  "schema_version": "1.0",
+  "environment": "production",
+  "postcutover_ex_access": {
+    "mode": "direct-management",
+    "port": 830
+  }
+}
