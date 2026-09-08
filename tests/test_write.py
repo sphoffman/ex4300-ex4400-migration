@@ -60,6 +60,56 @@ def test_virtual_chassis_parser_extracts_member_identity():
     ]
 
 
+def test_vjunos_ex9214_rejected_without_transport_override():
+    with pytest.raises(WriteError):
+        observe_ex4400_identity(
+            FakeEX(model="EX9214", serial="VM1234"),
+            "10.0.0.15",
+            830,
+            "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        )
+
+
+def test_vjunos_ex9214_allowed_only_for_explicit_lab_transport():
+    value = observe_ex4400_identity(
+        FakeEX(model="EX9214", serial="VM1234"),
+        "10.0.0.15",
+        830,
+        "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        allow_vjunos_switch=True,
+    )
+    value["connection"]["transport_address"] = "10.255.3.18"
+    identity = build_bootstrap_identity(
+        "sw1203",
+        bootstrap(),
+        "a" * 64,
+        value,
+        "2026-09-08T12:00:00Z",
+    )
+    assert identity["observed"]["device"]["model"] == "EX9214"
+    assert identity["observed"]["connection"]["address"] == "10.0.0.15"
+    assert identity["observed"]["connection"]["transport_address"] == "10.255.3.18"
+
+
+def test_vjunos_ex9214_binding_rejected_if_transport_equals_logical_address():
+    value = observe_ex4400_identity(
+        FakeEX(model="EX9214", serial="VM1234"),
+        "10.0.0.15",
+        830,
+        "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        allow_vjunos_switch=True,
+    )
+    value["connection"]["transport_address"] = "10.0.0.15"
+    with pytest.raises(WriteError):
+        build_bootstrap_identity(
+            "sw1203",
+            bootstrap(),
+            "a" * 64,
+            value,
+            "2026-09-08T12:00:00Z",
+        )
+
+
 def test_lab_bootstrap_identity_binds_host_key_serial_and_model():
     value = build_bootstrap_identity(
         "sw1203",
