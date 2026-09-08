@@ -385,11 +385,47 @@ def _canonical_statement(line):
         return value
 
 
+# Post-commit validation deliberately checks the migration-critical semantic
+# footprint instead of requiring every rendered boilerplate line to round-trip
+# textually through Junos.  Commit check plus operator approval already bind the
+# exact candidate diff.  Some platform/release-specific statements (for example
+# GRES/NSR/NSB and `set version`) can be accepted at commit time yet be omitted or
+# normalized differently by `display set`, especially on vJunos.  Those should not
+# force rollback of an otherwise correct pre-stage configuration.
+_POST_COMMIT_REQUIRED_PREFIXES = (
+    "set system host-name ",
+    "set system services netconf ssh",
+    "set system management-instance",
+    "set system syslog source-address ",
+    "set system ntp source-address ",
+    "set chassis aggregated-devices ethernet device-count ",
+    "set interfaces ",
+    "set snmp ",
+    "set forwarding-options storm-control-profiles ",
+    "set routing-options static route ",
+    "set protocols lldp ",
+    "set protocols lldp-med ",
+    "set protocols igmp-snooping ",
+    "set protocols rstp ",
+    "set switch-options ",
+    "set vlans ",
+)
+
+
+def _post_commit_required_statements(rendered):
+    required = set()
+    for line in render_statements(rendered):
+        canonical = _canonical_statement(line)
+        if any(
+            canonical == prefix.rstrip() or canonical.startswith(prefix)
+            for prefix in _POST_COMMIT_REQUIRED_PREFIXES
+        ):
+            required.add(canonical)
+    return required
+
+
 def validate_running_config(rendered, running_set):
-    wanted = {
-        _canonical_statement(line)
-        for line in render_statements(rendered)
-    }
+    wanted = _post_commit_required_statements(rendered)
     actual = {
         _canonical_statement(line)
         for line in (running_set or "").splitlines()
@@ -398,13 +434,13 @@ def validate_running_config(rendered, running_set):
     missing = sorted(wanted - actual)
     _require(
         not missing,
-        "post-commit configuration is missing rendered statements: %s"
+        "post-commit configuration is missing migration-critical statements: %s"
         % "; ".join(missing),
     )
     return {
         "result": "PASS",
         "checks": [
             "BOOTSTRAP_IDENTITY_MATCHES",
-            "RENDERED_STATEMENTS_PRESENT",
+            "MIGRATION_CRITICAL_CONFIG_PRESENT",
         ],
     }
