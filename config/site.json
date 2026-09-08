@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "snapshot_root": "snapshots",
   "analysis_policy": "policies/production-old-v1.json",
   "default_management_vlan_id": 163,
@@ -9,6 +9,8 @@
   "require_host_key_verification": true,
   "ex4400_template": "templates/ex4400/ex4400.set.j2",
   "ex4400_template_contract": "templates/ex4400/contract-v1.json",
+  "qfx_site_policy": "config/qfx-site-policy.lab.json",
+  "bootstrap_profile": "config/bootstrap.lab.example.json",
   "temporary_recovery_vlan_name": "TEMP-RECOVERY",
   "temporary_recovery_vlan_id": 3999
 }

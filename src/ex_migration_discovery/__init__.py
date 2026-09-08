@@ -1,2 +1,3 @@
-"""Read-only EX migration discovery collector."""
-__version__="0.6.1"
+"""Read-only discovery for EX4300-to-EX4400 migrations."""
+
+__version__ = "0.7.0"

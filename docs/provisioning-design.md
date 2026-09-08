@@ -1,15 +1,17 @@
 # Provisioning design boundary
 
-This document records the agreed design after release 0.6.1. No renderer, device
-connection, or device-write implementation exists in this increment.
+Release 0.7.0 introduces provisioning **preparation**, not configuration writes.
+The new `prepare` path may connect to the QFX pair only for read-only preflight.
+No EX4400 or QFX configuration lock, load, commit, or write implementation exists.
 
 ## Artifact chain
 
-An approved migration-intent plan is not renderable. A future immutable
-provisioning package must bind the exact plan and plan-approval digests, template
-and template-contract digests, QFX site-policy digest, settings digest, renderer
-version, normalized variables, rendered artifacts, and static-validation results.
-Package approval and live phase authorization are separate records.
+An approved migration-intent plan is not renderable by itself. A provisioning
+package binds the exact plan and plan-approval digests, EX4400 template and
+contract digests, QFX site-policy digest, bootstrap-profile digest, effective
+settings digest, read-only QFX preflight digest, provisioner/renderer version,
+normalized variables, artifacts, and validation result. Package approval and live
+phase authorization remain separate future records.
 
 ## Day-zero bootstrap
 
@@ -40,14 +42,26 @@ host-key validation; reachability alone is insufficient.
 
 ## QFX boundary
 
-The initial QFX AE carries the management and temporary-recovery VLANs. After
-LLDP/LACP discovery proves symmetric physical interfaces, deterministic AE/ESI,
-and the expected EX LACP partner, the required remaining VLANs are added. Operators
-never supply QFX port numbers. Real campus QFX addresses, port pools, exclusions,
-AE mapping, ESI convention, and LACP system-ID convention remain explicit blockers.
+The lab site policy is now concrete: BD-1 is `10.255.3.14`, BD-2 is
+`10.255.3.15`, and the established migration mappings are `dh4301` on
+`et-0/0/3 -> ae0`, `nh5302` on `et-0/0/4 -> ae1`, and `sw1203` on
+`et-0/0/5 -> ae2`. ESI is all-active `auto-derive type-1-lacp`; the per-AE
+LACP system IDs are explicit in the policy.
+
+`ex-migration-provisioner prepare <migration-id>` connects read-only to both BDs
+and fails closed unless hostname/model, physical link state, port-to-AE mapping,
+ESI mode, configured LACP system ID, collecting/distributing state, and symmetric
+LLDP neighbor identity all match policy. A failed preflight creates no package.
+The successful preflight is saved as `qfx-preflight.json` and digest-bound into the
+package. Operator-supplied QFX ports remain prohibited.
+
+The initial QFX AE will eventually carry only the management and temporary-recovery
+VLANs. Adding the remaining approved VLANs is still a future separately authorized
+write phase.
 
 ## Operator flow
 
-The intended public CLI is `prepare`, `run`, `status`, and `recover`; internal
-phases remain separately journaled. Active silent-port probing remains a separate,
-explicit, fail-closed change-run component and is not part of read-only discovery.
+The intended public CLI remains `prepare`, `run`, `status`, and `recover`.
+Release 0.7.0 implements only `prepare`; `run`, `status`, and `recover` remain
+future work. Active silent-port probing remains a separate, explicit, fail-closed
+change-run component and is not part of read-only discovery or QFX preflight.
