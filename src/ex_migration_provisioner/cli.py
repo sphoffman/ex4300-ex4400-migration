@@ -61,6 +61,100 @@ def _reject_source_switch(migration_root, observed):
     return True
 
 
+def _current_package_inputs(settings, paths):
+    return {
+        "settings_digest": base.sha256_bytes(base.canonical_bytes(settings)),
+        "template_digest": base.sha256_file(paths["template"]),
+        "template_contract_digest": base.sha256_file(paths["contract"]),
+        "site_policy_digest": base.sha256_file(paths["site_policy"]),
+        "bootstrap_profile_digest": base.sha256_file(paths["bootstrap"]),
+    }
+
+
+def _package_stale_inputs(package, settings, paths):
+    inputs = package.get("inputs", {})
+    changed = [
+        name
+        for name, value in _current_package_inputs(settings, paths).items()
+        if inputs.get(name) != value
+    ]
+    if inputs.get("renderer_version") != base.RENDERER_VERSION:
+        changed.append("renderer_version")
+    return changed
+
+
+def _stale_recovery_error(migration_id, changed):
+    changed = sorted(set(changed))
+    bootstrap_changed = "bootstrap_profile_digest" in changed
+    lines = [
+        "provisioning artifacts are stale: %s changed" % ", ".join(changed),
+        "",
+        "Recovery:",
+        "  1. Rerun prepare %s to refresh the read-only QFX preflight and package."
+        % migration_id,
+        "  2. Rerun render %s to create a new digest-bound render."
+        % migration_id,
+    ]
+    if bootstrap_changed:
+        lines.append(
+            "  3. Rerun identify %s because the bootstrap profile changed."
+            % migration_id
+        )
+        lines.append(
+            "  4. Retry run with the new render and newly approved identity."
+        )
+    else:
+        lines.append(
+            "  3. Retry run with the new render ID, or omit --render-id to "
+            "select the newest valid render."
+        )
+        lines.append(
+            "  The existing approved bootstrap identity may be reused; run will "
+            "still revalidate its host key and chassis identity."
+        )
+    lines.extend([
+        "  Discovery, analyzer, and planner do not need to be rerun unless their "
+        "own inputs changed.",
+        "  Existing stale packages/renders remain immutable history; do not edit "
+        "or delete them to recover.",
+    ])
+    return base.ProvisioningError("\n".join(lines))
+
+
+def _provisioning_artifact_precheck(
+    migration_id,
+    settings,
+    migration_root,
+    bootstrap_override=None,
+    render_id=None,
+    package_id=None,
+):
+    paths = base._provisioning_paths(settings)
+    if bootstrap_override:
+        paths["bootstrap"] = bootstrap_override
+    base._require_paths(paths)
+
+    if render_id is not None:
+        selected_render = base.choose_render(migration_root, render_id)
+        package_id = selected_render["manifest"].get("package_id")
+        manifest_renderer = (
+            selected_render["manifest"].get("inputs", {}).get("renderer_version")
+        )
+    else:
+        selected_render = None
+        manifest_renderer = None
+
+    selected_package = base.choose_package(migration_root, package_id)
+    changed = _package_stale_inputs(
+        selected_package["package"], settings, paths
+    )
+    if selected_render is not None and manifest_renderer != base.RENDERER_VERSION:
+        changed.append("render_renderer_version")
+    if changed:
+        raise _stale_recovery_error(migration_id, changed)
+    return selected_package, selected_render
+
+
 def _identify_parser():
     parser = argparse.ArgumentParser(
         prog="ex-migration-provisioner identify",
@@ -192,6 +286,7 @@ def _run_selector(argv):
     parser.add_argument("migration_id")
     parser.add_argument("--settings", type=Path, default=Path("config/site.json"))
     parser.add_argument("--bootstrap", type=Path)
+    parser.add_argument("--render-id")
     parser.add_argument("--identity-id")
     parser.add_argument("--port", type=int, default=830)
     args, _unknown = parser.parse_known_args(argv)
@@ -199,12 +294,37 @@ def _run_selector(argv):
     migration_root = (
         Path(settings["snapshot_root"]) / "migrations" / args.migration_id
     )
+    _provisioning_artifact_precheck(
+        args.migration_id,
+        settings,
+        migration_root,
+        bootstrap_override=args.bootstrap,
+        render_id=args.render_id,
+    )
     selected = base.choose_identity(migration_root, args.identity_id)
     _reject_source_switch(migration_root, selected["identity"]["observed"])
     logical_address, transport_address, bound_port = _bound_transport(
         selected["identity"]
     )
     return args, logical_address, transport_address, bound_port
+
+
+def _render_precheck(argv):
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("migration_id")
+    parser.add_argument("--settings", type=Path, default=Path("config/site.json"))
+    parser.add_argument("--package-id")
+    args, _unknown = parser.parse_known_args(argv)
+    settings = base.load_settings(args.settings)
+    migration_root = (
+        Path(settings["snapshot_root"]) / "migrations" / args.migration_id
+    )
+    _provisioning_artifact_precheck(
+        args.migration_id,
+        settings,
+        migration_root,
+        package_id=args.package_id,
+    )
 
 
 def _run(argv):
@@ -279,6 +399,19 @@ def main(argv=None):
     if command == "identify":
         try:
             return _identify(values[1:])
+        except (
+            base.AnalysisError,
+            base.ProvisioningError,
+            base.WriteError,
+            OSError,
+            ValueError,
+        ) as exc:
+            print("ERROR: %s" % exc, file=sys.stderr)
+            return 2
+    if command == "render":
+        try:
+            _render_precheck(values[1:])
+            return base.main(values)
         except (
             base.AnalysisError,
             base.ProvisioningError,
