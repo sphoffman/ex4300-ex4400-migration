@@ -20,6 +20,7 @@ def test_new_design_json_is_parseable():
         "schemas/bootstrap-profile-1.0.json",
         "schemas/qfx-site-policy-1.0.json",
         "schemas/provisioning-package-1.0.json",
+        "schemas/render-manifest-1.0.json",
         "templates/ex4400/contract-v1.json",
     ]
     for path in paths:
@@ -46,7 +47,8 @@ def test_template_excludes_bootstrap_and_device_write_material():
     assert "fxp0_management_gateway" not in template
     assert "encrypted-password" not in template
     assert "vlan members all" in template
-    assert "{{management_ip}}/24" in template
+    assert "{{management_prefix}}" in template
+    assert "{{management_ip}}/24" not in template
 
 
 def test_contract_keeps_bootstrap_variables_outside_template():
@@ -54,6 +56,8 @@ def test_contract_keeps_bootstrap_variables_outside_template():
     required = set(contract["variables"]["required_scalars"])
     bootstrap = set(contract["variables"]["bootstrap_only"])
     assert "management_ip" in required
+    assert "management_prefix" in required
+    assert "voice_vlan" in required
     assert "fxp0_management_ip" in bootstrap
     assert not required.intersection(bootstrap)
     assert contract["safety"]["credentials_allowed"] is False
@@ -104,6 +108,9 @@ def test_lab_qfx_site_policy_matches_established_topology():
         "et-0/0/5",
     }
     assert policy["excluded_interfaces"] == []
+    assert policy["management_vlan"] == {"name": "MGMT", "vlan_id": 163}
+    assert policy["voice_vlan"] == {"name": "voip", "vlan_id": 1111}
+    assert policy["temporary_recovery_vlan"] == {"name": "TEMP-RECOVERY", "vlan_id": 3999}
 
     assert policy["esi"] == {
         "method": "auto-derive-type-1-lacp",
