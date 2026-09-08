@@ -1,6 +1,6 @@
 {
-  "schema_version": "1.0",
-  "site_policy_id": "lab-bd-pair-v1",
+  "schema_version": "1.1",
+  "site_policy_id": "lab-bd-pair-v2",
   "environment": "lab",
   "production_eligible": false,
   "qfx_pair": [
@@ -25,6 +25,12 @@
     ]
   },
   "excluded_interfaces": [],
+  "ae_pool": {
+    "method": "discover-from-existing-qfx-config",
+    "ae_min": 0,
+    "ae_max": 2,
+    "migration_assignment_prebound": false
+  },
   "management_vlan": {
     "name": "MGMT",
     "vlan_id": 163
@@ -37,44 +43,21 @@
     "name": "TEMP-RECOVERY",
     "vlan_id": 3999
   },
-  "port_to_ae": {
-    "method": "explicit-migration-id-map",
-    "ae_min": 0,
-    "ae_max": 2,
-    "assignments": [
-      {
-        "migration_id": "dh4301",
-        "physical_interface": "et-0/0/3",
-        "ae_interface": "ae0"
-      },
-      {
-        "migration_id": "nh5302",
-        "physical_interface": "et-0/0/4",
-        "ae_interface": "ae1"
-      },
-      {
-        "migration_id": "sw1203",
-        "physical_interface": "et-0/0/5",
-        "ae_interface": "ae2"
-      }
-    ]
+  "precutover_qfx_baseline": {
+    "required_vlan_ids": [163, 3999],
+    "lacp_mode": "active",
+    "force_up": false
   },
   "esi": {
     "method": "auto-derive-type-1-lacp",
     "all_active": true
   },
-  "lacp_system_id": {
-    "method": "explicit-per-ae",
-    "values": {
-      "ae0": "00:01:02:03:04:00",
-      "ae1": "00:01:02:03:04:01",
-      "ae2": "00:01:02:03:04:02"
-    }
-  },
   "validation": {
+    "attachment_discovered_post_cutover": true,
     "require_interface_symmetry": true,
     "require_lldp": true,
     "require_lacp_partner": true,
+    "require_matching_ae": true,
     "require_matching_lacp_system_id": true,
     "operator_supplied_ports_allowed": false
   }
