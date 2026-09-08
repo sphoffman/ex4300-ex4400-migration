@@ -432,6 +432,9 @@ def main(argv=None):
     if command == "discover-attachment":
         from . import attachment_cli
         return attachment_cli.main(values[1:])
+    if command == "activate-endpoints":
+        from . import endpoint_stage_cli
+        return endpoint_stage_cli.main(values[1:])
     if command == "prepare":
         try:
             return _prepare(values[1:])
