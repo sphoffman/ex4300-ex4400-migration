@@ -249,7 +249,34 @@ def run_qfx_preflight(policy, migration_id, devices, observed_at=None):
     }
 
 
-def _render_variables(plan, site_policy):
+def _recovery_interface(bootstrap_profile):
+    vc = bootstrap_profile.get("virtual_chassis")
+    _require(isinstance(vc, dict), "bootstrap profile has no virtual-chassis topology")
+    member_count = vc.get("member_count")
+    members = vc.get("members")
+    _require(isinstance(member_count, int) and member_count >= 1, "bootstrap virtual-chassis member count is invalid")
+    _require(isinstance(members, list), "bootstrap virtual-chassis member inventory is invalid")
+
+    if not members:
+        _require(
+            bootstrap_profile.get("environment") == "lab" and member_count == 1,
+            "explicit virtual-chassis members are required to select the recovery interface",
+        )
+        highest_member = 0
+    else:
+        member_ids = []
+        for member in members:
+            member_id = member.get("member_id") if isinstance(member, dict) else None
+            _require(isinstance(member_id, int) and 0 <= member_id <= 9, "bootstrap virtual-chassis member ID is invalid")
+            member_ids.append(member_id)
+        _require(len(member_ids) == member_count, "bootstrap virtual-chassis member inventory does not match member count")
+        _require(len(set(member_ids)) == len(member_ids), "bootstrap virtual-chassis member IDs must be unique")
+        highest_member = max(member_ids)
+
+    return "ge-%d/0/47" % highest_member
+
+
+def _render_variables(plan, site_policy, bootstrap_profile):
     variables = deepcopy(plan.get("template_variables", {}))
     management_vlan = site_policy["management_vlan"]
     voice_vlan = site_policy["voice_vlan"]
@@ -293,6 +320,7 @@ def _render_variables(plan, site_policy):
     variables["temporary_recovery_vlan"] = deepcopy(recovery_vlan)
     variables["temporary_recovery_vlan_name"] = recovery_vlan["name"]
     variables["temporary_recovery_vlan_id"] = recovery_vlan["vlan_id"]
+    variables["recovery_interface"] = _recovery_interface(bootstrap_profile)
     variables["plan_id"] = plan["plan_id"]
     return variables
 
@@ -348,7 +376,7 @@ def build_package(
         "settings_digest": settings_digest,
         "renderer_version": renderer_version,
     }
-    variables = _render_variables(plan, site_policy)
+    variables = _render_variables(plan, site_policy, bootstrap_profile)
     variables["qfx"] = {
         "site_policy_id": site_policy["site_policy_id"],
         "physical_interface": assignment["physical_interface"],
@@ -362,6 +390,7 @@ def build_package(
             "qfx_initial_vlan_ids": [management_vlan["vlan_id"], recovery_vlan["vlan_id"]],
             "qfx_physical_interface": assignment["physical_interface"],
             "qfx_ae_interface": assignment["ae_interface"],
+            "ex4400_recovery_interface": variables["recovery_interface"],
             "device_writes_authorized": False,
         },
         "cutover": {"status": "NOT_AUTHORIZED", "device_writes_authorized": False},
@@ -371,7 +400,8 @@ def build_package(
         "result": "PASS",
         "checks": [
             "PLAN_INTEGRITY_VALID", "PLAN_APPROVAL_BOUND", "SITE_POLICY_VALID",
-            "QFX_PREFLIGHT_PASS", "RENDER_VARIABLES_NORMALIZED", "INPUT_DIGESTS_BOUND",
+            "QFX_PREFLIGHT_PASS", "RENDER_VARIABLES_NORMALIZED", "RECOVERY_INTERFACE_BOUND",
+            "INPUT_DIGESTS_BOUND",
         ],
     }
     key = {
