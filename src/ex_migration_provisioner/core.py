@@ -26,11 +26,18 @@ def _ae_number(name):
     return int(match.group(1))
 
 
+def _validate_vlan(value, label):
+    _require(isinstance(value, dict), "%s must be an object" % label)
+    _require(isinstance(value.get("name"), str) and value["name"], "%s name is required" % label)
+    _require(isinstance(value.get("vlan_id"), int) and 1 <= value["vlan_id"] <= 4094, "%s VLAN ID is invalid" % label)
+    return value
+
+
 def validate_site_policy(policy):
     required = {
         "schema_version", "site_policy_id", "environment", "production_eligible",
         "qfx_pair", "stage_port_pools", "excluded_interfaces", "management_vlan",
-        "temporary_recovery_vlan", "port_to_ae", "esi", "lacp_system_id", "validation",
+        "voice_vlan", "temporary_recovery_vlan", "port_to_ae", "esi", "lacp_system_id", "validation",
     }
     _require(isinstance(policy, dict), "QFX site policy must be an object")
     _require(required <= set(policy), "QFX site policy is missing required fields")
@@ -51,6 +58,14 @@ def validate_site_policy(policy):
         _require(item.get("expected_model"), "QFX expected model is required")
         if policy["environment"] == "production":
             _require(str(item["expected_model"]).upper() == "QFX5700", "production QFX policy requires QFX5700")
+
+    management_vlan = _validate_vlan(policy["management_vlan"], "management VLAN")
+    voice_vlan = _validate_vlan(policy["voice_vlan"], "voice VLAN")
+    recovery_vlan = _validate_vlan(policy["temporary_recovery_vlan"], "temporary recovery VLAN")
+    _require(
+        len({management_vlan["vlan_id"], voice_vlan["vlan_id"], recovery_vlan["vlan_id"]}) == 3,
+        "management, voice, and temporary recovery VLAN IDs must be distinct",
+    )
 
     pools = policy["stage_port_pools"]
     _require(isinstance(pools, dict) and pools, "at least one QFX stage port pool is required")
@@ -234,12 +249,61 @@ def run_qfx_preflight(policy, migration_id, devices, observed_at=None):
     }
 
 
+def _render_variables(plan, site_policy):
+    variables = deepcopy(plan.get("template_variables", {}))
+    management_vlan = site_policy["management_vlan"]
+    voice_vlan = site_policy["voice_vlan"]
+    recovery_vlan = site_policy["temporary_recovery_vlan"]
+
+    _require(variables.get("management_vlan_id") == management_vlan["vlan_id"], "approved plan management VLAN does not match site policy")
+    _require(isinstance(variables.get("management_vlan_name"), str) and variables["management_vlan_name"], "approved plan has no management VLAN name")
+    configured = variables.get("configured_vlans")
+    _require(isinstance(configured, list) and configured, "approved plan has no configured VLAN inventory")
+
+    names = set()
+    ids = set()
+    normalized = []
+    for vlan in configured:
+        name = vlan.get("name")
+        vlan_id = vlan.get("vlan_id")
+        _require(isinstance(name, str) and name, "configured VLAN has no name")
+        _require(isinstance(vlan_id, int) and 1 <= vlan_id <= 4094, "configured VLAN %s has no valid VLAN ID" % name)
+        _require(name not in names, "duplicate configured VLAN name %s" % name)
+        _require(vlan_id not in ids, "duplicate configured VLAN ID %s" % vlan_id)
+        _require(vlan_id != recovery_vlan["vlan_id"] and name != recovery_vlan["name"], "temporary recovery VLAN collides with approved configured VLAN inventory")
+        names.add(name); ids.add(vlan_id)
+        item = deepcopy(vlan)
+        if vlan_id == management_vlan["vlan_id"]:
+            item["classification"] = "management"
+        elif vlan_id == voice_vlan["vlan_id"]:
+            item["classification"] = "voice"
+        else:
+            item["classification"] = "data"
+        normalized.append(item)
+
+    management_matches = [item for item in normalized if item["vlan_id"] == management_vlan["vlan_id"]]
+    _require(len(management_matches) == 1, "approved VLAN inventory does not contain exactly one management VLAN")
+    _require(management_matches[0]["name"] == variables["management_vlan_name"], "approved management VLAN name is inconsistent")
+    voice_matches = [item for item in normalized if item["vlan_id"] == voice_vlan["vlan_id"]]
+    _require(len(voice_matches) == 1 and voice_matches[0]["name"] == voice_vlan["name"], "approved VLAN inventory does not match the site-policy voice VLAN")
+
+    variables["configured_vlans"] = normalized
+    variables["voice_vlan"] = voice_vlan["name"]
+    variables["voice_vlan_id"] = voice_vlan["vlan_id"]
+    variables["temporary_recovery_vlan"] = deepcopy(recovery_vlan)
+    variables["temporary_recovery_vlan_name"] = recovery_vlan["name"]
+    variables["temporary_recovery_vlan_id"] = recovery_vlan["vlan_id"]
+    variables["plan_id"] = plan["plan_id"]
+    return variables
+
+
 def build_package(
     plan, plan_digest, plan_approval, plan_approval_digest,
     settings_digest, template_digest, template_contract_digest,
     site_policy, site_policy_digest, bootstrap_profile, bootstrap_profile_digest,
     preflight, preflight_artifact_digest, renderer_version,
 ):
+    validate_site_policy(site_policy)
     if preflight.get("result") != "PASS":
         raise ProvisioningError("QFX preflight did not pass")
     if plan_approval.get("plan_digest") != plan_digest:
@@ -284,14 +348,13 @@ def build_package(
         "settings_digest": settings_digest,
         "renderer_version": renderer_version,
     }
-    variables = deepcopy(plan.get("template_variables", {}))
+    variables = _render_variables(plan, site_policy)
     variables["qfx"] = {
         "site_policy_id": site_policy["site_policy_id"],
         "physical_interface": assignment["physical_interface"],
         "ae_interface": assignment["ae_interface"],
         "lacp_system_id": site_policy["lacp_system_id"]["values"][assignment["ae_interface"]],
     }
-    variables["temporary_recovery_vlan"] = deepcopy(recovery_vlan)
 
     phases = {
         "pre_stage": {
@@ -308,7 +371,7 @@ def build_package(
         "result": "PASS",
         "checks": [
             "PLAN_INTEGRITY_VALID", "PLAN_APPROVAL_BOUND", "SITE_POLICY_VALID",
-            "QFX_PREFLIGHT_PASS", "INPUT_DIGESTS_BOUND",
+            "QFX_PREFLIGHT_PASS", "RENDER_VARIABLES_NORMALIZED", "INPUT_DIGESTS_BOUND",
         ],
     }
     key = {
