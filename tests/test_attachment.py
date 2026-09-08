@@ -23,7 +23,10 @@ class FakeQFX:
         target=TARGET,
         force_up=False,
         lacp_up=True,
+        explicit_lacp_active=True,
         baseline=(163, 3999),
+        vlan_scope="top-level",
+        conflicting_vlan_name=False,
     ):
         self.facts = {"hostname": hostname, "model": "PTX10001-36MR"}
         self.physical = physical
@@ -32,7 +35,10 @@ class FakeQFX:
         self.target = target
         self.force_up = force_up
         self.lacp_up = lacp_up
+        self.explicit_lacp_active = explicit_lacp_active
         self.baseline = baseline
+        self.vlan_scope = vlan_scope
+        self.conflicting_vlan_name = conflicting_vlan_name
         self.commands = []
 
     def cli(self, command, warning=False):
@@ -53,18 +59,22 @@ class FakeQFX:
             )
         if command == "show configuration interfaces %s | display set" % self.ae:
             lines = [
-                "set interfaces %s aggregated-ether-options lacp active" % self.ae,
                 "set interfaces %s aggregated-ether-options lacp system-id %s"
                 % (self.ae, self.system_id),
                 "set interfaces %s esi auto-derive type-1-lacp" % self.ae,
                 "set interfaces %s esi all-active" % self.ae,
             ]
+            if self.explicit_lacp_active:
+                lines.insert(
+                    0,
+                    "set interfaces %s aggregated-ether-options lacp active" % self.ae,
+                )
             if self.force_up:
                 lines.append(
                     "set interfaces %s aggregated-ether-options lacp force-up"
                     % self.ae
                 )
-            names = {163: "MGMT", 3999: "TEMP-RECOVERY"}
+            names = {163: "v163", 3999: "TEMP-RECOVERY"}
             for vlan_id in self.baseline:
                 lines.append(
                     "set interfaces %s unit 0 family ethernet-switching vlan members %s"
@@ -72,11 +82,27 @@ class FakeQFX:
                 )
             return "\n".join(lines) + "\n"
         if command == "show configuration vlans | display set":
-            return "\n".join([
-                "set vlans MGMT vlan-id 163",
-                "set vlans TEMP-RECOVERY vlan-id 3999",
-                "",
-            ])
+            if self.vlan_scope == "top-level":
+                lines = [
+                    "set vlans v163 vlan-id 163",
+                    "set vlans TEMP-RECOVERY vlan-id 3999",
+                ]
+                if self.conflicting_vlan_name:
+                    lines.append("set vlans v163 vlan-id 999")
+                return "\n".join(lines) + "\n"
+            return ""
+        if command == 'show configuration routing-instances | display set | match " vlan-id "':
+            if self.vlan_scope == "routing-instance":
+                lines = [
+                    "set routing-instances MAC-VRF-1 vlans v163 vlan-id 163",
+                    "set routing-instances MAC-VRF-1 vlans TEMP-RECOVERY vlan-id 3999",
+                ]
+                if self.conflicting_vlan_name:
+                    lines.append(
+                        "set routing-instances MAC-VRF-2 vlans v163 vlan-id 999"
+                    )
+                return "\n".join(lines) + "\n"
+            return ""
         if command == "show lacp interfaces %s extensive" % self.ae:
             state = "Collecting Distributing" if self.lacp_up else "Detached"
             return "Aggregated interface: %s\n  %s %s\n" % (
@@ -120,6 +146,30 @@ def test_attachment_discovery_learns_matching_existing_ae_from_lldp_ports():
         [163, 3999],
         [163, 3999],
     ]
+
+
+def test_attachment_discovery_accepts_operational_lacp_without_explicit_active():
+    pair = devices(
+        a=FakeQFX(
+            "BD-1",
+            explicit_lacp_active=False,
+            vlan_scope="routing-instance",
+        ),
+        b=FakeQFX(
+            "BD-2",
+            explicit_lacp_active=False,
+            vlan_scope="routing-instance",
+        ),
+    )
+    result = discover_qfx_attachment(
+        policy(), TARGET, pair, host_keys(), observed_at="2026-09-08T18:00:00Z"
+    )
+    assert result["result"] == "PASS"
+    for item in result["devices"]:
+        assert item["checks"]["lacp_configured"] is True
+        assert item["checks"]["lacp_collecting_distributing"] is True
+        assert item["baseline_vlan_ids"] == [163, 3999]
+        assert item["unresolved_vlan_members"] == []
 
 
 def test_attachment_discovery_fails_when_physical_ports_are_not_symmetric():
@@ -169,6 +219,32 @@ def test_attachment_discovery_requires_exact_management_recovery_baseline():
     )
     assert result["result"] == "FAIL"
     assert result["devices"][0]["checks"]["baseline_vlans_exact"] is False
+
+
+def test_attachment_discovery_fails_closed_on_conflicting_vlan_name_ids():
+    result = discover_qfx_attachment(
+        policy(),
+        TARGET,
+        devices(
+            a=FakeQFX(
+                "BD-1",
+                explicit_lacp_active=False,
+                vlan_scope="routing-instance",
+                conflicting_vlan_name=True,
+            )
+        ),
+        host_keys(),
+        observed_at="2026-09-08T18:00:00Z",
+    )
+    assert result["result"] == "FAIL"
+    assert (
+        result["devices"][0]["checks"]["baseline_vlan_names_unambiguous"]
+        is False
+    )
+    assert result["devices"][0]["checks"]["baseline_vlans_exact"] is False
+    assert result["devices"][0]["unresolved_vlan_members"] == [
+        "v163(ambiguous:163,999)"
+    ]
 
 
 def test_attachment_artifact_is_schema_valid_and_authorizes_no_writes():
