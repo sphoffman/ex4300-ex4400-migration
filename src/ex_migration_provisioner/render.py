@@ -17,16 +17,31 @@ def _require(condition, message):
 
 
 def validate_renderable_package(package, renderer_version):
-    _require(package.get("schema_version") == "1.0", "unsupported provisioning-package schema")
+    _require(
+        package.get("schema_version") in ("1.0", "1.1"),
+        "unsupported provisioning-package schema",
+    )
     _require(package.get("validation", {}).get("result") == "PASS", "provisioning package validation did not pass")
     safety = package.get("safety", {})
     _require(safety.get("rendering_allowed") is True, "provisioning package does not allow rendering")
     _require(safety.get("device_connections_allowed") is False, "render package unexpectedly allows device connections")
     _require(safety.get("device_writes_allowed") is False, "render package unexpectedly allows device writes")
     phases = package.get("phases", {})
-    _require(phases.get("pre_stage", {}).get("status") == "PREFLIGHT_VALIDATED", "pre-stage is not preflight validated")
+    _require(
+        phases.get("pre_stage", {}).get("status") in ("PREFLIGHT_VALIDATED", "INPUTS_VALIDATED"),
+        "pre-stage inputs are not validated",
+    )
     for phase_name, phase in phases.items():
         _require(phase.get("device_writes_authorized") is False, "%s unexpectedly authorizes device writes" % phase_name)
+    if package.get("schema_version") == "1.1":
+        _require(
+            safety.get("qfx_connections_allowed") is False,
+            "pre-cutover package unexpectedly allows QFX connections",
+        )
+        _require(
+            safety.get("qfx_attachment_prebound") is False,
+            "pre-cutover package unexpectedly pre-binds a QFX attachment",
+        )
     expected_version = package.get("inputs", {}).get("renderer_version")
     _require(expected_version == renderer_version, "package renderer version %r is stale; expected %r" % (expected_version, renderer_version))
     return package
