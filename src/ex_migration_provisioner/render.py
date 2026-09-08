@@ -39,6 +39,7 @@ def _validate_contract(contract):
     _require(isinstance(variables.get("required_scalars"), list), "template contract required_scalars is invalid")
     _require(isinstance(variables.get("required_collections"), list), "template contract required_collections is invalid")
     pre_stage = contract.get("phase_contract", {}).get("pre_stage", {})
+    _require("TEMPORARY_RECOVERY_PORT_OVERLAY" in pre_stage.get("include", []), "pre-stage contract must include the temporary recovery port overlay")
     _require("ENDPOINT_DESCRIPTIONS" in pre_stage.get("exclude", []), "pre-stage contract must exclude endpoint descriptions")
     _require("ENDPOINT_DATA_VLAN_ASSIGNMENTS" in pre_stage.get("exclude", []), "pre-stage contract must exclude endpoint data VLAN assignments")
     safety = contract.get("safety", {})
@@ -79,13 +80,29 @@ def validate_pre_stage_render(rendered, package):
         _require(not any(token in line for line in lines), "pre-stage render contains forbidden credential material: %s" % token)
     _require(not any(re.search(r"(^|\s)fxp0(?:\s|\.|$)", line) for line in lines), "migration template must not configure fxp0")
     _require(not any(re.match(r"^set interfaces ge-\d+/\d+/\d+ description ", line) for line in lines), "pre-stage render contains endpoint descriptions")
-    _require(not any(re.match(r"^set interfaces ge-\d+/\d+/\d+ unit \d+ family ethernet-switching vlan members ", line) for line in lines), "pre-stage render contains endpoint data VLAN assignments")
+
+    recovery_interface = variables["recovery_interface"]
+    _require(bool(re.fullmatch(r"ge-[0-9]/0/47", recovery_interface)), "recovery interface is outside the standard edge-port range")
+    expected_recovery_assignment = (
+        "set interfaces %s unit 0 family ethernet-switching vlan members %s"
+        % (recovery_interface, variables["temporary_recovery_vlan_name"])
+    )
+    physical_vlan_assignments = [
+        line for line in lines
+        if re.match(r"^set interfaces ge-\d+/\d+/\d+ unit \d+ family ethernet-switching vlan members ", line)
+    ]
+    _require(
+        physical_vlan_assignments == [expected_recovery_assignment],
+        "pre-stage render may contain only the bound TEMP-RECOVERY physical-port VLAN assignment",
+    )
 
     required = {
         "set system host-name %s" % variables["new_hostname"],
         "set system syslog source-address %s" % variables["management_ip"],
         "set system ntp source-address %s" % variables["management_ip"],
         "set system services netconf ssh",
+        "set interfaces interface-range edge_ports member \"ge-[0-9]/0/[2-47]\"",
+        expected_recovery_assignment,
         "set interfaces irb unit %s family inet address %s" % (variables["management_vlan_id"], variables["management_prefix"]),
         "set interfaces ge-0/0/0 gigether-options 802.3ad ae0",
         "set interfaces ge-0/0/1 gigether-options 802.3ad ae0",
@@ -137,7 +154,8 @@ def validate_pre_stage_render(rendered, package):
             "NO_CREDENTIAL_MATERIAL",
             "NO_FXP0_CONFIGURATION",
             "NO_ENDPOINT_DESCRIPTIONS",
-            "NO_ENDPOINT_DATA_VLAN_ASSIGNMENTS",
+            "ONLY_TEMP_RECOVERY_PHYSICAL_VLAN_ASSIGNMENT",
+            "TEMP_RECOVERY_PORT_PRESENT",
             "ALL_APPROVED_VLANS_PRESENT",
             "MANAGEMENT_IDENTITY_PRESENT",
             "AE0_TRUNK_PRESENT",
