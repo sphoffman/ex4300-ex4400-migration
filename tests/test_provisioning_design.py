@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from jsonschema import Draft202012Validator
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -13,6 +15,7 @@ def test_new_design_json_is_parseable():
     paths = [
         "config/site.json",
         "config/bootstrap.lab.example.json",
+        "config/qfx-site-policy.lab.json",
         "schemas/ex4400-template-contract-1.0.json",
         "schemas/bootstrap-profile-1.0.json",
         "schemas/qfx-site-policy-1.0.json",
@@ -54,3 +57,79 @@ def test_contract_keeps_bootstrap_variables_outside_template():
     assert "fxp0_management_ip" in bootstrap
     assert not required.intersection(bootstrap)
     assert contract["safety"]["credentials_allowed"] is False
+
+
+def test_lab_qfx_site_policy_validates_against_schema():
+    schema = load("schemas/qfx-site-policy-1.0.json")
+    policy = load("config/qfx-site-policy.lab.json")
+    Draft202012Validator.check_schema(schema)
+    Draft202012Validator(schema).validate(policy)
+
+
+def test_lab_qfx_site_policy_matches_established_topology():
+    policy = load("config/qfx-site-policy.lab.json")
+    assert policy["environment"] == "lab"
+    assert policy["production_eligible"] is False
+
+    devices = {entry["expected_hostname"]: entry for entry in policy["qfx_pair"]}
+    assert devices == {
+        "BD-1": {
+            "role": "qfx-a",
+            "management_address": "10.255.3.14",
+            "expected_hostname": "BD-1",
+            "expected_model": "ptx10001-36mr",
+        },
+        "BD-2": {
+            "role": "qfx-b",
+            "management_address": "10.255.3.15",
+            "expected_hostname": "BD-2",
+            "expected_model": "ptx10001-36mr",
+        },
+    }
+
+    assignments = {
+        item["migration_id"]: (item["physical_interface"], item["ae_interface"])
+        for item in policy["port_to_ae"]["assignments"]
+    }
+    assert assignments == {
+        "dh4301": ("et-0/0/3", "ae0"),
+        "nh5302": ("et-0/0/4", "ae1"),
+        "sw1203": ("et-0/0/5", "ae2"),
+    }
+    assert policy["port_to_ae"]["ae_min"] == 0
+    assert policy["port_to_ae"]["ae_max"] == 2
+    assert set(policy["stage_port_pools"]["lab-established"]) == {
+        "et-0/0/3",
+        "et-0/0/4",
+        "et-0/0/5",
+    }
+    assert policy["excluded_interfaces"] == []
+
+    assert policy["esi"] == {
+        "method": "auto-derive-type-1-lacp",
+        "all_active": True,
+    }
+    assert policy["lacp_system_id"] == {
+        "method": "explicit-per-ae",
+        "values": {
+            "ae0": "00:01:02:03:04:00",
+            "ae1": "00:01:02:03:04:01",
+            "ae2": "00:01:02:03:04:02",
+        },
+    }
+
+    validation = policy["validation"]
+    assert validation["require_interface_symmetry"] is True
+    assert validation["require_lldp"] is True
+    assert validation["require_lacp_partner"] is True
+    assert validation["require_matching_lacp_system_id"] is True
+    assert validation["operator_supplied_ports_allowed"] is False
+
+
+def test_qfx_site_policy_lab_model_exception_does_not_relax_production():
+    schema = load("schemas/qfx-site-policy-1.0.json")
+    policy = load("config/qfx-site-policy.lab.json")
+    production = json.loads(json.dumps(policy))
+    production["environment"] = "production"
+    production["production_eligible"] = True
+    assert not Draft202012Validator(schema).is_valid(production)
