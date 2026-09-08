@@ -3,7 +3,7 @@
   "$id": "https://example.invalid/ex-migration/qfx-site-policy-1.0.json",
   "title": "QFX migration site policy",
   "type": "object",
-  "required": ["schema_version", "site_policy_id", "environment", "production_eligible", "qfx_pair", "stage_port_pools", "excluded_interfaces", "management_vlan", "temporary_recovery_vlan", "port_to_ae", "esi", "lacp_system_id", "validation"],
+  "required": ["schema_version", "site_policy_id", "environment", "production_eligible", "qfx_pair", "stage_port_pools", "excluded_interfaces", "management_vlan", "voice_vlan", "temporary_recovery_vlan", "port_to_ae", "esi", "lacp_system_id", "validation"],
   "properties": {
     "schema_version": {"const": "1.0"},
     "site_policy_id": {"type": "string", "minLength": 1},
@@ -41,6 +41,7 @@
       "items": {"type": "string"}
     },
     "management_vlan": {"$ref": "#/$defs/vlan"},
+    "voice_vlan": {"$ref": "#/$defs/vlan"},
     "temporary_recovery_vlan": {"$ref": "#/$defs/vlan"},
     "port_to_ae": {
       "type": "object",
