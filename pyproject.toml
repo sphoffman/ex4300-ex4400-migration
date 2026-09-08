@@ -4,8 +4,8 @@ build-backend="setuptools.build_meta"
 
 [project]
 name="ex-migration-discovery"
-version="0.9.7"
-description="Read-only discovery, analysis, planning, provisioning preparation, offline EX4400 rendering, and guarded EX4400 pre-stage writes for Juniper EX migrations"
+version="0.10.0"
+description="Read-only discovery, analysis, planning, offline pre-cutover EX4400 preparation, guarded EX4400 pre-stage writes, and staged post-cutover migration automation for Juniper EX migrations"
 requires-python=">=3.8"
 dependencies=["junos-eznc>=2.7.3,<3", "lxml>=5,<7", "jinja2>=3.1,<4", "paramiko>=3,<5"]
 
