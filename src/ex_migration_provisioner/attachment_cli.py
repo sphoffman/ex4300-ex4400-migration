@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from ex_migration_analyzer.core import sha256_file, utc_now
@@ -184,3 +185,22 @@ def run(argv):
     print("  QFX writes performed: no")
     print("  EX4400 writes performed: no")
     return 0
+
+
+def main(argv=None):
+    values = list(sys.argv[1:] if argv is None else argv)
+    try:
+        return run(values)
+    except (
+        base.AnalysisError,
+        base.ProvisioningError,
+        base.WriteError,
+        OSError,
+        ValueError,
+    ) as exc:
+        print("ERROR: %s" % exc, file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
