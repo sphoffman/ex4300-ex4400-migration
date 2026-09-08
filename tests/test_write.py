@@ -165,17 +165,42 @@ def test_bootstrap_identity_rejects_member_count_mismatch():
         )
 
 
-def test_running_config_validation_requires_every_rendered_statement():
+def test_running_config_validation_tolerates_noncritical_junos_normalization():
     rendered = "\n".join([
         "# artifact comment",
         "set version 26.2R1.7",
+        "set chassis redundancy graceful-switchover",
+        "set routing-options nonstop-routing",
+        "deactivate routing-options nonstop-routing",
+        "set protocols layer2-control nonstop-bridging",
+        "deactivate protocols layer2-control",
         "set system host-name home1-ex4400-vc-fd-sw1203",
         "set interfaces ge-0/0/47 unit 0 family ethernet-switching vlan members TEMP-RECOVERY",
+        "set vlans TEMP-RECOVERY vlan-id 3999",
         "",
     ])
-    validation = validate_running_config(rendered, rendered)
+    running = "\n".join([
+        "set system host-name home1-ex4400-vc-fd-sw1203",
+        "set interfaces ge-0/0/47 unit 0 family ethernet-switching vlan members TEMP-RECOVERY",
+        "set vlans TEMP-RECOVERY vlan-id 3999",
+        "",
+    ])
+    validation = validate_running_config(rendered, running)
     assert validation["result"] == "PASS"
+    assert "MIGRATION_CRITICAL_CONFIG_PRESENT" in validation["checks"]
 
-    missing = rendered.replace("set version 26.2R1.7\n", "")
-    with pytest.raises(WriteError):
-        validate_running_config(rendered, missing)
+
+def test_running_config_validation_still_fails_on_missing_migration_critical_state():
+    rendered = "\n".join([
+        "set system host-name home1-ex4400-vc-fd-sw1203",
+        "set interfaces ge-0/0/47 unit 0 family ethernet-switching vlan members TEMP-RECOVERY",
+        "set vlans TEMP-RECOVERY vlan-id 3999",
+        "",
+    ])
+    running = "\n".join([
+        "set system host-name home1-ex4400-vc-fd-sw1203",
+        "set vlans TEMP-RECOVERY vlan-id 3999",
+        "",
+    ])
+    with pytest.raises(WriteError, match="migration-critical"):
+        validate_running_config(rendered, running)
