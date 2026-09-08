@@ -32,6 +32,9 @@ set protocols lldp interface all
 set protocols lldp-med interface all
 set protocols igmp-snooping vlan all
 set protocols layer2-control nonstop-bridging
+{% if provisioning_mode == "in-place-lab" %}
+deactivate protocols layer2-control
+{% endif %}
 set protocols rstp interface ae0 disable
 set protocols rstp interface all edge
 set protocols rstp bpdu-block-on-edge
