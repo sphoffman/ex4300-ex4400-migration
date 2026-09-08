@@ -157,19 +157,23 @@ def main(argv=None):
             password = getpass.getpass("QFX password: ")
 
         from jnpr.junos import Device
+        from jnpr.junos.exception import JunosError
 
         devices = {}
         opened = []
         try:
-            for device_policy in policy["qfx_pair"]:
-                role = device_policy["role"]
-                address = device_policy["management_address"]
-                print("Connecting read-only to %s at %s..." % (device_policy["expected_hostname"], address))
-                dev = Device(host=address, user=username, passwd=password, port=args.port, gather_facts=True)
-                dev.open(auto_probe=10, hostkey_verify=not args.no_host_key_check)
-                devices[role] = dev
-                opened.append(dev)
-            preflight = run_qfx_preflight(policy, args.migration_id, devices)
+            try:
+                for device_policy in policy["qfx_pair"]:
+                    role = device_policy["role"]
+                    address = device_policy["management_address"]
+                    print("Connecting read-only to %s at %s..." % (device_policy["expected_hostname"], address))
+                    dev = Device(host=address, user=username, passwd=password, port=args.port, gather_facts=True)
+                    dev.open(auto_probe=10, hostkey_verify=not args.no_host_key_check)
+                    devices[role] = dev
+                    opened.append(dev)
+                preflight = run_qfx_preflight(policy, args.migration_id, devices)
+            except JunosError as exc:
+                raise ProvisioningError("QFX read-only connection/preflight failed: %s" % exc)
         finally:
             for dev in reversed(opened):
                 try:
