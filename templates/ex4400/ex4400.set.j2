@@ -10,6 +10,7 @@ set chassis aggregated-devices ethernet device-count 1
 set interfaces interface-range edge_ports member "ge-[0-9]/0/[2-47]"
 set interfaces interface-range edge_ports unit 0 family ethernet-switching interface-mode access
 set interfaces interface-range edge_ports unit 0 family ethernet-switching storm-control ACCESS_STORM
+set interfaces {{recovery_interface}} unit 0 family ethernet-switching vlan members {{temporary_recovery_vlan_name}}
 set interfaces irb unit {{management_vlan_id}} family inet address {{management_prefix}}
 set interfaces ge-0/0/0 gigether-options 802.3ad ae0
 set interfaces ge-0/0/1 gigether-options 802.3ad ae0
