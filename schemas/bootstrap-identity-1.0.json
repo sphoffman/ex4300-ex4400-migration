@@ -28,6 +28,7 @@
           "required": ["address", "port", "ssh_host_key_sha256"],
           "properties": {
             "address": {"type": "string", "minLength": 1},
+            "transport_address": {"type": "string", "minLength": 1},
             "port": {"type": "integer", "minimum": 1, "maximum": 65535},
             "ssh_host_key_sha256": {"type": "string", "pattern": "^SHA256:[A-Za-z0-9+/]+$"}
           },
