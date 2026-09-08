@@ -27,6 +27,40 @@ def _bound_transport(identity):
     return logical_address, transport_address, port
 
 
+def _planned_old_hostname(migration_root):
+    selected = base.choose_approved_plan(migration_root)
+    hostname = str(
+        selected.get("plan", {})
+        .get("template_variables", {})
+        .get("old_hostname")
+        or ""
+    ).strip()
+    if not hostname:
+        raise base.ProvisioningError(
+            "approved migration plan has no source-switch hostname; "
+            "bootstrap identity cannot be safely distinguished from the old switch"
+        )
+    return hostname
+
+
+def _reject_source_switch(migration_root, observed):
+    old_hostname = _planned_old_hostname(migration_root)
+    observed_hostname = str(
+        observed.get("device", {}).get("hostname") or ""
+    ).strip()
+    if not observed_hostname:
+        raise base.ProvisioningError(
+            "bootstrap target hostname could not be observed"
+        )
+    if observed_hostname.lower() == old_hostname.lower():
+        raise base.ProvisioningError(
+            "bootstrap target hostname %r matches the approved migration source "
+            "switch hostname; refusing to bind or use the old EX4300 as the "
+            "new-switch target" % observed_hostname
+        )
+    return True
+
+
 def _identify_parser():
     parser = argparse.ArgumentParser(
         prog="ex-migration-provisioner identify",
@@ -96,6 +130,7 @@ def _identify(argv):
             allow_vjunos_switch=allow_vjunos_switch,
         )
         observed["connection"]["transport_address"] = transport_address
+        _reject_source_switch(migration_root, observed)
     except base.ProvisioningError:
         raise
     except Exception as exc:
@@ -165,6 +200,7 @@ def _run_selector(argv):
         Path(settings["snapshot_root"]) / "migrations" / args.migration_id
     )
     selected = base.choose_identity(migration_root, args.identity_id)
+    _reject_source_switch(migration_root, selected["identity"]["observed"])
     logical_address, transport_address, bound_port = _bound_transport(
         selected["identity"]
     )
