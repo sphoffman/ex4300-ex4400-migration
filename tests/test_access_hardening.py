@@ -24,6 +24,16 @@ def _mac(mac, interface, vlan_name="default", vlan_id=3998):
     ])
 
 
+def _state(interface, state, admin=None, oper=None, mac=False):
+    return {
+        "interface": interface,
+        "state": state,
+        "admin_status": admin,
+        "oper_status": oper,
+        "dynamic_mac_present": mac,
+    }
+
+
 def _plan():
     return {
         "port_intents": [
@@ -72,10 +82,10 @@ def test_final_production_vlans_follow_qfx_lineage_plus_management():
 
 def test_classification_keeps_completed_and_disables_proven_unused():
     states = {
-        "ge-0/0/2": {"interface": "ge-0/0/2", "state": "LINK_DOWN", "admin_status": "up", "oper_status": "down", "dynamic_mac_present": False},
-        "ge-0/0/10": {"interface": "ge-0/0/10", "state": "LINK_DOWN", "admin_status": "up", "oper_status": "down", "dynamic_mac_present": False},
-        "ge-0/0/11": {"interface": "ge-0/0/11", "state": "ADMIN_DOWN", "admin_status": "down", "oper_status": "down", "dynamic_mac_present": False},
-        "ge-0/0/47": {"interface": "ge-0/0/47", "state": "LINK_DOWN", "admin_status": "up", "oper_status": "down", "dynamic_mac_present": False},
+        "ge-0/0/2": _state("ge-0/0/2", "LINK_DOWN", "up", "down"),
+        "ge-0/0/10": _state("ge-0/0/10", "LINK_DOWN", "up", "down"),
+        "ge-0/0/11": _state("ge-0/0/11", "ADMIN_DOWN", "down", "down"),
+        "ge-0/0/47": _state("ge-0/0/47", "LINK_DOWN", "up", "down"),
     }
     completed = {"ge-0/0/2": {"old_interface": "ge-0/0/2", "new_interface": "ge-0/0/2"}}
     value = classify_final_ports(_plan(), completed, states, "ge-0/0/47")
@@ -91,21 +101,58 @@ def test_live_or_silent_recovery_port_blocks_cleanup():
         ("UP_SILENT", False, "RECOVERY_PORT_UP_SILENT"),
     ):
         states = {
-            "ge-0/0/47": {
-                "interface": "ge-0/0/47",
-                "state": state,
-                "admin_status": "up",
-                "oper_status": "up",
-                "dynamic_mac_present": mac,
-            }
+            "ge-0/0/47": _state("ge-0/0/47", state, "up", "up", mac),
         }
         value = classify_final_ports(_plan(), {}, states, "ge-0/0/47")
         assert value["result"] == "FAIL"
         assert value["blockers"][0]["reason"] == reason
 
 
+def test_unobserved_template_ports_are_lab_vjunos_exception_only():
+    states = {
+        "ge-0/0/12": _state("ge-0/0/12", "NOT_OBSERVED"),
+        "ge-0/0/47": _state("ge-0/0/47", "NOT_OBSERVED"),
+    }
+    production = classify_final_ports(_plan(), {}, states, "ge-0/0/47")
+    assert production["result"] == "FAIL"
+    assert {row["reason"] for row in production["blockers"]} == {
+        "CONFIGURED_EDGE_PORT_NOT_OBSERVED"
+    }
+
+    lab = classify_final_ports(
+        _plan(),
+        {},
+        states,
+        "ge-0/0/47",
+        allow_unobserved_template_ports=True,
+    )
+    assert lab["result"] == "PASS"
+    assert [row["interface"] for row in lab["not_exposed"]] == ["ge-0/0/12", "ge-0/0/47"]
+    assert {row["reason"] for row in lab["not_exposed"]} == {
+        "LAB_PLATFORM_TEMPLATE_PORT_NOT_EXPOSED",
+        "LAB_PLATFORM_RECOVERY_PORT_NOT_EXPOSED",
+    }
+    assert lab["unused"] == []
+
+
+def test_completed_endpoint_not_observed_blocks_even_with_lab_exception():
+    states = {
+        "ge-0/0/2": _state("ge-0/0/2", "NOT_OBSERVED"),
+    }
+    completed = {"ge-0/0/2": {"old_interface": "ge-0/0/2", "new_interface": "ge-0/0/2"}}
+    value = classify_final_ports(
+        _plan(),
+        completed,
+        states,
+        "ge-0/0/47",
+        allow_unobserved_template_ports=True,
+    )
+    assert value["result"] == "FAIL"
+    assert value["blockers"][0]["reason"] == "CONFIRMED_ENDPOINT_PORT_NOT_OBSERVED"
+
+
 def test_completed_admin_down_port_blocks_cleanup():
-    states = {"ge-0/0/2": {"interface": "ge-0/0/2", "state": "ADMIN_DOWN", "admin_status": "down", "oper_status": "down", "dynamic_mac_present": False}}
+    states = {"ge-0/0/2": _state("ge-0/0/2", "ADMIN_DOWN", "down", "down")}
     completed = {"ge-0/0/2": {"old_interface": "ge-0/0/2", "new_interface": "ge-0/0/2"}}
     value = classify_final_ports(_plan(), completed, states, "ge-0/0/47")
     assert value["result"] == "FAIL"
@@ -114,8 +161,8 @@ def test_completed_admin_down_port_blocks_cleanup():
 
 def test_unmapped_active_or_silent_port_blocks_cleanup():
     states = {
-        "ge-0/0/12": {"interface": "ge-0/0/12", "state": "ACTIVE_MAC", "admin_status": "up", "oper_status": "up", "dynamic_mac_present": True},
-        "ge-0/0/13": {"interface": "ge-0/0/13", "state": "UP_SILENT", "admin_status": "up", "oper_status": "up", "dynamic_mac_present": False},
+        "ge-0/0/12": _state("ge-0/0/12", "ACTIVE_MAC", "up", "up", True),
+        "ge-0/0/13": _state("ge-0/0/13", "UP_SILENT", "up", "up", False),
     }
     value = classify_final_ports(_plan(), {}, states, "ge-0/0/47")
     assert value["result"] == "FAIL"
@@ -123,7 +170,7 @@ def test_unmapped_active_or_silent_port_blocks_cleanup():
 
 
 def test_uncompleted_approved_endpoint_blocks_even_when_link_down():
-    states = {"ge-0/0/2": {"interface": "ge-0/0/2", "state": "LINK_DOWN", "admin_status": "up", "oper_status": "down", "dynamic_mac_present": False}}
+    states = {"ge-0/0/2": _state("ge-0/0/2", "LINK_DOWN", "up", "down")}
     value = classify_final_ports(_plan(), {}, states, "ge-0/0/47")
     assert value["result"] == "FAIL"
     assert value["blockers"][0]["reason"] == "APPROVED_ENDPOINT_INTENT_NOT_COMPLETED"
