@@ -6,6 +6,11 @@ from ex_migration_provisioner.endpoint_stage import (
     resolve_postcutover_access,
     validate_postcutover_access,
 )
+from ex_migration_provisioner.endpoint_stage_cli import (
+    _interface_up_from_terse,
+    _interfaces_config_set,
+    _planned_config_rows,
+)
 
 
 def _plan():
@@ -156,3 +161,79 @@ def test_transport_override_is_lab_only():
     }
     with pytest.raises(ProvisioningError):
         validate_postcutover_access(profile)
+
+
+def test_bulk_candidate_validation_requires_every_planned_statement():
+    activated = [
+        {
+            "old_interface": "ge-0/0/2",
+            "new_interface": "ge-0/0/10",
+            "statements": [
+                'set interfaces ge-0/0/10 description "Desk A"',
+                "set interfaces ge-0/0/10 unit 0 family ethernet-switching vlan members v100",
+            ],
+        },
+        {
+            "old_interface": "ge-0/0/3",
+            "new_interface": "ge-0/0/11",
+            "statements": [
+                "set interfaces ge-0/0/11 unit 0 family ethernet-switching vlan members v200",
+            ],
+        },
+    ]
+    complete = "\n".join([
+        'set interfaces ge-0/0/10 description "Desk A"',
+        "set interfaces ge-0/0/10 unit 0 family ethernet-switching vlan members v100",
+        "set interfaces ge-0/0/11 unit 0 family ethernet-switching vlan members v200",
+    ])
+    ok, rows = _planned_config_rows(complete, activated)
+    assert ok is True
+    assert all(row["configuration_present"] for row in rows)
+
+    incomplete = complete.replace(
+        "set interfaces ge-0/0/11 unit 0 family ethernet-switching vlan members v200",
+        "",
+    )
+    ok, rows = _planned_config_rows(incomplete, activated)
+    assert ok is False
+    missing = next(row for row in rows if row["new_interface"] == "ge-0/0/11")
+    assert missing["configuration_present"] is False
+    assert missing["missing_statements"] == [
+        "set interfaces ge-0/0/11 unit 0 family ethernet-switching vlan members v200"
+    ]
+
+
+def test_bulk_interface_state_parsing():
+    terse = "\n".join([
+        "ge-0/0/10               up    up",
+        "ge-0/0/10.0             up    up   eth-switch",
+        "ge-0/0/11               up    down",
+    ])
+    assert _interface_up_from_terse(terse, "ge-0/0/10") is True
+    assert _interface_up_from_terse(terse, "ge-0/0/11") is False
+
+
+def test_interfaces_config_set_uses_candidate_default_and_committed_option():
+    class Reply:
+        text = "set interfaces ge-0/0/10 description Desk-A\n"
+
+    class RPC:
+        def __init__(self):
+            self.calls = []
+
+        def get_config(self, **kwargs):
+            self.calls.append(kwargs)
+            return Reply()
+
+    class Dev:
+        def __init__(self):
+            self.rpc = RPC()
+
+    dev = Dev()
+    assert "ge-0/0/10" in _interfaces_config_set(dev, "candidate")
+    assert dev.rpc.calls[-1]["options"] == {"format": "set"}
+    assert "ge-0/0/10" in _interfaces_config_set(dev, "committed")
+    assert dev.rpc.calls[-1]["options"] == {
+        "format": "set",
+        "database": "committed",
+    }
