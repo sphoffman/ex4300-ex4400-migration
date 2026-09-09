@@ -31,13 +31,7 @@ def recovery_statement(interface, address):
 
 
 def recovery_statements(interface, address, gateway, routing_instance=MGMT_INSTANCE):
-    """Build the complete isolated OOB recovery intent.
-
-    Junos reserves ``mgmt_junos`` for the dedicated management instance. Enabling
-    ``system management-instance`` moves the supported management interface (VME
-    for an EX4300 Virtual Chassis) out of the master routing table. The recovery
-    default therefore belongs only in ``mgmt_junos``.
-    """
+    """Build the complete isolated OOB recovery intent."""
     interface = str(interface or "").strip()
     routing_instance = str(routing_instance or "").strip()
     _require(interface, "old-switch recovery management interface is required")
@@ -91,7 +85,7 @@ def build_recovery_transaction(
     }
     transaction_id = sha256_bytes(canonical_bytes(key))[:16]
     return {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "transaction_id": transaction_id,
         "migration_id": migration_id,
         "approved_at": approved_at,
@@ -129,10 +123,12 @@ def build_recovery_transaction(
             "checks": [],
         },
         "safety": {
-            "bootstrap_oob_address_released_by_replacement_acknowledged": True,
+            "duplicate_bootstrap_ip_requires_physical_l2_isolation_until_cable_move": True,
+            "replacement_may_still_own_bootstrap_ip_before_cutover": True,
             "existing_inband_management_preserved": True,
             "master_routing_table_default_unchanged": True,
             "dedicated_management_instance_required": True,
+            "candidate_completeness_readback_required": True,
             "commit_confirmed_required": True,
             "secondary_recovery_connection_required": True,
             "same_ssh_host_key_required": True,
