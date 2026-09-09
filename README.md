@@ -6,7 +6,8 @@ evidence set, creates approved migration intent, pre-stages the replacement EX44
 provides a guarded recovery path to the old EX4300 VC, validates the physical QFX
 attachment after cutover, coordinates production VLAN changes across the QFX pair,
 correlates moved endpoints from MAC evidence, activates only unambiguous endpoint
-intent, and produces a facilities cable-relabel report from the completed move.
+intent, compares pre/post access-port operational state, and produces a facilities
+cable-relabel report from the completed move.
 
 The design deliberately separates observation, approval, planning, rendering, and
 live writes. Evidence and approvals are retained as immutable digest-bound artifacts
@@ -45,6 +46,8 @@ COORDINATED QFX VLAN STAGING
         ->
 CORRELATE + ACTIVATE ENDPOINTS
         ->
+READ-ONLY PRE/POST PORT-STATE COMPARISON
+        ->
 GENERATE FACILITIES CABLING REPORT
         ->
 VALIDATED MIGRATION
@@ -75,6 +78,8 @@ Discovery is read-only. It records normalized state plus raw evidence, including
 - VLAN definitions and configured-but-unobserved VLANs;
 - access-port configuration and descriptions;
 - reconciled MAC-table observations;
+- `show interfaces terse` on every observation sample, preserving per-sample
+  administrative and operational link state for later reconstruction;
 - voice policy;
 - management VLAN/IRB/address/default route;
 - SNMP identity and required migration metadata;
@@ -107,6 +112,12 @@ The composite model:
   have been surfaced;
 - accumulates endpoint MAC evidence across all eligible collections;
 - treats a MAC observed on multiple old physical ports as conflicting evidence;
+- reconstructs access-port operational state from the already-collected per-sample
+  `show interfaces terse` and dynamic-MAC evidence;
+- classifies each reconstructed sample as `ACTIVE_MAC`, `UP_SILENT`, `LINK_DOWN`, or
+  `ADMIN_DOWN` (with `NOT_OBSERVED` retained when state cannot be established);
+- surfaces latest `UP_SILENT`, `LINK_DOWN`, and `ADMIN_DOWN` states as informational
+  evidence rather than turning state alone into an approval blocker;
 - retains hardware/serial observations as audit metadata rather than logical identity;
 - creates an immutable evidence-set artifact binding all contributing collections.
 
@@ -126,7 +137,10 @@ py -m ex_migration_planner.cli build sw1203
 
 The plan binds approved composite evidence into deterministic intent. It preserves all
 configured VLAN definitions and separates pre-stage configuration from endpoint
-configuration that must wait until after cables move.
+configuration that must wait until after cables move. For new plans, each access-port
+intent also carries the approved pre-migration port-state summary so that operational
+state can be compared after cutover. That state remains diagnostic evidence and never
+becomes endpoint-configuration authority.
 
 The plan itself cannot render configuration, connect to devices, or authorize writes.
 
@@ -411,7 +425,55 @@ identity revalidation, candidate lock, candidate read-back/completeness proof,
 commit check, exact diff approval, commit confirmed, bulk validation, and final
 confirmation.
 
-### 13. Generate the facilities cable-relabel report
+### 13. Compare pre/post access-port operational state
+
+```bash
+py -m ex_migration_provisioner.cli port-state <migration-id>
+```
+
+This post-cutover diagnostic is read-only. It follows the current approved migration
+plan back to its exact approved analysis and composite discovery collection digests,
+then reconstructs every access port's pre-migration sample history from the immutable
+`show interfaces terse` and MAC-table evidence already collected during discovery.
+No discovery recollection is required for existing schema-1.4 migrations.
+
+The pre-migration sample states are:
+
+```text
+admin up / oper up   + dynamic MAC  -> ACTIVE_MAC
+admin up / oper up   + no MAC       -> UP_SILENT
+admin up / oper down                -> LINK_DOWN
+admin down                            -> ADMIN_DOWN
+```
+
+The command then reads the replacement EX4400's current interface and dynamic-MAC
+state and compares it with the approved pre-migration evidence.
+
+Mapping precedence is deliberately conservative:
+
+1. a current-plan committed-and-confirmed endpoint mapping is used only when its
+   intended endpoint configuration is still present on the current EX4400;
+2. otherwise the same physical interface position is considered only if that EX4400
+   port exists, is an eligible edge port, is not an uplink/recovery port, and is not
+   already claimed by a confirmed mapping;
+3. a same-position result is always `ADVISORY_ONLY`, even when pre/post operational
+   state matches perfectly.
+
+A stable state match such as old `ge-2/0/17` `LINK_DOWN` to new `ge-2/0/17`
+`LINK_DOWN` is useful corroborating evidence that the cable likely moved as expected,
+but state-only evidence can never authorize a VLAN assignment or endpoint activation.
+Two arbitrary ports are never correlated merely because they share the same state.
+
+Immutable output is written under:
+
+```text
+snapshots/migrations/<migration-id>/port-state-comparisons/<comparison-id>/
+```
+
+including `comparison.json`, a concise `report.md`, the current EX interface/MAC raw
+evidence, and integrity hashes. Device writes performed: none.
+
+### 14. Generate the facilities cable-relabel report
 
 ```bash
 py -m ex_migration_provisioner.cli cabling-report <migration-id>
