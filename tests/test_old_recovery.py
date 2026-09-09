@@ -1,5 +1,6 @@
 import pytest
 
+from ex_migration_provisioner import old_recovery_cli as recovery_cli
 from ex_migration_provisioner.core import ProvisioningError
 from ex_migration_provisioner.old_recovery import (
     build_recovery_transaction,
@@ -7,6 +8,15 @@ from ex_migration_provisioner.old_recovery import (
     recovery_statement,
     recovery_statements,
 )
+
+
+class FakeConfigDevice:
+    def __init__(self, config_text):
+        self.config_text = config_text
+
+    def cli(self, command, warning=False):
+        assert command == "show configuration | display set"
+        return self.config_text
 
 
 def test_recovery_statement_uses_vme_for_ex4300_vc():
@@ -33,6 +43,20 @@ def test_recovery_gateway_may_be_off_subnet_when_inherited_from_approved_identit
 def test_recovery_gateway_cannot_equal_recovery_ip():
     with pytest.raises(ProvisioningError, match="cannot equal"):
         recovery_statements("vme", "10.255.3.18/24", "10.255.3.18")
+
+
+def test_recovery_validation_requires_authoritative_vme_state():
+    statements = recovery_statements("vme", "10.255.3.18/24", "10.0.0.2")
+    exact = "\n".join(statements) + "\n"
+    assert recovery_cli._validate_recovery_config(
+        FakeConfigDevice(exact), statements, [], "vme", "10.255.3.18/24"
+    ) is True
+
+    stale = exact + "set interfaces vme description stale-recovery-config\n"
+    with pytest.raises(ProvisioningError, match="not authoritative"):
+        recovery_cli._validate_recovery_config(
+            FakeConfigDevice(stale), statements, [], "vme", "10.255.3.18/24"
+        )
 
 
 def test_recovery_transaction_models_pre_cutover_physical_isolation():
@@ -62,7 +86,7 @@ def test_recovery_transaction_models_pre_cutover_physical_isolation():
             "set routing-options static route 0.0.0.0/0 next-hop 10.100.163.1"
         ],
     )
-    assert tx["schema_version"] == "1.4"
+    assert tx["schema_version"] == "1.5"
     assert tx["recovery"]["interface"] == "vme"
     assert tx["recovery"]["routing_instance"] == "mgmt_junos"
     assert tx["recovery"]["address"] == "10.255.3.18/24"
@@ -74,6 +98,7 @@ def test_recovery_transaction_models_pre_cutover_physical_isolation():
     assert tx["inputs"]["bootstrap_identity_id"] == "identity123"
     assert tx["safety"]["replacement_may_still_own_oob_ip_before_cutover"] is True
     assert tx["safety"]["duplicate_oob_ip_requires_physical_l2_isolation_until_cable_move"] is True
+    assert tx["safety"]["vme_interface_replaced_with_approved_recovery_state"] is True
     assert tx["safety"]["post_cable_recovery_verification_optional"] is True
     assert tx["validation"]["recovery_path_verified"] is False
     assert tx["commit"]["status"] == "APPROVED_PENDING_COMMIT"
