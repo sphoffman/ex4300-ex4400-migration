@@ -1,4 +1,4 @@
 """Digest-bound EX migration preparation, guarded writes, QFX staging, old-switch recovery, endpoint activation, and facilities reporting."""
 
-__version__ = "0.17.1"
+__version__ = "0.17.2"
 RENDERER_VERSION = "0.8.2"
