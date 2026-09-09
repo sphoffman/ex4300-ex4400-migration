@@ -25,6 +25,7 @@ from .write import (
     WriteError,
     build_bootstrap_identity,
     observe_ex4400_identity,
+    parse_mgmt_junos_default_gateway,
     render_statements,
     ssh_host_key_fingerprint,
     validate_bound_identity,
@@ -815,11 +816,9 @@ def _run(args, settings, migration_root):
         )
 
     bound_connection = identity["observed"]["connection"]
-    address = str(bootstrap["fxp0_management_ip"])
-    if bound_connection.get("address") != address:
-        raise ProvisioningError(
-            "bootstrap identity address does not match current bootstrap profile"
-        )
+    address = str(bound_connection.get("address") or "").strip()
+    if not address:
+        raise ProvisioningError("approved bootstrap identity has no OOB connection address")
     if int(bound_connection.get("port")) != int(args.port):
         raise ProvisioningError(
             "bootstrap identity SSH/NETCONF port does not match --port"
@@ -852,13 +851,17 @@ def _run(args, settings, migration_root):
     try:
         dev.open(auto_probe=10, hostkey_verify=False)
         current_identity = observe_ex4400_identity(
-            dev, address, args.port, current_fingerprint
+            dev,
+            address,
+            args.port,
+            current_fingerprint,
+            allow_vjunos_switch=(bootstrap.get("environment") == "lab"),
         )
         validate_bound_identity(
             current_identity, identity, bootstrap_digest
         )
         print("\nEX4400 target identity: PASS")
-        print("  Address: %s:%s" % (address, args.port))
+        print("  OOB address: %s:%s" % (address, args.port))
         print("  Hostname: %s" % current_identity["device"]["hostname"])
         print("  Model: %s" % current_identity["device"]["model"])
         print("  Serial: %s" % current_identity["device"]["serial_number"])
@@ -938,7 +941,11 @@ def _run(args, settings, migration_root):
             except Exception:
                 pass
             post_identity = observe_ex4400_identity(
-                dev, address, args.port, post_fingerprint
+                dev,
+                address,
+                args.port,
+                post_fingerprint,
+                allow_vjunos_switch=(bootstrap.get("environment") == "lab"),
             )
             validate_bound_identity(
                 post_identity,
