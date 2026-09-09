@@ -11,14 +11,13 @@ def _sorted_dicts(values):
 
 
 def _device_state(snapshot):
+    """Return observed old-device identity, excluding tool-derived migration metadata."""
     device = snapshot.get("device", {})
     return {
         "hostname": device.get("hostname"),
         "model": device.get("model"),
         "serial_numbers": sorted(device.get("serial_numbers") or []),
         "configured_hostname": device.get("configured_hostname"),
-        "proposed_hostname": device.get("proposed_hostname"),
-        "identity_rule": device.get("identity_rule"),
     }
 
 
@@ -211,7 +210,7 @@ def build_composite_evidence(candidates, policy, policy_digest):
     if len(device_variants) > 1:
         findings.append(_finding(
             "BLOCKER", "DEVICE_IDENTITY_CHANGED", "device",
-            "device identity changed across eligible discovery collections",
+            "observed old-switch identity changed across eligible discovery collections",
             device_variants,
         ))
 
