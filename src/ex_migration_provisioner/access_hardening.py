@@ -214,7 +214,13 @@ def current_port_states(terse_text, mac_table_text, interfaces, observed_at=None
     return result
 
 
-def classify_final_ports(plan, live_completed_by_old, current_states, recovery_interface):
+def classify_final_ports(
+    plan,
+    live_completed_by_old,
+    current_states,
+    recovery_interface,
+    allow_unobserved_template_ports=False,
+):
     completed_by_new = {
         str(row.get("new_interface")): str(old)
         for old, row in live_completed_by_old.items()
@@ -233,7 +239,10 @@ def classify_final_ports(plan, live_completed_by_old, current_states, recovery_i
         completed_old = completed_by_new.get(interface)
         same_position_intent = intents.get(interface)
 
-        if completed_old and observed["admin_status"] == "down":
+        if completed_old and observed["state"] == "NOT_OBSERVED":
+            disposition = "BLOCKED"
+            reason = "CONFIRMED_ENDPOINT_PORT_NOT_OBSERVED"
+        elif completed_old and observed["admin_status"] == "down":
             disposition = "BLOCKED"
             reason = "CONFIRMED_ENDPOINT_PORT_ADMIN_DOWN"
         elif completed_old:
@@ -260,8 +269,16 @@ def classify_final_ports(plan, live_completed_by_old, current_states, recovery_i
                     else "UNMAPPED_PORT_UP_SILENT"
                 )
         elif observed["state"] == "NOT_OBSERVED":
-            disposition = "BLOCKED"
-            reason = "CONFIGURED_EDGE_PORT_NOT_OBSERVED"
+            if allow_unobserved_template_ports:
+                disposition = "LAB_NOT_EXPOSED_SKIP"
+                reason = (
+                    "LAB_PLATFORM_RECOVERY_PORT_NOT_EXPOSED"
+                    if interface == recovery_interface
+                    else "LAB_PLATFORM_TEMPLATE_PORT_NOT_EXPOSED"
+                )
+            else:
+                disposition = "BLOCKED"
+                reason = "CONFIGURED_EDGE_PORT_NOT_OBSERVED"
         elif interface == recovery_interface:
             disposition = "UNUSED_DISABLE"
             reason = "RECOVERY_PORT_PROVEN_INACTIVE_AT_CLEANUP"
@@ -291,6 +308,7 @@ def classify_final_ports(plan, live_completed_by_old, current_states, recovery_i
         "rows": rows,
         "used": [row for row in rows if row["disposition"] == "USED_KEEP_ENABLED"],
         "unused": [row for row in rows if row["disposition"] == "UNUSED_DISABLE"],
+        "not_exposed": [row for row in rows if row["disposition"] == "LAB_NOT_EXPOSED_SKIP"],
         "blockers": blockers,
         "result": "PASS" if not blockers else "FAIL",
     }
