@@ -41,7 +41,13 @@ def analysis_for_approved_plan(migration_root, selected_plan):
         "approved migration plan source analysis failed digest validation",
     )
     value = read_json(path)
-    _require(value.get("migration_id") == plan.get("migration_id"), "source analysis migration ID mismatch")
+    analysis_migration_id = str(
+        value.get("template_variables", {}).get("migration_id") or ""
+    )
+    _require(
+        analysis_migration_id == str(plan.get("migration_id") or ""),
+        "source analysis migration ID mismatch",
+    )
     _require(value.get("analysis_id") == analysis_id, "source analysis ID mismatch")
     return value, path, actual_digest
 
