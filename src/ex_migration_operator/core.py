@@ -7,7 +7,6 @@ from ex_migration_discovery.normalize import normalize_mac
 from ex_migration_planner.cli import accepted_analyses
 from ex_migration_provisioner import cli_base as provisioner_base
 from ex_migration_provisioner.endpoint_stage import committed_endpoint_state
-from ex_migration_provisioner.old_recovery import choose_recovery_transaction
 from ex_migration_provisioner.precutover_probe import (
     analysis_for_approved_plan,
     silent_candidates,
@@ -16,11 +15,6 @@ from ex_migration_provisioner.precutover_probe import (
 
 class OperatorError(RuntimeError):
     pass
-
-
-def _require(condition, message):
-    if not condition:
-        raise OperatorError(message)
 
 
 def migration_root(settings, migration_id):
@@ -35,6 +29,18 @@ def collection_paths(root):
         path for path in base.glob("*/snapshot.json")
         if "_pending_" not in str(path.parent.name)
     )
+
+
+def collection_snapshot_ids(root):
+    values = set()
+    for path in collection_paths(root):
+        try:
+            snapshot_id = str(read_json(path).get("snapshot_id") or "")
+        except Exception:
+            continue
+        if snapshot_id:
+            values.add(snapshot_id)
+    return values
 
 
 def source_address_from_evidence(root):
@@ -61,6 +67,33 @@ def source_address_from_evidence(root):
         except Exception:
             pass
     return None
+
+
+def analysis_snapshot_ids(analysis):
+    refs = (analysis.get("composite_evidence") or {}).get("collections") or []
+    values = {
+        str(item.get("snapshot_id") or "")
+        for item in refs
+        if item.get("snapshot_id")
+    }
+    if values:
+        return values
+    supporting = analysis.get("inputs", {}).get("supporting_snapshots") or []
+    values = {
+        str(item.get("snapshot_id") or "")
+        for item in supporting
+        if item.get("snapshot_id")
+    }
+    if values:
+        return values
+    snapshot_id = str(analysis.get("inputs", {}).get("snapshot_id") or "")
+    return {snapshot_id} if snapshot_id else set()
+
+
+def analysis_covers_all_collections(root, analysis):
+    current = collection_snapshot_ids(root)
+    covered = analysis_snapshot_ids(analysis)
+    return bool(current) and current <= covered
 
 
 def _vlan_names(analysis):
@@ -133,7 +166,8 @@ def historical_mac_lookup(root, value):
             if mac not in identities:
                 continue
             configured_vlan = port.get("configured_data_vlan_id")
-            for observed_vlan in port.get("observed_data_vlan_ids", []) or [None]:
+            observed_values = port.get("observed_data_vlan_ids", []) or [None]
+            for observed_vlan in observed_values:
                 matches.append({
                     "interface": interface,
                     "description": port.get("description"),
@@ -182,7 +216,7 @@ def historical_mac_lookup(root, value):
     }
 
 
-def _valid_jsons(root, pattern, result_field=None, result_value=None):
+def _valid_jsons(root, pattern):
     values = []
     for path in sorted(Path(root).glob(pattern)):
         try:
@@ -195,23 +229,45 @@ def _valid_jsons(root, pattern, result_field=None, result_value=None):
                     continue
             if value.get("migration_id") not in (None, Path(root).name):
                 continue
-            if result_field and value.get(result_field) != result_value:
-                continue
             values.append((path, value))
         except Exception:
             continue
     return values
 
 
-def _successful_pre_stage(root):
+def _successful_pre_stage(root, approved_plan_digest):
     for _path, value in _valid_jsons(root, "transactions/*/transaction.json"):
         if value.get("phase") != "pre_stage":
             continue
         commit = value.get("commit", {})
-        if (
+        if not (
             commit.get("status") == "COMMITTED_AND_CONFIRMED"
             and commit.get("confirmed") is True
             and value.get("validation", {}).get("result") == "PASS"
+        ):
+            continue
+        package_id = str(value.get("inputs", {}).get("package_id") or "")
+        if not package_id:
+            continue
+        try:
+            selected_package = provisioner_base.choose_package(root, package_id)
+        except Exception:
+            continue
+        if selected_package["package"].get("inputs", {}).get("plan_digest") == approved_plan_digest:
+            return True
+    return False
+
+
+def _successful_old_recovery(root, approved_plan_digest):
+    for _path, value in _valid_jsons(
+        root, "old-switch/recovery-transactions/*/transaction.json"
+    ):
+        commit = value.get("commit", {})
+        if (
+            commit.get("status") in ("COMMITTED_AND_CONFIRMED", "ALREADY_PRESENT_VALIDATED")
+            and commit.get("confirmed") is True
+            and value.get("validation", {}).get("result") == "PASS"
+            and value.get("inputs", {}).get("plan_digest") == approved_plan_digest
         ):
             return True
     return False
@@ -244,8 +300,7 @@ def _successful_cleanup(root, approved_plan_digest):
             continue
         if tx.get("validation", {}).get("result") != "PASS":
             continue
-        inputs = tx.get("inputs", {})
-        if inputs.get("approved_plan_digest") == approved_plan_digest:
+        if tx.get("inputs", {}).get("approved_plan_digest") == approved_plan_digest:
             return True
     return False
 
@@ -291,18 +346,41 @@ def _probe_status(root, selected_plan):
     }
 
 
+def _physical_cutover_ack(root, approved_plan_digest):
+    base = Path(root) / "operator" / "physical-cutovers"
+    if not base.is_dir():
+        return False
+    for path in sorted(base.glob("*/ack.json"), reverse=True):
+        try:
+            integrity = read_json(path.parent / "integrity.json")
+            if integrity.get("ack.json") != sha256_file(path):
+                continue
+            value = read_json(path)
+            if (
+                value.get("approved_plan_digest") == approved_plan_digest
+                and value.get("acknowledged") is True
+            ):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def workflow_status(root):
     root = Path(root)
     collections = collection_paths(root)
     analyses = accepted_analyses(root)
+    covering_analyses = [
+        item for item in analyses
+        if analysis_covers_all_collections(root, item["analysis"])
+    ]
     approved_plans = provisioner_base.approved_plan_candidates(root)
-    selected_plan = approved_plans[0] if approved_plans else None
 
     status = {
         "migration_id": root.name,
         "collections": len(collections),
-        "analysis": "COMPLETE" if analyses else "PENDING",
-        "plan": "APPROVED" if selected_plan else "PENDING",
+        "analysis": "PENDING",
+        "plan": "PENDING",
         "package": "PENDING",
         "render": "PENDING",
         "identity": "PENDING",
@@ -320,12 +398,29 @@ def workflow_status(root):
     }
     if not collections:
         return status
-    if not analyses:
+    if not covering_analyses:
+        status["analysis"] = "STALE" if analyses else "PENDING"
+        if approved_plans:
+            status["plan"] = "STALE"
         status["next_action"] = "analyze"
         return status
+    status["analysis"] = "COMPLETE"
+
+    covering_by_digest = {
+        item["analysis_digest"]: item for item in covering_analyses
+    }
+    selected_plan = next(
+        (
+            item for item in approved_plans
+            if item["plan"].get("inputs", {}).get("analysis_digest") in covering_by_digest
+        ),
+        None,
+    )
     if not selected_plan:
+        status["plan"] = "STALE" if approved_plans else "PENDING"
         status["next_action"] = "build"
         return status
+    status["plan"] = "APPROVED"
 
     plan_digest = selected_plan["plan_digest"]
     packages = [
@@ -346,13 +441,10 @@ def workflow_status(root):
         status["render"] = "COMPLETE"
     if provisioner_base.identity_candidates(root):
         status["identity"] = "COMPLETE"
-    if _successful_pre_stage(root):
+    if _successful_pre_stage(root, plan_digest):
         status["ex4400_prestage"] = "COMPLETE"
-    try:
-        choose_recovery_transaction(root)
+    if _successful_old_recovery(root, plan_digest):
         status["old_recovery"] = "COMPLETE"
-    except Exception:
-        pass
 
     if not all(
         status[name] == "COMPLETE"
@@ -379,17 +471,11 @@ def workflow_status(root):
             and value.get("plan", {}).get("plan_digest") == plan_digest
         ):
             attachments.append((path, value))
-    ack = root / "operator" / "physical-cutover.json"
     if attachments:
         status["physical_cutover"] = "INFERRED_COMPLETE"
         status["qfx_attachment"] = "COMPLETE"
-    elif ack.is_file():
-        try:
-            value = read_json(ack)
-            if value.get("approved_plan_digest") == plan_digest:
-                status["physical_cutover"] = "ACKNOWLEDGED"
-        except Exception:
-            pass
+    elif _physical_cutover_ack(root, plan_digest):
+        status["physical_cutover"] = "ACKNOWLEDGED"
     if status["physical_cutover"] == "PENDING":
         status["next_action"] = "cutover"
         return status
@@ -418,11 +504,19 @@ def workflow_status(root):
         status["next_action"] = "activate"
         return status
 
-    if _valid_jsons(root, "port-state-comparisons/*/comparison.json"):
+    comparisons = [
+        value for _path, value in _valid_jsons(
+            root, "port-state-comparisons/*/comparison.json"
+        )
+        if value.get("approved_plan_digest") == plan_digest
+    ]
+    if comparisons:
         status["port_state"] = "COMPLETE"
-    if _valid_jsons(root, "cabling-reports/*/report.json") or _valid_jsons(
-        root, "cabling-reports/*/cabling-report.json"
-    ):
+    reports = [
+        value for _path, value in _valid_jsons(root, "facilities-reports/*/report.json")
+        if value.get("approved_plan_digest") == plan_digest
+    ]
+    if reports:
         status["cabling_report"] = "COMPLETE"
     if status["port_state"] != "COMPLETE" or status["cabling_report"] != "COMPLETE":
         status["next_action"] = "validate"
