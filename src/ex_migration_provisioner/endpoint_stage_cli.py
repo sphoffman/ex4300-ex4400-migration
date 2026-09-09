@@ -149,7 +149,11 @@ def _interfaces_config_set(dev, database):
 
 
 def _planned_config_rows(config_text, activated):
-    """Verify every intended endpoint statement against one configuration snapshot."""
+    """Verify every intended endpoint state against one configuration snapshot.
+
+    ``set`` statements must be present. ``delete`` statements describe desired
+    absence, so the equivalent set-format statement must not be present.
+    """
     configured = {
         _canonical(line)
         for line in str(config_text or "").splitlines()
@@ -159,7 +163,14 @@ def _planned_config_rows(config_text, activated):
     hard_pass = True
     for item in activated:
         wanted = [_canonical(line) for line in item["statements"]]
-        missing = [line for line in wanted if line not in configured]
+        missing = []
+        for line in wanted:
+            if line.startswith("delete "):
+                forbidden = "set " + line[len("delete "):]
+                if forbidden in configured:
+                    missing.append(line)
+            elif line not in configured:
+                missing.append(line)
         config_ok = not missing
         hard_pass = hard_pass and config_ok
         rows.append({
@@ -176,11 +187,21 @@ def _validate_preload_port_config(dev, activated):
     for item in activated:
         interface = item["new_interface"]
         memberships = _explicit_vlan_members(text, interface)
-        unexpected = [name for name in memberships if name != item["data_vlan_name"]]
+        target = item["data_vlan_name"]
+        prestage = str(item.get("prestage_access_vlan_name") or "").strip()
+        allowed = {target}
+        if prestage:
+            allowed.add(prestage)
+        unexpected = [name for name in memberships if name not in allowed]
         if unexpected:
             raise base.ProvisioningError(
                 "%s already has unexpected explicit VLAN membership(s): %s"
                 % (interface, ", ".join(unexpected))
+            )
+        if prestage and prestage not in memberships and target not in memberships:
+            raise base.ProvisioningError(
+                "%s is not on the approved pre-stage access VLAN %s and does not already have target VLAN %s"
+                % (interface, prestage, target)
             )
 
 
@@ -192,7 +213,7 @@ def _validate_loaded_candidate(dev, activated):
         for row in rows:
             missing.extend(row["missing_statements"])
         raise base.ProvisioningError(
-            "EX4400 candidate is missing %d intended endpoint statement(s) after NETCONF load: %s"
+            "EX4400 candidate is missing %d intended endpoint state transition(s) after NETCONF load: %s"
             % (len(missing), "; ".join(missing[:5]))
         )
     return rows
@@ -223,6 +244,8 @@ def _print_correlation(value):
                 ", ".join(supporting),
             )
         )
+        if item.get("prestage_access_vlan_name"):
+            print("      transition: remove %s" % item["prestage_access_vlan_name"])
         if item.get("description"):
             print("      description: %s" % item["description"])
     print("  Holds: %d" % len(correlation["holds"]))
@@ -307,6 +330,13 @@ def run(argv):
     management_vlan_id = int(variables.get("management_vlan_id"))
     voice_vlan_id = int(variables.get("voice_vlan_id"))
     recovery_vlan_id = int(variables.get("temporary_recovery_vlan_id"))
+    prestage_access_vlan_name = str(variables.get("prestage_access_vlan_name") or "").strip()
+    prestage_access_vlan_id = variables.get("prestage_access_vlan_id")
+    if not prestage_access_vlan_name or prestage_access_vlan_id is None:
+        raise base.ProvisioningError(
+            "selected pre-stage package predates the explicit pre-stage access VLAN; rerun prepare/render/run before endpoint activation"
+        )
+    prestage_access_vlan_id = int(prestage_access_vlan_id)
     recovery_interface = str(variables.get("recovery_interface") or _recovery_interface(selected_identity["identity"]))
 
     username, password = base._credentials(args, "EX4400")
@@ -367,6 +397,8 @@ def run(argv):
             voice_vlan_id,
             recovery_vlan_id,
             observed_at=utc_now(),
+            prestage_access_vlan_name=prestage_access_vlan_name,
+            prestage_access_vlan_id=prestage_access_vlan_id,
         )
         value = build_correlation_artifact(
             args.migration_id,
@@ -417,8 +449,8 @@ def run(argv):
         cu.load(payload, format="set", merge=True)
 
         # Do not rely only on an RPC success or commit-check. Read the candidate
-        # back over NETCONF and prove that every intended endpoint statement is
-        # present before an operator can approve the candidate.
+        # back over NETCONF and prove that every intended endpoint state transition
+        # is present before an operator can approve the candidate.
         candidate_rows = _validate_loaded_candidate(dev, correlation["activated"])
         if cu.commit_check() is not True:
             raise base.ProvisioningError("EX4400 endpoint activation commit-check did not return PASS")
@@ -498,6 +530,7 @@ def run(argv):
                 "SSH_HOST_KEY_MATCH",
                 "EX4400_CHASSIS_IDENTITY_MATCH",
                 "PLANNED_ENDPOINT_CONFIGURATION_PRESENT",
+                "PRESTAGE_ACCESS_VLAN_REMOVED_FROM_ACTIVATED_PORTS",
             ],
             "configuration": config_rows,
             "endpoint_evidence": endpoint_evidence,
