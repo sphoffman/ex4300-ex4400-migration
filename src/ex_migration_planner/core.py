@@ -1,10 +1,24 @@
 from __future__ import annotations
 
+from collections import defaultdict
+
 from ex_migration_analyzer.core import canonical_bytes, sha256_bytes
 
 
 class PlanError(RuntimeError):
     pass
+
+
+def _historical_mac_ports(analysis):
+    """Return every old physical port associated with each historical MAC."""
+    values = defaultdict(set)
+    for port in analysis.get("ports", []):
+        for item in port.get("historical_observations", []):
+            mac = item.get("mac")
+            interface = item.get("interface") or port.get("interface")
+            if mac and interface:
+                values[str(mac)].add(str(interface))
+    return values
 
 
 def build_plan(analysis, analysis_digest, review, review_digest, planner_version):
@@ -34,17 +48,51 @@ def build_plan(analysis, analysis_digest, review, review_digest, planner_version
         item.get("subject") for item in (review or {}).get("decisions", [])
         if item.get("code") == "CONFIGURED_NO_MAC" and item.get("disposition") == "ACCEPT_HISTORICAL_EVIDENCE"
     }
+    historical_mac_ports = _historical_mac_ports(analysis)
     port_intents = []
+    historical_endpoint_macs_used = set()
+    historical_conflicting_macs = set()
+
     for port in analysis.get("ports", []):
+        interface = port["interface"]
+        baseline_macs = {str(mac) for mac in port.get("unique_macs", []) if mac}
+        historical_macs = {
+            str(item.get("mac"))
+            for item in port.get("historical_observations", [])
+            if item.get("mac")
+        }
+        safe_historical = {
+            mac for mac in historical_macs
+            if historical_mac_ports.get(mac, set()) == {interface}
+        }
+        conflicting_historical = sorted(historical_macs - safe_historical)
+        historical_conflicting_macs.update(conflicting_historical)
+
+        # Endpoint identity is composite evidence across all eligible snapshots,
+        # but only when the historical MAC has a single consistent old port.
+        endpoint_macs = sorted(baseline_macs | safe_historical)
+        historical_endpoint_macs_used.update(safe_historical - baseline_macs)
+
         disposition = port["disposition"]
-        if disposition == "UNUSED_ACCESS_PORT": action = "LEAVE_TEMPLATE_DEFAULT"
-        elif disposition == "CONFIGURED_NO_MAC" and port["interface"] in accepted_history: action = "CORRELATE_AFTER_CABLE_MOVE"
-        elif disposition in ("CONFIGURED_NO_MAC", "ACTIVE_UNASSIGNED_SILENT", "CORRELATION_BLOCKED"): action = "HOLD_FOR_OPERATOR_RESOLUTION"
-        else: action = "CORRELATE_AFTER_CABLE_MOVE"
+        if disposition == "UNUSED_ACCESS_PORT":
+            action = "LEAVE_TEMPLATE_DEFAULT"
+        elif disposition == "CONFIGURED_NO_MAC" and interface in accepted_history and endpoint_macs:
+            action = "CORRELATE_AFTER_CABLE_MOVE"
+        elif disposition in ("CONFIGURED_NO_MAC", "ACTIVE_UNASSIGNED_SILENT", "CORRELATION_BLOCKED"):
+            action = "HOLD_FOR_OPERATOR_RESOLUTION"
+        elif endpoint_macs:
+            action = "CORRELATE_AFTER_CABLE_MOVE"
+        else:
+            action = "HOLD_FOR_OPERATOR_RESOLUTION"
+
         port_intents.append({
-            "old_interface": port["interface"], "new_interface": None, "description": port.get("description"),
+            "old_interface": interface, "new_interface": None, "description": port.get("description"),
             "configured_data_vlan_id": port.get("configured_data_vlan_id"), "observed_data_vlan_ids": port.get("observed_data_vlan_ids", []),
-            "endpoint_macs": port.get("unique_macs", []), "historical_observations": port.get("historical_observations", []),
+            "endpoint_macs": endpoint_macs,
+            "baseline_endpoint_macs": sorted(baseline_macs),
+            "historical_endpoint_macs": sorted(safe_historical),
+            "historical_conflicting_macs": conflicting_historical,
+            "historical_observations": port.get("historical_observations", []),
             "analysis_disposition": disposition, "planned_action": action,
             "classification": "ENDPOINT_CORRELATION" if action == "CORRELATE_AFTER_CABLE_MOVE" else "VALIDATION_ONLY",
         })
@@ -66,7 +114,16 @@ def build_plan(analysis, analysis_digest, review, review_digest, planner_version
         },
         "qfx_intent": {"status": "REQUIRES_FUTURE_SITE_POLICY", "operator_supplied_ports_allowed": False, "required_non_management_vlan_ids": sorted(v["vlan_id"] for v in vlans if v["vlan_id"] not in (None, management_vlan)), "requirements": ["DISCOVER_LOCAL_PORTS_WITH_LLDP_AND_LACP", "REQUIRE_PHYSICAL_PORT_SYMMETRY", "VERIFY_DETERMINISTIC_AE_AND_ESI", "ADD_VLANS_ONLY_AFTER_VALIDATION"]},
         "safety": {"configuration_rendering_allowed": False, "device_connections_allowed": False, "device_writes_allowed": False, "collections_mutable": False, "stale_if_any_input_digest_changes": True},
-        "statistics": {"configured_vlans": len(vlans), "configured_unobserved_vlans": sum(1 for v in vlans if not v["observed"] and v["vlan_id"] != management_vlan), "access_ports": len(port_intents), "correlate_after_move": sum(1 for p in port_intents if p["planned_action"] == "CORRELATE_AFTER_CABLE_MOVE"), "template_default_ports": sum(1 for p in port_intents if p["planned_action"] == "LEAVE_TEMPLATE_DEFAULT"), "operator_holds": sum(1 for p in port_intents if p["planned_action"] == "HOLD_FOR_OPERATOR_RESOLUTION")},
+        "statistics": {
+            "configured_vlans": len(vlans),
+            "configured_unobserved_vlans": sum(1 for v in vlans if not v["observed"] and v["vlan_id"] != management_vlan),
+            "access_ports": len(port_intents),
+            "correlate_after_move": sum(1 for p in port_intents if p["planned_action"] == "CORRELATE_AFTER_CABLE_MOVE"),
+            "template_default_ports": sum(1 for p in port_intents if p["planned_action"] == "LEAVE_TEMPLATE_DEFAULT"),
+            "operator_holds": sum(1 for p in port_intents if p["planned_action"] == "HOLD_FOR_OPERATOR_RESOLUTION"),
+            "historical_endpoint_macs_promoted": len(historical_endpoint_macs_used),
+            "historical_conflicting_macs": len(historical_conflicting_macs),
+        },
     }
     return plan
 
