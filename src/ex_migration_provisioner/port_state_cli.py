@@ -168,7 +168,6 @@ def run(argv):
         completed=completed,
         observed_at=observed_at,
     )
-    comparison["historical_completions_reopened"] = completed.get("stale", [])
     destination, action = write_port_state_comparison(
         migration_root,
         comparison,
