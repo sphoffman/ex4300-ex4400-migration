@@ -22,7 +22,6 @@ def _require(condition, message):
 
 
 def recovery_statement(interface, address):
-    """Backward-compatible helper for the VME address statement only."""
     interface = str(interface or "").strip()
     address = str(address or "").strip()
     _require(interface, "old-switch recovery management interface is required")
@@ -31,7 +30,6 @@ def recovery_statement(interface, address):
 
 
 def recovery_statements(interface, address, gateway, routing_instance=MGMT_INSTANCE):
-    """Build the complete isolated OOB recovery intent."""
     interface = str(interface or "").strip()
     routing_instance = str(routing_instance or "").strip()
     _require(interface, "old-switch recovery management interface is required")
@@ -63,15 +61,14 @@ def build_recovery_transaction(
     recovery_interface,
     recovery_address,
     recovery_gateway,
-    recovery_transport_address,
     source_ssh_host_key_sha256,
     candidate_diff,
     approved_at,
     confirm_minutes,
-    path_proof_mode,
     bootstrap_identity_id=None,
     bootstrap_identity_digest=None,
     bootstrap_profile_digest=None,
+    master_defaults_before=None,
 ):
     diff_digest = sha256_bytes(str(candidate_diff or "").encode("utf-8"))
     key = {
@@ -84,8 +81,9 @@ def build_recovery_transaction(
         "candidate_diff_sha256": diff_digest,
     }
     transaction_id = sha256_bytes(canonical_bytes(key))[:16]
+    expected_hostname = str(plan.get("template_variables", {}).get("old_hostname") or "")
     return {
-        "schema_version": "1.2",
+        "schema_version": "1.3",
         "transaction_id": transaction_id,
         "migration_id": migration_id,
         "approved_at": approved_at,
@@ -99,6 +97,9 @@ def build_recovery_transaction(
             "bootstrap_profile_digest": bootstrap_profile_digest,
         },
         "environment": environment,
+        "source_identity": {
+            "configured_hostname": expected_hostname,
+        },
         "source_access": {
             "logical_address": source_logical_address,
             "transport_address": source_transport_address,
@@ -108,12 +109,11 @@ def build_recovery_transaction(
             "interface": recovery_interface,
             "address": recovery_address,
             "gateway": recovery_gateway,
-            "transport_address": recovery_transport_address,
-            "path_proof_mode": path_proof_mode,
+            "logical_address": str(ipaddress.ip_interface(str(recovery_address)).ip),
         },
         "source_ssh_host_key_sha256": source_ssh_host_key_sha256,
-        "recovery_ssh_host_key_sha256": None,
         "candidate_diff_sha256": diff_digest,
+        "master_defaults_before": sorted(master_defaults_before or []),
         "commit": {
             "status": "APPROVED_PENDING_COMMIT",
             "confirmed": False,
@@ -121,6 +121,7 @@ def build_recovery_transaction(
         "validation": {
             "result": "PENDING",
             "checks": [],
+            "recovery_path_verified": False,
         },
         "safety": {
             "duplicate_bootstrap_ip_requires_physical_l2_isolation_until_cable_move": True,
@@ -128,11 +129,10 @@ def build_recovery_transaction(
             "existing_inband_management_preserved": True,
             "master_routing_table_default_unchanged": True,
             "dedicated_management_instance_required": True,
-            "candidate_completeness_readback_required": True,
             "commit_confirmed_required": True,
-            "secondary_recovery_connection_required": True,
-            "same_ssh_host_key_required": True,
-            "same_configured_hostname_required": True,
+            "post_cable_recovery_verification_required": True,
+            "same_ssh_host_key_required_after_cable_move": True,
+            "same_configured_hostname_required_after_cable_move": True,
         },
     }
 
@@ -157,7 +157,7 @@ def persist_recovery_transaction(migration_root, transaction, candidate_diff):
     return destination
 
 
-def validate_existing_recovery_transaction(directory, migration_id):
+def validate_existing_recovery_transaction(directory, migration_id, require_committed=False):
     tx_path = directory / "transaction.json"
     diff_path = directory / "candidate.diff"
     integrity_path = directory / "integrity.json"
@@ -167,4 +167,91 @@ def validate_existing_recovery_transaction(directory, migration_id):
     _require(integrity.get("candidate.diff") == sha256_file(diff_path), "old-switch recovery diff integrity failed")
     transaction = read_json(tx_path)
     _require(transaction.get("migration_id") == migration_id, "old-switch recovery migration ID mismatch")
-    return transaction
+    if require_committed:
+        _require(transaction.get("commit", {}).get("status") == "COMMITTED_AND_CONFIRMED", "old-switch recovery transaction is not committed and confirmed")
+        _require(transaction.get("commit", {}).get("confirmed") is True, "old-switch recovery final confirmation is missing")
+        _require(transaction.get("validation", {}).get("result") == "PASS", "old-switch recovery pre-cutover validation did not pass")
+    return {
+        "transaction": transaction,
+        "transaction_path": tx_path,
+        "transaction_digest": sha256_file(tx_path),
+        "directory": directory,
+    }
+
+
+def choose_recovery_transaction(migration_root, transaction_id=None):
+    root = migration_root / "old-switch" / "recovery-transactions"
+    if transaction_id:
+        directory = root / str(transaction_id)
+        _require(directory.is_dir(), "old-switch recovery transaction %s was not found" % transaction_id)
+        return validate_existing_recovery_transaction(directory, migration_root.name, require_committed=True)
+    candidates = []
+    if root.is_dir():
+        for directory in root.iterdir():
+            if not directory.is_dir():
+                continue
+            try:
+                selected = validate_existing_recovery_transaction(directory, migration_root.name, require_committed=True)
+            except ProvisioningError:
+                continue
+            tx = selected["transaction"]
+            stamp = str(tx.get("commit", {}).get("confirmed_at") or tx.get("approved_at") or "")
+            candidates.append((stamp, str(tx.get("transaction_id") or directory.name), selected))
+    _require(candidates, "no integrity-valid committed-and-confirmed old-switch recovery transaction was found")
+    candidates.sort(reverse=True, key=lambda item: (item[0], item[1]))
+    return candidates[0][2]
+
+
+def build_recovery_verification(transaction, transaction_digest, observed_hostname, ssh_host_key_sha256, config_sha256, verified_at):
+    key = {
+        "migration_id": transaction.get("migration_id"),
+        "recovery_transaction_id": transaction.get("transaction_id"),
+        "recovery_transaction_digest": transaction_digest,
+        "observed_hostname": observed_hostname,
+        "ssh_host_key_sha256": ssh_host_key_sha256,
+        "config_sha256": config_sha256,
+    }
+    verification_id = sha256_bytes(canonical_bytes(key))[:16]
+    return {
+        "schema_version": "1.0",
+        "verification_id": verification_id,
+        "migration_id": transaction.get("migration_id"),
+        "verified_at": verified_at,
+        "inputs": {
+            "recovery_transaction_id": transaction.get("transaction_id"),
+            "recovery_transaction_digest": transaction_digest,
+        },
+        "observed": {
+            "hostname": observed_hostname,
+            "ssh_host_key_sha256": ssh_host_key_sha256,
+            "configuration_sha256": config_sha256,
+        },
+        "result": "PASS",
+        "checks": [
+            "RECOVERY_SSH_HOST_KEY_MATCH",
+            "APPROVED_SOURCE_HOSTNAME_MATCH",
+            "MGMT_JUNOS_ENABLED",
+            "RECOVERY_CONFIGURATION_PRESENT",
+            "MGMT_JUNOS_DEFAULT_PRESENT",
+            "MASTER_DEFAULT_ROUTE_UNCHANGED",
+        ],
+    }
+
+
+def persist_recovery_verification(migration_root, verification):
+    destination = migration_root / "old-switch" / "recovery-verifications" / verification["verification_id"]
+    path = destination / "verification.json"
+    if path.is_file():
+        integrity = read_json(destination / "integrity.json")
+        _require(integrity.get("verification.json") == sha256_file(path), "old-switch recovery verification integrity failed")
+        existing = read_json(path)
+        comparable_existing = dict(existing)
+        comparable_new = dict(verification)
+        comparable_existing.pop("verified_at", None)
+        comparable_new.pop("verified_at", None)
+        _require(comparable_existing == comparable_new, "existing recovery verification ID has different content")
+        return destination, existing, "UNCHANGED"
+    destination.mkdir(parents=True, exist_ok=False)
+    atomic_json(path, verification)
+    atomic_json(destination / "integrity.json", {"verification.json": sha256_file(path)})
+    return destination, verification, "CREATED"
