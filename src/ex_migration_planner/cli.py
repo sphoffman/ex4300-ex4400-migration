@@ -5,7 +5,7 @@ import getpass
 import sys
 from pathlib import Path
 
-from ex_migration_analyzer.cli import load_settings, readable_time, safe_id
+from ex_migration_analyzer.cli import load_settings, readable_time, safe_id, set_display_timezone
 from ex_migration_analyzer.core import AnalysisError, atomic_json, canonical_bytes, read_json, sha256_bytes, sha256_file, utc_now
 
 from . import __version__
@@ -123,7 +123,7 @@ def main(argv=None):
     migration_id = args.migration_id or (input("Migration ID: ").strip() if interactive else "")
     if not safe_id(migration_id): parser.error("a path-safe migration ID is required")
     try:
-        settings = load_settings(args.settings); migration_root = Path(settings["snapshot_root"]) / "migrations" / migration_id
+        settings = load_settings(args.settings); set_display_timezone(settings.get("display_timezone")); migration_root = Path(settings["snapshot_root"]) / "migrations" / migration_id
         candidate = choose_analysis(accepted_analyses(migration_root), interactive)
         plan = build_plan(candidate["analysis"], candidate["analysis_digest"], candidate["review"], candidate["review_digest"], __version__)
         destination, action = write_plan(migration_root, plan); _approval, approval_action = approve_plan(destination, plan, interactive)
