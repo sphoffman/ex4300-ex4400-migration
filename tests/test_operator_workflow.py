@@ -13,6 +13,7 @@ def test_source_address_reused_from_existing_discovery(tmp_path):
     _write_json(
         root / "old-switch" / "collections" / "001" / "snapshot.json",
         {
+            "snapshot_id": "s1",
             "migration_id": "sw1203",
             "management": {"connection_address": "10.255.3.18"},
         },
@@ -25,6 +26,25 @@ def test_workflow_status_starts_with_discovery(tmp_path):
     value = core.workflow_status(root)
     assert value["collections"] == 0
     assert value["next_action"] == "discover"
+
+
+def test_analysis_coverage_detects_newer_discovery_collection(tmp_path):
+    root = tmp_path / "migrations" / "sw1203"
+    _write_json(
+        root / "old-switch" / "collections" / "001" / "snapshot.json",
+        {"snapshot_id": "s1", "management": {}},
+    )
+    analysis = {
+        "composite_evidence": {
+            "collections": [{"snapshot_id": "s1", "collection_digest": "a" * 64}]
+        }
+    }
+    assert core.analysis_covers_all_collections(root, analysis) is True
+    _write_json(
+        root / "old-switch" / "collections" / "002" / "snapshot.json",
+        {"snapshot_id": "s2", "management": {}},
+    )
+    assert core.analysis_covers_all_collections(root, analysis) is False
 
 
 def test_historical_mac_lookup_distinguishes_port_vlan_from_observed_vlan(monkeypatch, tmp_path):
