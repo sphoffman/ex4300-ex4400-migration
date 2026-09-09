@@ -40,7 +40,7 @@ def test_pre_stage_package_has_no_live_qfx_attachment_or_preflight():
         digest("f"),
         bootstrap(),
         digest("1"),
-        "0.8.2",
+        "0.9.0",
         created_at="2026-09-08T17:00:00Z",
     )
 
@@ -54,9 +54,14 @@ def test_pre_stage_package_has_no_live_qfx_attachment_or_preflight():
         "ae_interface": None,
         "force_up": False,
     }
+    assert package["variables"]["prestage_access_vlan_name"] == "TEMP-ACCESS"
+    assert package["variables"]["prestage_access_vlan_id"] == 3998
+    assert package["variables"]["prestage_access_interfaces"][0] == "ge-0/0/2"
+    assert package["variables"]["prestage_access_interfaces"][-1] == "ge-0/0/46"
+    assert "ge-0/0/47" not in package["variables"]["prestage_access_interfaces"]
+    assert len(package["variables"]["prestage_access_interfaces"]) == 45
     assert package["phases"]["pre_stage"]["qfx_attachment_known"] is False
     assert package["phases"]["pre_stage"]["qfx_connections_performed"] is False
-    assert package["phases"]["cutover"]["qfx_attachment_discovery_required"] is True
     assert package["safety"]["qfx_connections_allowed"] is False
     assert package["safety"]["qfx_attachment_prebound"] is False
 
@@ -78,9 +83,15 @@ def test_prepare_cli_has_no_qfx_credentials_or_transport_options():
     assert "--no-host-key-check" not in option_strings
 
 
-def test_site_policy_prohibits_force_up_and_prebound_attachment():
+def test_site_policy_prohibits_force_up_prebound_attachment_and_qfx_temp_access():
     policy = site_policy()
     assert policy["precutover_qfx_baseline"]["force_up"] is False
     assert policy["precutover_qfx_baseline"]["lacp_mode"] == "active"
     assert policy["ae_pool"]["migration_assignment_prebound"] is False
+    assert policy["prestage_access_vlan"] == {"name": "TEMP-ACCESS", "vlan_id": 3998}
+    assert 3998 not in policy["precutover_qfx_baseline"]["required_vlan_ids"]
     assert "port_to_ae" not in policy
+
+    schema = json.loads((ROOT / "schemas/qfx-site-policy-1.1.json").read_text())
+    Draft202012Validator.check_schema(schema)
+    Draft202012Validator(schema).validate(policy)
