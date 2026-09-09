@@ -11,14 +11,23 @@ def _sorted_dicts(values):
 
 
 def _device_state(snapshot):
-    """Return observed old-device identity, excluding tool-derived migration metadata."""
+    """Return stable observed logical-device identity.
+
+    PyEZ's top-level serialnumber can follow the current VC master/RE, so it is
+    intentionally compared separately as review evidence rather than as a hard
+    identity invariant.
+    """
     device = snapshot.get("device", {})
     return {
         "hostname": device.get("hostname"),
         "model": device.get("model"),
-        "serial_numbers": sorted(device.get("serial_numbers") or []),
         "configured_hostname": device.get("configured_hostname"),
     }
+
+
+def _device_serial_state(snapshot):
+    device = snapshot.get("device", {})
+    return {"serial_numbers": sorted(device.get("serial_numbers") or [])}
 
 
 def _management_state(snapshot):
@@ -210,8 +219,17 @@ def build_composite_evidence(candidates, policy, policy_digest):
     if len(device_variants) > 1:
         findings.append(_finding(
             "BLOCKER", "DEVICE_IDENTITY_CHANGED", "device",
-            "observed old-switch identity changed across eligible discovery collections",
+            "stable observed old-switch identity changed across eligible discovery collections",
             device_variants,
+        ))
+
+    serial_variants = _variants(eligible, _device_serial_state)
+    consistency["device_serial_observation"] = "CONSISTENT" if len(serial_variants) == 1 else "CHANGED"
+    if len(serial_variants) > 1:
+        findings.append(_finding(
+            "REVIEW", "DEVICE_SERIAL_OBSERVATION_CHANGED", "device-serial",
+            "top-level reported device serial changed across eligible discovery collections; on a Virtual Chassis this may reflect RE/mastership or member hardware change",
+            serial_variants,
         ))
 
     management_variants = _variants(eligible, _management_state)
