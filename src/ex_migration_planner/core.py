@@ -49,6 +49,11 @@ def build_plan(analysis, analysis_digest, review, review_digest, planner_version
         if item.get("code") == "CONFIGURED_NO_MAC" and item.get("disposition") == "ACCEPT_HISTORICAL_EVIDENCE"
     }
     historical_mac_ports = _historical_mac_ports(analysis)
+    port_state_by_interface = {
+        str(item.get("interface")): item
+        for item in (analysis.get("composite_evidence", {}).get("port_state_summary", {}).get("ports", []) or [])
+        if item.get("interface")
+    }
     port_intents = []
     historical_endpoint_macs_used = set()
     historical_conflicting_macs = set()
@@ -93,6 +98,7 @@ def build_plan(analysis, analysis_digest, review, review_digest, planner_version
             "historical_endpoint_macs": sorted(safe_historical),
             "historical_conflicting_macs": conflicting_historical,
             "historical_observations": port.get("historical_observations", []),
+            "pre_migration_state": port_state_by_interface.get(interface),
             "analysis_disposition": disposition, "planned_action": action,
             "classification": "ENDPOINT_CORRELATION" if action == "CORRELATE_AFTER_CABLE_MOVE" else "VALIDATION_ONLY",
         })
@@ -110,7 +116,7 @@ def build_plan(analysis, analysis_digest, review, review_digest, planner_version
         "template_variables": variables, "vlan_intents": vlans, "port_intents": port_intents,
         "phase_intents": {
             "pre_stage": {"status": "INTENT_ONLY", "include": ["AUTHORITATIVE_EX4400_BOILERPLATE", "TEMPLATE_VARIABLES", "ALL_CONFIGURED_VLANS", "MANAGEMENT_IRB", "DEFAULT_ROUTE", "AE0_MANAGEMENT_TRANSPORT"], "exclude": ["ENDPOINT_DESCRIPTIONS", "ENDPOINT_DATA_VLAN_ASSIGNMENTS"]},
-            "post_move": {"status": "INTENT_ONLY", "include": ["OBSERVE_NEW_PORT_MACS", "CORRELATE_APPROVED_ENDPOINT_HISTORY", "APPLY_UNAMBIGUOUS_ENDPOINT_INTENT"], "hold": ["SILENT_ENDPOINTS", "AMBIGUOUS_ENDPOINTS", "CONFLICTING_EVIDENCE"]},
+            "post_move": {"status": "INTENT_ONLY", "include": ["OBSERVE_NEW_PORT_MACS", "CORRELATE_APPROVED_ENDPOINT_HISTORY", "COMPARE_PRE_POST_PORT_STATE", "APPLY_UNAMBIGUOUS_ENDPOINT_INTENT"], "hold": ["SILENT_ENDPOINTS", "AMBIGUOUS_ENDPOINTS", "CONFLICTING_EVIDENCE"]},
         },
         "qfx_intent": {"status": "REQUIRES_FUTURE_SITE_POLICY", "operator_supplied_ports_allowed": False, "required_non_management_vlan_ids": sorted(v["vlan_id"] for v in vlans if v["vlan_id"] not in (None, management_vlan)), "requirements": ["DISCOVER_LOCAL_PORTS_WITH_LLDP_AND_LACP", "REQUIRE_PHYSICAL_PORT_SYMMETRY", "VERIFY_DETERMINISTIC_AE_AND_ESI", "ADD_VLANS_ONLY_AFTER_VALIDATION"]},
         "safety": {"configuration_rendering_allowed": False, "device_connections_allowed": False, "device_writes_allowed": False, "collections_mutable": False, "stale_if_any_input_digest_changes": True},
@@ -132,8 +138,9 @@ def render_plan_report(plan):
     lines = ["# Migration intent plan: %s" % plan["migration_id"], "", "- Plan: `%s`" % plan["plan_id"], "- Eligibility: **%s**" % plan["eligibility"]["status"], "- Rendering/device writes: **DISABLED**", "", "## VLAN intent", "", "| VLAN | ID | Observed | IRB |", "|---|---:|---|---|"]
     for vlan in plan["vlan_intents"]:
         lines.append("| %s | %s | %s | %s |" % (vlan["name"], vlan["vlan_id"] or "", "yes" if vlan["observed"] else "no", vlan["irb_interface"] or ""))
-    lines += ["", "## Endpoint intent", "", "| Old port | VLAN | MACs | Action |", "|---|---:|---:|---|"]
+    lines += ["", "## Endpoint intent", "", "| Old port | VLAN | MACs | Pre-state | Action |", "|---|---:|---:|---|---|"]
     for port in plan["port_intents"]:
-        lines.append("| %s | %s | %d | %s |" % (port["old_interface"], port["configured_data_vlan_id"] or "", len(port["endpoint_macs"]), port["planned_action"]))
-    lines += ["", "## Safety boundary", "", "This artifact records deterministic intent only. It cannot render or apply configuration and cannot connect to devices."]
+        state = (port.get("pre_migration_state") or {}).get("latest_state") or ""
+        lines.append("| %s | %s | %d | %s | %s |" % (port["old_interface"], port["configured_data_vlan_id"] or "", len(port["endpoint_macs"]), state, port["planned_action"]))
+    lines += ["", "## Safety boundary", "", "This artifact records deterministic intent only. Pre-migration port state is diagnostic evidence and never authorizes endpoint configuration. This artifact cannot render or apply configuration and cannot connect to devices."]
     return "\n".join(lines) + "\n"
