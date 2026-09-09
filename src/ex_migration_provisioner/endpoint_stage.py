@@ -129,8 +129,10 @@ def _description_statement(interface, description):
 def committed_endpoint_state(migration_root, approved_plan_digest):
     """Return integrity-valid committed endpoint mappings for the approved plan.
 
-    This is historical completion evidence only. The caller must still reconcile
-    each mapping against current committed EX configuration before skipping it.
+    This is historical completion evidence only. Transactions bound to other
+    approved plans remain valid immutable history but are not eligible resume state
+    for the current plan. The caller must still reconcile each selected mapping
+    against current committed EX configuration before skipping it.
     """
     by_old = {}
     by_new = {}
@@ -174,10 +176,8 @@ def committed_endpoint_state(migration_root, approved_plan_digest):
             "endpoint correlation integrity validation failed for %s" % correlation_id,
         )
         correlation = read_json(correlation_path)
-        _require(
-            correlation.get("inputs", {}).get("approved_plan_digest") == approved_plan_digest,
-            "committed endpoint transaction is bound to a different approved migration plan",
-        )
+        if correlation.get("inputs", {}).get("approved_plan_digest") != approved_plan_digest:
+            continue
 
         transaction_id = str(tx.get("transaction_id") or directory.name)
         for row in tx.get("activated", []):
