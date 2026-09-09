@@ -97,12 +97,13 @@ def _vlan_by_id(plan):
     return result
 
 
-def _eligible_edge(interface, recovery_interface):
+def _eligible_edge(interface, recovery_interface, uplink_interfaces=None):
     match = _EDGE.fullmatch(str(interface or ""))
     if not match:
         return False
     port = int(match.group("port"))
-    return 2 <= port <= 47 and interface != recovery_interface
+    excluded = {str(value) for value in (uplink_interfaces or [])}
+    return 0 <= port <= 47 and interface != recovery_interface and interface not in excluded
 
 
 def _normalize_expected_macs(port):
@@ -122,8 +123,6 @@ def _description_statement(interface, description):
     value = str(description or "").strip()
     if not value:
         return None
-    # JSON string quoting is compatible with Junos set-format quoting for the
-    # ordinary interface descriptions carried by the approved migration plan.
     return "set interfaces %s description %s" % (interface, json.dumps(value))
 
 
@@ -135,8 +134,8 @@ def correlate_endpoint_intent(
     voice_vlan_id,
     temporary_recovery_vlan_id,
     observed_at=None,
-    prestage_access_vlan_name=None,
     prestage_access_vlan_id=None,
+    uplink_interfaces=None,
 ):
     vlan_names = _vlan_by_id(plan)
     observations = parse_mac_table_text(
@@ -145,8 +144,8 @@ def correlate_endpoint_intent(
         "post-cutover-ex4400-mac-table",
     )
 
-    prestage_name = str(prestage_access_vlan_name or "").strip()
     prestage_id = int(prestage_access_vlan_id) if prestage_access_vlan_id is not None else None
+    uplinks = [str(value) for value in (uplink_interfaces or [])]
 
     by_mac = defaultdict(set)
     observed_rows = []
@@ -154,7 +153,7 @@ def correlate_endpoint_intent(
         if item.mac_type != "dynamic":
             continue
         physical = str(item.physical_interface or "")
-        if not _eligible_edge(physical, recovery_interface):
+        if not _eligible_edge(physical, recovery_interface, uplinks):
             continue
         by_mac[item.mac].add(physical)
         observed_rows.append({
@@ -234,15 +233,7 @@ def correlate_endpoint_intent(
             continue
 
         statements = []
-        if prestage_name:
-            statements.append(
-                "delete interfaces %s unit 0 family ethernet-switching vlan members %s"
-                % (new_interface, prestage_name)
-            )
-        description_statement = _description_statement(
-            new_interface,
-            port.get("description"),
-        )
+        description_statement = _description_statement(new_interface, port.get("description"))
         if description_statement:
             statements.append(description_statement)
         statements.append(
@@ -255,22 +246,15 @@ def correlate_endpoint_intent(
             "description": port.get("description"),
             "data_vlan_id": vlan_id,
             "data_vlan_name": vlan_name,
-            "prestage_access_vlan_name": prestage_name or None,
             "expected_macs": expected_macs,
             "observed_support": supporting,
             "statements": statements,
         })
 
-    # Fail closed when two historical endpoint intents resolve to the same new
-    # physical port. Neither intent is safe to apply automatically in that case.
     by_new = defaultdict(list)
     for item in candidates:
         by_new[item["new_interface"]].append(item)
-    conflicted = {
-        interface
-        for interface, rows in by_new.items()
-        if len(rows) > 1
-    }
+    conflicted = {interface for interface, rows in by_new.items() if len(rows) > 1}
     if conflicted:
         keep = []
         for item in candidates:
