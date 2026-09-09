@@ -37,11 +37,15 @@ def _qfx_state(ids):
     }
 
 
-def test_cleanup_statements_are_scope_limited():
+def test_cleanup_statements_preserve_local_recovery_configuration():
     assert ex_cleanup_statements("ge-0/0/47", "TEMP-RECOVERY") == [
-        "delete interfaces ge-0/0/47 unit 0 family ethernet-switching vlan members TEMP-RECOVERY",
-        "delete vlans TEMP-RECOVERY",
+        "set interfaces ge-0/0/47 disable",
     ]
+    assert ex_cleanup_statements(
+        "ge-0/0/47",
+        "TEMP-RECOVERY",
+        recovery_port_already_disabled=True,
+    ) == []
     assert qfx_cleanup_statements("ae2", "TEMP-RECOVERY") == [
         "delete interfaces ae2 unit 0 family ethernet-switching vlan members TEMP-RECOVERY"
     ]
@@ -80,17 +84,26 @@ def test_ex_recovery_state_before_and_after_cleanup():
         "set vlans default vlan-id 3998",
     ])
     state = ex_recovery_state(before, "ge-0/0/47", "TEMP-RECOVERY", 3999, 3998)
+    assert state["recovery_port_disabled"] is False
     assert state["recovery_port_membership_present"] is True
     assert state["recovery_vlan_definition_present"] is True
-    after = "set vlans default vlan-id 3998\n"
+
+    after = "\n".join([
+        "set interfaces ge-0/0/47 disable",
+        "set interfaces ge-0/0/47 unit 0 family ethernet-switching vlan members TEMP-RECOVERY",
+        "set vlans TEMP-RECOVERY vlan-id 3999",
+        "set vlans default vlan-id 3998",
+    ])
     state = ex_recovery_state(after, "ge-0/0/47", "TEMP-RECOVERY", 3999, 3998)
-    assert state["recovery_port_membership_present"] is False
-    assert state["recovery_vlan_definition_present"] is False
+    assert state["recovery_port_disabled"] is True
+    assert state["recovery_port_membership_present"] is True
+    assert state["recovery_vlan_definition_present"] is True
     assert state["holding_default_vlan_present"] is True
 
 
 def test_pre_cleanup_requires_recovery_membership_on_both_qfxs():
     ex_state = {
+        "recovery_port_disabled": False,
         "recovery_port_membership_present": True,
         "recovery_vlan_definition_present": True,
         "holding_default_vlan_present": True,
@@ -114,10 +127,11 @@ def test_pre_cleanup_requires_recovery_membership_on_both_qfxs():
     assert value["result"] == "FAIL"
 
 
-def test_post_cleanup_requires_membership_removed_but_definition_preserved():
+def test_post_cleanup_requires_disabled_preserved_local_recovery_attachment():
     ex_state = {
-        "recovery_port_membership_present": False,
-        "recovery_vlan_definition_present": False,
+        "recovery_port_disabled": True,
+        "recovery_port_membership_present": True,
+        "recovery_vlan_definition_present": True,
         "holding_default_vlan_present": True,
         "unexpected_other_recovery_memberships": [],
     }
@@ -130,7 +144,26 @@ def test_post_cleanup_requires_membership_removed_but_definition_preserved():
         [100, 200, 1111], {"result": "PASS"},
     )
     assert value["result"] == "PASS"
+    assert value["checks"]["ex_recovery_port_disabled"] is True
+    assert value["checks"]["ex_recovery_port_membership_preserved"] is True
+    assert value["checks"]["ex_recovery_vlan_definition_preserved"] is True
 
+    ex_state["recovery_port_disabled"] = False
+    value = validate_post_cleanup(
+        _plan(), _live(), ex_state, qfx, 163, 3999, "TEMP-RECOVERY",
+        [100, 200, 1111], {"result": "PASS"},
+    )
+    assert value["result"] == "FAIL"
+
+    ex_state["recovery_port_disabled"] = True
+    ex_state["recovery_port_membership_present"] = False
+    value = validate_post_cleanup(
+        _plan(), _live(), ex_state, qfx, 163, 3999, "TEMP-RECOVERY",
+        [100, 200, 1111], {"result": "PASS"},
+    )
+    assert value["result"] == "FAIL"
+
+    ex_state["recovery_port_membership_present"] = True
     qfx["qfx-a"]["definitions"].pop("TEMP-RECOVERY")
     value = validate_post_cleanup(
         _plan(), _live(), ex_state, qfx, 163, 3999, "TEMP-RECOVERY",
