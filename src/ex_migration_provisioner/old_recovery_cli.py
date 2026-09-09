@@ -22,7 +22,7 @@ def _parser():
     parser = argparse.ArgumentParser(
         prog="ex-migration-provisioner stage-old-recovery",
         description=(
-            "PRE-CUTOVER: pre-stage the approved replacement-bootstrap OOB address on the old "
+            "PRE-CUTOVER: pre-stage the approved replacement OOB address on the old "
             "EX4300 Virtual Chassis VME interface in mgmt_junos. The replacement may still "
             "own the same OOB address while the two OOB paths remain physically isolated."
         ),
@@ -52,7 +52,7 @@ def _site_environment(settings):
     return environment
 
 
-def _bootstrap_inputs(settings, migration_root, bootstrap_override, identity_id):
+def _identity_oob_inputs(settings, migration_root, bootstrap_override, identity_id):
     paths = base._provisioning_paths(settings)
     if bootstrap_override:
         paths["bootstrap"] = bootstrap_override
@@ -61,7 +61,6 @@ def _bootstrap_inputs(settings, migration_root, bootstrap_override, identity_id)
 
     selected_identity = base.choose_identity(migration_root, identity_id)
     identity = selected_identity["identity"]
-    profile = base.read_json(paths["bootstrap"])
     profile_digest = sha256_file(paths["bootstrap"])
     bound_digest = str(identity.get("bootstrap", {}).get("profile_digest") or "")
     if profile_digest != bound_digest:
@@ -69,23 +68,28 @@ def _bootstrap_inputs(settings, migration_root, bootstrap_override, identity_id)
             "approved bootstrap identity is stale: bootstrap profile digest changed; rerun identify before staging old-switch recovery"
         )
 
-    connection = identity.get("observed", {}).get("connection", {})
-    bound_ip = str(connection.get("address") or "").strip()
-    profile_ip = str(profile.get("fxp0_management_ip") or "").strip()
-    if not bound_ip or bound_ip != profile_ip:
+    oob = identity.get("observed", {}).get("oob_management", {})
+    if not oob:
         raise base.ProvisioningError(
-            "approved bootstrap identity logical OOB address does not match the bound bootstrap profile"
+            "approved identity predates authoritative OOB management capture; rerun identify with --oob-address before staging old-switch recovery"
         )
+    if str(oob.get("routing_instance") or "") != MGMT_INSTANCE:
+        raise base.ProvisioningError("approved identity OOB management is not bound to mgmt_junos")
     try:
-        prefix_length = int(profile.get("fxp0_prefix_length"))
-        recovery = ipaddress.ip_interface("%s/%s" % (bound_ip, prefix_length))
-        gateway = ipaddress.ip_address(str(profile.get("fxp0_management_gateway") or ""))
-    except (TypeError, ValueError) as exc:
-        raise base.ProvisioningError("bootstrap profile has invalid OOB addressing: %s" % exc)
+        recovery = ipaddress.ip_interface(str(oob.get("address") or ""))
+        gateway = ipaddress.ip_address(str(oob.get("default_gateway") or ""))
+    except ValueError as exc:
+        raise base.ProvisioningError("approved identity has invalid OOB management data: %s" % exc)
     if recovery.version != 4 or gateway.version != 4:
-        raise base.ProvisioningError("bootstrap OOB recovery addressing must be IPv4")
-    if gateway not in recovery.network:
-        raise base.ProvisioningError("bootstrap OOB gateway is not on the bootstrap OOB subnet")
+        raise base.ProvisioningError("approved identity OOB recovery addressing must be IPv4")
+
+    connection_ip = str(
+        identity.get("observed", {}).get("connection", {}).get("address") or ""
+    ).strip()
+    if connection_ip and connection_ip != str(recovery.ip):
+        raise base.ProvisioningError(
+            "approved identity connection address does not match its authoritative OOB address"
+        )
 
     return {
         "identity": identity,
@@ -125,7 +129,7 @@ def _validate_existing_mgmt_default(config_text, gateway):
     )
     if existing and existing != [str(gateway)]:
         raise base.ProvisioningError(
-            "existing mgmt_junos default route conflicts with bootstrap OOB gateway %s: %s"
+            "existing mgmt_junos default route conflicts with approved OOB gateway %s: %s"
             % (gateway, ", ".join(existing))
         )
 
@@ -168,23 +172,23 @@ def run(argv):
     if not expected_hostname or not management_ip:
         raise base.ProvisioningError("approved plan is missing old hostname or management IP")
 
-    bootstrap = _bootstrap_inputs(settings, migration_root, args.bootstrap, args.identity_id)
-    if bootstrap["recovery_ip"] == management_ip:
-        raise base.ProvisioningError("bootstrap OOB IP must differ from the production management IP")
+    oob = _identity_oob_inputs(settings, migration_root, args.bootstrap, args.identity_id)
+    if oob["recovery_ip"] == management_ip:
+        raise base.ProvisioningError("approved OOB IP must differ from the production management IP")
 
     print("\nOld-switch recovery pre-stage")
-    print("  Approved replacement bootstrap identity: %s" % bootstrap["identity"].get("identity_id"))
-    print("  OOB address pre-staged on old VC: %s" % bootstrap["recovery_address"])
-    print("  OOB gateway: %s" % bootstrap["gateway"])
+    print("  Approved replacement identity: %s" % oob["identity"].get("identity_id"))
+    print("  OOB address inherited from identify: %s" % oob["recovery_address"])
+    print("  mgmt_junos default inherited from identify: %s" % oob["gateway"])
     print("  Destination: vme.0 in %s" % MGMT_INSTANCE)
-    print("  Replacement EX4400 may still own %s before cutover." % bootstrap["recovery_ip"])
+    print("  Replacement EX4400 may still own %s before cutover." % oob["recovery_ip"])
     print("  Safety boundary: old/new OOB interfaces remain physically L2-isolated until the cable move.")
 
     source_transport = str(args.transport_address or management_ip)
     statements = recovery_statements(
         args.management_interface,
-        bootstrap["recovery_address"],
-        bootstrap["gateway"],
+        oob["recovery_address"],
+        oob["gateway"],
     )
     payload = "\n".join(statements) + "\n"
     username, password = base._credentials(args, "Old EX4300")
@@ -218,7 +222,7 @@ def run(argv):
         pre_config = _configuration_set(dev)
         pre_lines = {line.strip() for line in str(pre_config).splitlines() if line.strip()}
         master_defaults_before = _master_default_lines(pre_config)
-        _validate_existing_mgmt_default(pre_config, bootstrap["gateway"])
+        _validate_existing_mgmt_default(pre_config, oob["gateway"])
 
         print("\nRequired recovery state")
         for statement in statements:
@@ -240,10 +244,10 @@ def run(argv):
         print("  Existing production management: %s (preserved)" % management_ip)
         print("  Recovery interface: %s.0" % args.management_interface)
         print("  Recovery routing instance: %s" % MGMT_INSTANCE)
-        print("  Recovery address: %s" % bootstrap["recovery_address"])
-        print("  Recovery default: 0.0.0.0/0 -> %s (%s only)" % (bootstrap["gateway"], MGMT_INSTANCE))
+        print("  Recovery address: %s" % oob["recovery_address"])
+        print("  Recovery default: 0.0.0.0/0 -> %s (%s only)" % (oob["gateway"], MGMT_INSTANCE))
         print("  Master routing-table default changed: no")
-        print("  Post-cable recovery verification: separate read-only diagnostic")
+        print("  Post-cable recovery verification: optional read-only diagnostic")
 
         def new_transaction(diff):
             return build_recovery_transaction(
@@ -255,15 +259,15 @@ def run(argv):
                 management_ip,
                 source_transport,
                 args.management_interface,
-                bootstrap["recovery_address"],
-                bootstrap["gateway"],
+                oob["recovery_address"],
+                oob["gateway"],
                 source_fingerprint,
                 diff,
                 utc_now(),
                 args.confirm_minutes,
-                bootstrap_identity_id=bootstrap["identity"].get("identity_id"),
-                bootstrap_identity_digest=bootstrap["identity_digest"],
-                bootstrap_profile_digest=bootstrap["profile_digest"],
+                bootstrap_identity_id=oob["identity"].get("identity_id"),
+                bootstrap_identity_digest=oob["identity_digest"],
+                bootstrap_profile_digest=oob["profile_digest"],
                 master_defaults_before=master_defaults_before,
             )
 
@@ -282,17 +286,17 @@ def run(argv):
                 "recovery_path_verified": False,
                 "checks": [
                     "APPROVED_SOURCE_HOSTNAME_MATCH",
-                    "BOOTSTRAP_OOB_LINEAGE_MATCH",
+                    "APPROVED_IDENTITY_OOB_LINEAGE_MATCH",
                     "MGMT_JUNOS_ENABLED",
                     "RECOVERY_CONFIGURATION_PRESENT",
                     "MGMT_JUNOS_DEFAULT_PRESENT",
                     "MASTER_DEFAULT_ROUTE_UNCHANGED",
                 ],
-                "warnings": ["POST_CABLE_RECOVERY_VERIFICATION_PENDING"],
+                "warnings": ["POST_CABLE_RECOVERY_VERIFICATION_AVAILABLE"],
             }
             directory = persist_recovery_transaction(migration_root, transaction, "")
             print("\nOld-switch recovery pre-stage: PASS")
-            print("  Recovery path verified now: no (physical cable has not moved)")
+            print("  Recovery path verified now: no (optional after cable move)")
             print("  Record: %s" % (directory / "transaction.json"))
             return 0
 
@@ -325,13 +329,13 @@ def run(argv):
             "recovery_path_verified": False,
             "checks": [
                 "APPROVED_SOURCE_HOSTNAME_MATCH",
-                "BOOTSTRAP_OOB_LINEAGE_MATCH",
+                "APPROVED_IDENTITY_OOB_LINEAGE_MATCH",
                 "MGMT_JUNOS_ENABLED",
                 "RECOVERY_CONFIGURATION_PRESENT",
                 "MGMT_JUNOS_DEFAULT_PRESENT",
                 "MASTER_DEFAULT_ROUTE_UNCHANGED",
             ],
-            "warnings": ["POST_CABLE_RECOVERY_VERIFICATION_PENDING"],
+            "warnings": ["POST_CABLE_RECOVERY_VERIFICATION_AVAILABLE"],
         }
         transaction["commit"]["status"] = "VALIDATED_PENDING_FINAL_CONFIRMATION"
         persist_recovery_transaction(migration_root, transaction, candidate_diff)
@@ -350,7 +354,7 @@ def run(argv):
         print("\nOld-switch recovery pre-stage: PASS")
         print("  Existing in-band management changed: no")
         print("  Master routing-table default changed: no")
-        print("  Recovery path verified now: no (physical cable has not moved)")
+        print("  Recovery path verified now: no (optional after cable move)")
         print("  Final confirmation: PASS")
         print("  Record: %s" % (directory / "transaction.json"))
         return 0
