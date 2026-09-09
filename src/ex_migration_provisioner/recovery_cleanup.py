@@ -43,12 +43,16 @@ def required_endpoint_interfaces(plan):
     }
 
 
-def ex_cleanup_statements(recovery_interface, recovery_vlan_name):
-    return [
-        "delete interfaces %s unit 0 family ethernet-switching vlan members %s"
-        % (recovery_interface, recovery_vlan_name),
-        "delete vlans %s" % recovery_vlan_name,
-    ]
+def ex_cleanup_statements(
+    recovery_interface,
+    recovery_vlan_name,
+    recovery_port_already_disabled=False,
+):
+    _require(recovery_interface, "recovery interface is required")
+    _require(recovery_vlan_name, "recovery VLAN name is required")
+    if recovery_port_already_disabled:
+        return []
+    return ["set interfaces %s disable" % recovery_interface]
 
 
 def qfx_cleanup_statements(ae_interface, recovery_vlan_name):
@@ -91,6 +95,7 @@ def complete_stale_vlan_object_deletes(statements, access_hardening):
 
 def ex_recovery_state(config_text, recovery_interface, recovery_vlan_name, recovery_vlan_id, prestage_vlan_id):
     lines = {line.strip() for line in str(config_text or "").splitlines() if line.strip()}
+    disabled = "set interfaces %s disable" % recovery_interface
     member = (
         "set interfaces %s unit 0 family ethernet-switching vlan members %s"
         % (recovery_interface, recovery_vlan_name)
@@ -107,6 +112,7 @@ def ex_recovery_state(config_text, recovery_interface, recovery_vlan_name, recov
         and line != member
     )
     return {
+        "recovery_port_disabled": disabled in lines,
         "recovery_port_membership_present": member in lines,
         "recovery_vlan_definition_present": vlan in lines,
         "holding_default_vlan_present": holding in lines,
@@ -217,8 +223,9 @@ def validate_post_cleanup(
         "no_operator_hold_intents": not endpoint["holds"],
         "all_required_endpoint_intents_still_live": not missing_completed,
         "access_hardening_validation_pass": access_hardening_validation.get("result") == "PASS",
-        "ex_recovery_port_membership_absent": not ex_state.get("recovery_port_membership_present"),
-        "ex_recovery_vlan_definition_absent": not ex_state.get("recovery_vlan_definition_present"),
+        "ex_recovery_port_disabled": bool(ex_state.get("recovery_port_disabled")),
+        "ex_recovery_port_membership_preserved": bool(ex_state.get("recovery_port_membership_present")),
+        "ex_recovery_vlan_definition_preserved": bool(ex_state.get("recovery_vlan_definition_present")),
         "ex_holding_default_vlan_preserved": bool(ex_state.get("holding_default_vlan_present")),
         "ex_no_other_recovery_memberships": not ex_state.get("unexpected_other_recovery_memberships"),
     }
@@ -259,6 +266,7 @@ def build_cleanup_plan(
     recovery_vlan_name,
     recovery_vlan_id,
     prestage_vlan_id,
+    recovery_port_already_disabled,
     qfx_ae_by_role,
     precheck,
     access_hardening,
@@ -274,6 +282,7 @@ def build_cleanup_plan(
     ex_statements = list(hardened_statements) + ex_cleanup_statements(
         recovery_interface,
         recovery_vlan_name,
+        recovery_port_already_disabled=recovery_port_already_disabled,
     )
     qfx_devices = []
     for role in sorted(qfx_ae_by_role):
@@ -302,6 +311,7 @@ def build_cleanup_plan(
         "recovery_interface": recovery_interface,
         "recovery_vlan_name": recovery_vlan_name,
         "recovery_vlan_id": int(recovery_vlan_id),
+        "recovery_port_already_disabled": bool(recovery_port_already_disabled),
         "production_vlan_names": sorted(set(production_vlan_names)),
         "access_hardening": access_hardening,
         "ex_statements": ex_statements,
@@ -319,6 +329,8 @@ def build_cleanup_plan(
             "vlan_name": recovery_vlan_name,
             "vlan_id": int(recovery_vlan_id),
             "prestage_default_vlan_id": int(prestage_vlan_id),
+            "initially_disabled": bool(recovery_port_already_disabled),
+            "final_state": "DISABLED_LOCAL_RECOVERY_PRESERVED",
         },
         "access_hardening": access_hardening,
         "production_vlan_names": sorted(set(production_vlan_names)),
@@ -332,6 +344,8 @@ def build_cleanup_plan(
         "safety": {
             "terminal_recovery_window_action": True,
             "old_ex_vme_recovery_configuration_preserved": True,
+            "ex4400_recovery_port_disabled": True,
+            "ex4400_recovery_vlan_configuration_preserved": True,
             "qfx_global_recovery_vlan_definition_preserved": True,
             "endpoint_configuration_must_remain_present": True,
             "configured_unused_ex_ports_disabled": True,
