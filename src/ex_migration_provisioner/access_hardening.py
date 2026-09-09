@@ -17,6 +17,9 @@ _TRUNK_MEMBER = re.compile(
 _ACCESS_MEMBER = re.compile(
     r"(?m)^set interfaces (?P<if>ge-\d+/0/\d+) unit 0 family ethernet-switching vlan members (?P<value>\S+)\s*$"
 )
+_VOICE = re.compile(
+    r"(?m)^set switch-options voip interface (?P<if>\S+) vlan (?P<vlan>\S+)\s*$"
+)
 
 
 def _require(condition, message):
@@ -90,7 +93,10 @@ def classify_final_ports(plan, live_completed_by_old, current_states, recovery_i
         completed_old = completed_by_new.get(interface)
         same_position_intent = intents.get(interface)
 
-        if completed_old:
+        if completed_old and observed["admin_status"] == "down":
+            disposition = "BLOCKED"
+            reason = "CONFIRMED_ENDPOINT_PORT_ADMIN_DOWN"
+        elif completed_old:
             disposition = "USED_KEEP_ENABLED"
             reason = "CONFIRMED_ENDPOINT_MAPPING"
         elif interface == recovery_interface:
@@ -158,6 +164,13 @@ def explicit_access_memberships(config_text):
     return {interface: sorted(items) for interface, items in values.items()}
 
 
+def voice_inventory(config_text):
+    rows = []
+    for match in _VOICE.finditer(str(config_text or "")):
+        rows.append({"interface": match.group("if"), "vlan": match.group("vlan")})
+    return sorted(rows, key=lambda item: (item["interface"], item["vlan"]))
+
+
 def validate_pre_hardening_config(
     config_text,
     classification,
@@ -167,17 +180,13 @@ def validate_pre_hardening_config(
     uplink_interface="ae0",
     inactive_vlan_name="default",
 ):
-    lines = {line.strip() for line in str(config_text or "").splitlines() if line.strip()}
     trunks = trunk_inventory(config_text)
     memberships = explicit_access_memberships(config_text)
+    voice = voice_inventory(config_text)
     checks = {
         "only_expected_access_uplink_trunk": trunks["trunks"] == [uplink_interface],
-        "uplink_currently_uses_all": (
-            "set interfaces %s unit 0 family ethernet-switching vlan members all" % uplink_interface
-        ) in lines,
-        "broad_voice_policy_present": (
-            "set switch-options voip interface edge_ports vlan %s" % voice_vlan_name
-        ) in lines,
+        "uplink_membership_exactly_all": trunks["memberships"].get(uplink_interface) == ["all"],
+        "voice_policy_exactly_broad_edge_range": voice == [{"interface": "edge_ports", "vlan": voice_vlan_name}],
     }
     unexpected = []
     for row in classification.get("unused", []):
@@ -202,6 +211,7 @@ def validate_pre_hardening_config(
 
 
 def hardening_statements(
+    config_text,
     unused_interfaces,
     used_interfaces,
     production_vlan_names,
@@ -212,29 +222,42 @@ def hardening_statements(
 ):
     _require(production_vlan_names, "at least one approved production VLAN is required")
     _require(voice_vlan_name, "voice VLAN name is required")
-    statements = [
-        "delete interfaces %s unit 0 family ethernet-switching vlan members all" % uplink_interface,
-    ]
+    lines = {line.strip() for line in str(config_text or "").splitlines() if line.strip()}
+    statements = []
+
+    remove_all = "delete interfaces %s unit 0 family ethernet-switching vlan members all" % uplink_interface
+    if "set " + remove_all[len("delete "):] in lines:
+        statements.append(remove_all)
     for name in sorted(set(str(value) for value in production_vlan_names)):
         _require(
             name not in (inactive_vlan_name, recovery_vlan_name),
             "inactive/recovery VLAN cannot be an uplink production member",
         )
-        statements.append(
+        statement = (
             "set interfaces %s unit 0 family ethernet-switching vlan members %s"
             % (uplink_interface, name)
         )
+        if statement not in lines:
+            statements.append(statement)
+
     for interface in sorted(set(unused_interfaces)):
-        statements.extend([
-            "set interfaces %s disable" % interface,
+        disable = "set interfaces %s disable" % interface
+        inactive = (
             "set interfaces %s unit 0 family ethernet-switching vlan members %s"
-            % (interface, inactive_vlan_name),
-        ])
-    statements.append("delete switch-options voip interface edge_ports")
-    for interface in sorted(set(used_interfaces)):
-        statements.append(
-            "set switch-options voip interface %s vlan %s" % (interface, voice_vlan_name)
+            % (interface, inactive_vlan_name)
         )
+        if disable not in lines:
+            statements.append(disable)
+        if inactive not in lines:
+            statements.append(inactive)
+
+    broad = "set switch-options voip interface edge_ports vlan %s" % voice_vlan_name
+    if broad in lines:
+        statements.append("delete " + broad[len("set "):])
+    for interface in sorted(set(used_interfaces)):
+        statement = "set switch-options voip interface %s vlan %s" % (interface, voice_vlan_name)
+        if statement not in lines:
+            statements.append(statement)
     return statements
 
 
