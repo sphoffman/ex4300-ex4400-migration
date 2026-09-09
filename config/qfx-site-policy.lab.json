@@ -43,6 +43,10 @@
     "name": "TEMP-RECOVERY",
     "vlan_id": 3999
   },
+  "prestage_access_vlan": {
+    "name": "TEMP-ACCESS",
+    "vlan_id": 3998
+  },
   "precutover_qfx_baseline": {
     "required_vlan_ids": [163, 3999],
     "lacp_mode": "active",
