@@ -51,11 +51,10 @@ def _parser():
 
 
 def _bind_lab_identity_transport(profile, identity):
-    """Bind lab post-cutover transport to the already-approved device identity.
+    """Bind lab post-cutover reachability to the approved OOB identity address.
 
-    The environment profile describes the access method, not a particular switch.
-    Per-switch vrnetlab/containerlab addressing is already pinned by `identify` and
-    must have one authoritative source: the immutable bootstrap identity artifact.
+    New identities use one authoritative OOB/connection address. Historical 1.0
+    identities that contain a distinct transport_address remain supported.
     """
     if profile.get("environment") != "lab":
         return profile
@@ -64,15 +63,11 @@ def _bind_lab_identity_transport(profile, identity):
         return profile
 
     connection = identity.get("observed", {}).get("connection", {})
-    logical = str(connection.get("address") or "").strip()
-    transport = str(connection.get("transport_address") or "").strip()
+    address = str(connection.get("address") or "").strip()
+    transport = str(connection.get("transport_address") or address).strip()
     if not transport:
         raise base.ProvisioningError(
-            "approved lab bootstrap identity has no pinned transport address; rerun identify with --transport-address"
-        )
-    if transport == logical:
-        raise base.ProvisioningError(
-            "approved lab bootstrap identity does not contain a distinct transport override; rerun identify with --transport-address"
+            "approved bootstrap identity has no pinned OOB connection address; rerun identify with --oob-address"
         )
     access["transport_address"] = transport
     profile["postcutover_ex_access"] = access
