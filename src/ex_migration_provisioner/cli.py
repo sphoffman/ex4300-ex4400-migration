@@ -452,6 +452,9 @@ def main(argv=None):
     if command == "activate-endpoints":
         from . import endpoint_stage_cli
         return endpoint_stage_cli.main(values[1:])
+    if command == "port-state":
+        from . import port_state_cli
+        return port_state_cli.main(values[1:])
     if command == "stage-old-recovery":
         from . import old_recovery_cli
         return old_recovery_cli.main(values[1:])
