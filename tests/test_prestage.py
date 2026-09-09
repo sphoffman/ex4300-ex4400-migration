@@ -4,7 +4,10 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 
 from ex_migration_provisioner import cli
-from ex_migration_provisioner.prestage import build_pre_stage_package
+from ex_migration_provisioner.prestage import (
+    _prestage_access_interfaces,
+    build_pre_stage_package,
+)
 from test_provisioner import bootstrap, digest, plan_variables
 
 
@@ -40,7 +43,7 @@ def test_pre_stage_package_has_no_live_qfx_attachment_or_preflight():
         digest("f"),
         bootstrap(),
         digest("1"),
-        "0.9.0",
+        "0.9.1",
         created_at="2026-09-08T17:00:00Z",
     )
 
@@ -54,10 +57,13 @@ def test_pre_stage_package_has_no_live_qfx_attachment_or_preflight():
         "ae_interface": None,
         "force_up": False,
     }
+    assert package["variables"]["uplink_interfaces"] == ["ge-0/0/0", "ge-0/0/1"]
     assert package["variables"]["prestage_access_vlan_name"] == "TEMP-ACCESS"
     assert package["variables"]["prestage_access_vlan_id"] == 3998
     assert package["variables"]["prestage_access_interfaces"][0] == "ge-0/0/2"
     assert package["variables"]["prestage_access_interfaces"][-1] == "ge-0/0/46"
+    assert "ge-0/0/0" not in package["variables"]["prestage_access_interfaces"]
+    assert "ge-0/0/1" not in package["variables"]["prestage_access_interfaces"]
     assert "ge-0/0/47" not in package["variables"]["prestage_access_interfaces"]
     assert len(package["variables"]["prestage_access_interfaces"]) == 45
     assert package["phases"]["pre_stage"]["qfx_attachment_known"] is False
@@ -68,6 +74,25 @@ def test_pre_stage_package_has_no_live_qfx_attachment_or_preflight():
     schema = json.loads((ROOT / "schemas/provisioning-package-1.1.json").read_text())
     Draft202012Validator.check_schema(schema)
     Draft202012Validator(schema).validate(package)
+
+
+def test_production_et_uplinks_leave_ge_zero_and_one_available_for_access():
+    profile = {
+        "environment": "production",
+        "provisioning_mode": "local-fxp0-mac",
+        "production_eligible": True,
+        "uplink_interfaces": ["et-0/1/0", "et-0/1/1"],
+        "virtual_chassis": {
+            "member_count": 1,
+            "members": [{"member_id": 0, "serial_number": "TESTSERIAL"}],
+        },
+    }
+    interfaces = _prestage_access_interfaces(profile, "ge-0/0/47")
+    assert interfaces[0] == "ge-0/0/0"
+    assert interfaces[1] == "ge-0/0/1"
+    assert interfaces[-1] == "ge-0/0/46"
+    assert len(interfaces) == 47
+    assert "ge-0/0/47" not in interfaces
 
 
 def test_prepare_cli_has_no_qfx_credentials_or_transport_options():
