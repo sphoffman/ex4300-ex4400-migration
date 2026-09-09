@@ -313,7 +313,9 @@ def build_cleanup_plan(
             "endpoint_configuration_must_remain_present": True,
             "configured_unused_ex_ports_disabled": True,
             "inactive_default_vlan_removed_from_uplink_trunk": True,
-            "voice_policy_narrowed_to_confirmed_used_ports": True,
+            "template_owned_edge_range_preserved": True,
+            "broad_edge_voice_policy_preserved": True,
+            "only_proven_unused_data_vlans_removed": True,
             "commit_confirmed_required_on_all_written_devices": True,
         },
     }
