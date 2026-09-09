@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import sys
 from pathlib import Path
 
@@ -27,15 +28,16 @@ base._verify_package_inputs = verify_package_inputs_compat
 
 
 def _bound_transport(identity):
+    """Return the approved connection endpoint, with legacy transport fallback."""
     connection = identity.get("observed", {}).get("connection", {})
-    logical_address = str(connection.get("address") or "")
-    transport_address = str(connection.get("transport_address") or logical_address)
+    address = str(connection.get("address") or "")
+    transport_address = str(connection.get("transport_address") or address)
     port = int(connection.get("port", 830))
-    if not logical_address:
-        raise base.ProvisioningError("approved bootstrap identity has no logical management address")
+    if not address:
+        raise base.ProvisioningError("approved bootstrap identity has no OOB management address")
     if not transport_address:
-        raise base.ProvisioningError("approved bootstrap identity has no transport address")
-    return logical_address, transport_address, port
+        raise base.ProvisioningError("approved bootstrap identity has no reachable connection address")
+    return address, transport_address, port
 
 
 def _planned_old_hostname(migration_root):
@@ -213,24 +215,21 @@ def _identify_parser():
     parser = argparse.ArgumentParser(
         prog="ex-migration-provisioner identify",
         description=(
-            "Read-only observe and operator-bind the bootstrap EX4400 identity. "
-            "For vJunos labs, --transport-address may name the reachable containerlab "
-            "management endpoint while fxp0 remains 10.0.0.15."
+            "Read-only observe and operator-bind the replacement EX4400 identity and the "
+            "migration OOB address that will later become the old EX4300 VME recovery address."
         ),
     )
     parser.add_argument("migration_id")
     parser.add_argument("--settings", type=Path, default=Path("config/site.json"))
     parser.add_argument("--bootstrap", type=Path)
+    parser.add_argument(
+        "--oob-address",
+        required=True,
+        help="authoritative replacement OOB IPv4 address/prefix, for example 10.255.3.18/24",
+    )
     parser.add_argument("--username")
     parser.add_argument("--password-env")
     parser.add_argument("--port", type=int, default=830)
-    parser.add_argument(
-        "--transport-address",
-        help=(
-            "LAB ONLY: reachable transport endpoint for vJunos/vrnetlab; does not change "
-            "the logical fxp0 address in the bootstrap profile"
-        ),
-    )
     return parser
 
 
@@ -243,21 +242,25 @@ def _identify(argv):
         paths["bootstrap"] = args.bootstrap
     base._require_paths(paths)
     bootstrap = base.read_json(paths["bootstrap"])
-    if bootstrap.get("environment") != "lab":
-        raise base.ProvisioningError(
-            "--transport-address and interactive bootstrap identity enrollment are currently restricted to lab profiles"
-        )
+    environment = str(bootstrap.get("environment") or "")
+    if environment not in ("lab", "production"):
+        raise base.ProvisioningError("bootstrap profile environment must be lab or production")
 
-    logical_address = str(bootstrap["fxp0_management_ip"])
-    transport_address = str(args.transport_address or logical_address)
-    allow_vjunos_switch = bool(args.transport_address and transport_address != logical_address)
+    try:
+        oob = ipaddress.ip_interface(str(args.oob_address))
+    except ValueError as exc:
+        raise base.ProvisioningError("invalid --oob-address: %s" % exc)
+    if oob.version != 4:
+        raise base.ProvisioningError("--oob-address must be IPv4")
+    connection_address = str(oob.ip)
+
     username, password = base._credentials(args, "EX4400")
-    fingerprint = base.ssh_host_key_fingerprint(transport_address, args.port)
+    fingerprint = base.ssh_host_key_fingerprint(connection_address, args.port)
 
     from jnpr.junos import Device
 
     dev = Device(
-        host=transport_address,
+        host=connection_address,
         user=username,
         passwd=password,
         port=args.port,
@@ -267,12 +270,22 @@ def _identify(argv):
         dev.open(auto_probe=10, hostkey_verify=False)
         observed = base.observe_ex4400_identity(
             dev,
-            logical_address,
+            connection_address,
             args.port,
             fingerprint,
-            allow_vjunos_switch=allow_vjunos_switch,
+            allow_vjunos_switch=(environment == "lab"),
         )
-        observed["connection"]["transport_address"] = transport_address
+        mgmt_config = dev.cli(
+            "show configuration routing-instances mgmt_junos routing-options | display set",
+            warning=False,
+        ) or ""
+        gateway = base.parse_mgmt_junos_default_gateway(mgmt_config)
+        observed["oob_management"] = {
+            "address": str(oob),
+            "routing_instance": "mgmt_junos",
+            "default_gateway": gateway,
+            "gateway_source": "observed-configured-mgmt_junos-default",
+        }
         _reject_source_switch(migration_root, observed)
     except base.ProvisioningError:
         raise
@@ -285,8 +298,9 @@ def _identify(argv):
             pass
 
     print("\nEX4400 bootstrap identity observation")
-    print("  Logical fxp0: %s" % logical_address)
-    print("  Transport endpoint: %s:%s" % (transport_address, args.port))
+    print("  OOB address: %s" % observed["oob_management"]["address"])
+    print("  Connection endpoint: %s:%s" % (connection_address, args.port))
+    print("  mgmt_junos default gateway: %s" % observed["oob_management"]["default_gateway"])
     print("  SSH host key: %s" % fingerprint)
     print("  Hostname: %s" % observed["device"]["hostname"])
     print("  Model: %s" % observed["device"]["model"])
@@ -300,10 +314,11 @@ def _identify(argv):
             member["model"],
         ))
     print(
-        "\nThis record pins the logical fxp0 identity, reachable transport endpoint, SSH host key, and chassis identity required for a live write."
+        "\nThis record pins the OOB address/prefix, mgmt_junos default gateway, SSH host key, and chassis identity. The same OOB address will later be staged on old-switch vme.0."
     )
     answer = input(
-        "Bind exactly this bootstrap identity to migration %s? [y/N]: " % args.migration_id
+        "Bind exactly this replacement identity and OOB management intent to migration %s? [y/N]: "
+        % args.migration_id
     ).strip().lower()
     if answer not in ("y", "yes"):
         print("Bootstrap identity was not approved; no identity artifact created.")
@@ -319,7 +334,7 @@ def _identify(argv):
     destination, identity, action = base._write_identity(migration_root, identity)
     print("\nBootstrap identity: %s (%s)" % (identity["identity_id"], action))
     print("  Identity: %s" % (destination / "identity.json"))
-    print("  Eligibility: LAB_ONLY")
+    print("  Eligibility: %s" % identity["eligibility"]["status"])
     print("  Device writes performed: no")
     return 0
 
@@ -370,15 +385,17 @@ def _run(argv):
 
     args, logical_address, transport_address, bound_port = _run_selector(argv)
     if int(args.port) != int(bound_port):
-        raise base.ProvisioningError("--port does not match the transport port pinned by identify")
+        raise base.ProvisioningError("--port does not match the connection port pinned by identify")
 
+    # New 1.1 identities use one OOB connection address. Keep the redirect only
+    # for immutable legacy 1.0 lab identities that pinned a separate transport.
     if transport_address == logical_address:
         return base.main(["run"] + argv)
 
-    print("\nPinned lab transport")
-    print("  Logical fxp0: %s" % logical_address)
+    print("\nLegacy pinned lab transport")
+    print("  Logical address: %s" % logical_address)
     print("  Transport endpoint: %s:%s" % (transport_address, bound_port))
-    print("  Source: approved bootstrap identity (run accepts no override)")
+    print("  Source: historical approved bootstrap identity")
 
     import jnpr.junos
 
@@ -438,6 +455,9 @@ def main(argv=None):
     if command == "stage-old-recovery":
         from . import old_recovery_cli
         return old_recovery_cli.main(values[1:])
+    if command == "verify-old-recovery":
+        from . import old_recovery_verify_cli
+        return old_recovery_verify_cli.main(values[1:])
     if command == "cabling-report":
         from . import cabling_report_cli
         return cabling_report_cli.main(values[1:])
