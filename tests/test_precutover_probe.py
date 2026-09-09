@@ -1,4 +1,8 @@
+import json
+
+from ex_migration_analyzer.core import sha256_file
 from ex_migration_provisioner.precutover_probe import (
+    analysis_for_approved_plan,
     discovered_candidate_macs,
     eligible_interfaces,
     live_candidate_state,
@@ -44,6 +48,33 @@ def _terse():
         "ge-0/0/10 up up",
         "ge-0/0/11 up up",
     ])
+
+
+def test_approved_analysis_binding_uses_analyzer_template_variables_migration_id(tmp_path):
+    migration_root = tmp_path / "migrations" / "sw1203"
+    analysis_id = "0123456789abcdef"
+    analysis_path = migration_root / "analyses" / analysis_id / "analysis.json"
+    analysis_path.parent.mkdir(parents=True)
+    analysis = {
+        "schema_version": "1.0",
+        "analysis_id": analysis_id,
+        "template_variables": {"migration_id": "sw1203"},
+        "ports": [],
+    }
+    analysis_path.write_text(json.dumps(analysis, indent=2) + "\n")
+    selected_plan = {
+        "plan": {
+            "migration_id": "sw1203",
+            "inputs": {
+                "analysis_id": analysis_id,
+                "analysis_digest": sha256_file(analysis_path),
+            },
+        }
+    }
+    value, path, digest = analysis_for_approved_plan(migration_root, selected_plan)
+    assert value == analysis
+    assert path == analysis_path
+    assert digest == sha256_file(analysis_path)
 
 
 def test_silent_candidates_are_derived_only_from_bound_analysis_dispositions():
