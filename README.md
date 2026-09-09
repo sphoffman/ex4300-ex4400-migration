@@ -151,13 +151,23 @@ The render includes everything safely known before physical cutover, including:
 - production management IRB/address/default route;
 - all approved VLAN definitions, including configured-but-unobserved VLANs;
 - SNMP/syslog/NTP identity;
-- edge-port boilerplate;
+- template-defined `edge_ports` interface-range boilerplate;
+- explicit EX4400 `ae0` physical uplink members and normal active LACP;
 - LLDP/LLDP-MED, RSTP, storm control, and IGMP snooping;
-- EX4400 `ae0` and normal active LACP;
 - voice VLAN policy;
+- the Junos built-in `default` VLAN renumbered to the configured pre-stage holding
+  VLAN ID (lab: 3998, described as `TEMP-ACCESS`), with no per-edge-port holding-VLAN
+  statements;
 - `TEMP-RECOVERY` VLAN and recovery-port overlay.
 
+The template owns the concise edge-port regex. The lab template uses
+`"ge-[0-9]/0/[2-47]"` because its two GE ports are AE uplinks. A production template
+whose uplinks are `et` interfaces can use `"ge-[0-9]/0/[0-47]"`. Static validation
+rejects a declared GE AE uplink that also matches the template edge-port regex.
+
 Endpoint-specific descriptions and data-VLAN memberships are deliberately excluded.
+Ordinary access ports therefore remain in the renumbered Junos `default` VLAN until
+endpoint activation gives them an explicit production data-VLAN membership.
 
 ### 6. Identify and bind the replacement EX4400 and OOB management intent
 
@@ -357,12 +367,18 @@ py -m ex_migration_provisioner.cli activate-endpoints <migration-id>
 
 The command connects to the replacement EX4400 and reads the current MAC table. It
 correlates approved historical endpoint MAC evidence to the current physical edge
-ports and applies only unambiguous endpoint intent.
+ports and applies only unambiguous endpoint intent. GE ports 0-47 are eligible except
+for explicitly declared AE uplink members and the dedicated recovery port.
 
 For each activated endpoint port it may add:
 
 - the approved interface description;
 - the approved data-VLAN membership.
+
+No explicit TEMP-ACCESS membership is removed. Before activation, an ordinary edge
+port is implicitly in the renumbered Junos `default` VLAN; assigning its approved
+data VLAN gives it a valid explicit production membership and it no longer relies on
+the default holding VLAN.
 
 The global voice policy is already present from pre-stage and is not re-created per
 port.
