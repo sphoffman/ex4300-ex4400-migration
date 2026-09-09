@@ -4,21 +4,36 @@ import argparse
 import getpass
 import os
 import sys
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import __version__
 from .core import AnalysisError, analyze, atomic_json, canonical_bytes, evaluate_policy, read_json, render_report, sha256_bytes, sha256_file, utc_now, validate_collection
 
 
+_DISPLAY_TIMEZONE = "America/New_York"
+
+
 def load_settings(path):
-    defaults = {"snapshot_root": "snapshots", "analysis_policy": "policies/production-old-v1.json"}
+    defaults = {
+        "snapshot_root": "snapshots",
+        "analysis_policy": "policies/production-old-v1.json",
+        "display_timezone": "America/New_York",
+    }
     if path.is_file(): defaults.update(read_json(path))
     local_path = path.with_name("site.local.json")
     if local_path.is_file(): defaults.update(read_json(local_path))
     if os.environ.get("EX_MIGRATION_ANALYSIS_POLICY"):
         defaults["analysis_policy"] = os.environ["EX_MIGRATION_ANALYSIS_POLICY"]
+    if os.environ.get("EX_MIGRATION_DISPLAY_TIMEZONE"):
+        defaults["display_timezone"] = os.environ["EX_MIGRATION_DISPLAY_TIMEZONE"]
     return defaults
+
+
+def set_display_timezone(value):
+    global _DISPLAY_TIMEZONE
+    _DISPLAY_TIMEZONE = str(value or "America/New_York")
 
 
 def collection_directories(root, migration_id):
@@ -26,10 +41,32 @@ def collection_directories(root, migration_id):
     return sorted((item for item in path.iterdir() if item.is_dir()), reverse=True) if path.is_dir() else []
 
 
+def _as_local(value):
+    old_tz = os.environ.get("TZ")
+    try:
+        os.environ["TZ"] = _DISPLAY_TIMEZONE
+        if hasattr(time, "tzset"):
+            time.tzset()
+        return datetime.fromtimestamp(value.timestamp()).astimezone()
+    finally:
+        if old_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old_tz
+        if hasattr(time, "tzset"):
+            time.tzset()
+
+
 def readable_time(value):
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%b %-d, %Y %H:%M UTC")
-    except (AttributeError, TypeError, ValueError):
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+        local = _as_local(parsed)
+        return "%s %s (%s UTC)" % (
+            local.strftime("%b %-d, %Y %H:%M %Z"),
+            "",
+            parsed.strftime("%b %-d, %Y %H:%M"),
+        )
+    except (AttributeError, TypeError, ValueError, OSError):
         return value or "unknown"
 
 
@@ -293,7 +330,7 @@ def main(argv=None):
     migration_id = args.migration_id or (input("Migration ID: ").strip() if interactive else "")
     if not safe_id(migration_id): parser.error("a path-safe migration ID is required")
     try:
-        settings = load_settings(args.settings); root = Path(settings["snapshot_root"]); policy_path = args.policy or Path(settings["analysis_policy"])
+        settings = load_settings(args.settings); set_display_timezone(settings.get("display_timezone")); root = Path(settings["snapshot_root"]); policy_path = args.policy or Path(settings["analysis_policy"])
         policy = read_json(policy_path); policy_digest = sha256_bytes(canonical_bytes(policy)); migration_root = root / "migrations" / migration_id
         candidates, incomplete, rejected = inspect_candidates(collection_directories(root, migration_id), policy, policy_digest)
         candidate, overridden = choose_candidate(candidates, incomplete, rejected, policy, interactive)
