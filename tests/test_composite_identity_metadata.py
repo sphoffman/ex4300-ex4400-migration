@@ -64,12 +64,54 @@ def test_derived_target_metadata_does_not_create_device_identity_conflict():
     second["device"]["proposed_hostname"] = "different-derived-target"
     second["device"]["identity_rule"] = "new-rule-version"
 
-    policy = {"policy_id": "lab"}
     composite = build_composite_evidence(
         [_candidate(first), _candidate(second)],
-        policy,
+        {"policy_id": "lab"},
         "p" * 64,
     )
 
     assert composite["evidence"]["configuration_consistency"]["device_identity"] == "CONSISTENT"
     assert not any(item["code"] == "DEVICE_IDENTITY_CHANGED" for item in composite["findings"])
+
+
+def test_top_level_serial_change_is_review_not_identity_blocker():
+    first = _snapshot("11111111", "2026-09-08T20:00:00Z")
+    second = deepcopy(first)
+    second["snapshot_id"] = "22222222"
+    second["completed_at"] = "2026-09-09T01:00:00Z"
+    second["device"]["serial_numbers"] = ["DEF456"]
+
+    composite = build_composite_evidence(
+        [_candidate(first), _candidate(second)],
+        {"policy_id": "production"},
+        "p" * 64,
+    )
+
+    consistency = composite["evidence"]["configuration_consistency"]
+    assert consistency["device_identity"] == "CONSISTENT"
+    assert consistency["device_serial_observation"] == "CHANGED"
+    assert not any(item["code"] == "DEVICE_IDENTITY_CHANGED" for item in composite["findings"])
+    assert any(
+        item["code"] == "DEVICE_SERIAL_OBSERVATION_CHANGED" and item["severity"] == "REVIEW"
+        for item in composite["findings"]
+    )
+
+
+def test_stable_hostname_change_remains_blocker():
+    first = _snapshot("11111111", "2026-09-08T20:00:00Z")
+    second = deepcopy(first)
+    second["snapshot_id"] = "22222222"
+    second["completed_at"] = "2026-09-09T01:00:00Z"
+    second["device"]["hostname"] = "different-switch"
+
+    composite = build_composite_evidence(
+        [_candidate(first), _candidate(second)],
+        {"policy_id": "production"},
+        "p" * 64,
+    )
+
+    assert composite["evidence"]["configuration_consistency"]["device_identity"] == "CONFLICT"
+    assert any(
+        item["code"] == "DEVICE_IDENTITY_CHANGED" and item["severity"] == "BLOCKER"
+        for item in composite["findings"]
+    )
