@@ -51,11 +51,12 @@ def _parser():
     parser = argparse.ArgumentParser(
         prog="ex-migration-provisioner cleanup",
         description=(
-            "FINALIZATION: close the TEMP-RECOVERY window, remove the temporary recovery "
-            "VLAN from the replacement/QFX attachment, convert the EX uplink from 'all' to "
-            "the current-plan QFX production VLAN set plus management, disable proven-unused "
-            "edge ports in the inactive default VLAN, and remove only proven-unused legacy "
-            "data VLANs. State-only evidence never authorizes endpoint VLANs."
+            "FINALIZATION: close the active TEMP-RECOVERY transit path while preserving a "
+            "disabled local recovery attachment on the replacement EX, remove TEMP-RECOVERY "
+            "from the migration QFX attachment, convert the EX uplink from 'all' to the "
+            "current-plan QFX production VLAN set plus management, disable proven-unused "
+            "non-recovery edge ports in the inactive default VLAN, and remove only "
+            "proven-unused legacy data VLANs. State-only evidence never authorizes endpoint VLANs."
         ),
     )
     parser.add_argument("migration_id")
@@ -157,8 +158,12 @@ def _qfx_state(dev, plan_device, pair_validation):
 
 def _print_plan(value):
     hardening = value["access_hardening"]
+    recovery_interface = value["recovery"]["interface"]
     used = [row["interface"] for row in hardening.get("used", [])]
-    unused = [row["interface"] for row in hardening.get("unused", [])]
+    unused = [
+        row["interface"] for row in hardening.get("unused", [])
+        if row["interface"] != recovery_interface
+    ]
     not_exposed = [row["interface"] for row in hardening.get("not_exposed", [])]
     stale = hardening.get("stale_vlans", {})
     print("\nMigration cleanup and access hardening plan")
@@ -168,13 +173,17 @@ def _print_plan(value):
     print("  Confirmed used edge ports kept enabled: %d" % len(used))
     if used:
         print("    %s" % ", ".join(used))
-    print("  Configured unused edge ports to disable: %d" % len(unused))
+    print("  Configured unused non-recovery edge ports to disable: %d" % len(unused))
     if unused:
         print("    %s" % ", ".join(unused))
     if not_exposed:
         print("  Lab template-range ports not exposed by vJunos: %d" % len(not_exposed))
         print("    %s" % ", ".join(not_exposed))
-    print("  Inactive VLAN for disabled ports: default (%s)" % value["recovery"]["prestage_default_vlan_id"])
+    print(
+        "  Recovery edge port: %s -> disable; preserve %s membership and VLAN definition"
+        % (recovery_interface, value["recovery"]["vlan_name"])
+    )
+    print("  Inactive VLAN for disabled non-recovery ports: default (%s)" % value["recovery"]["prestage_default_vlan_id"])
     print("  EX uplink final VLANs: %s" % ", ".join(value["production_vlan_names"]))
     print("  EX voice policy: preserve broad edge_ports policy")
     if stale.get("delete"):
@@ -185,7 +194,7 @@ def _print_plan(value):
         print("  Non-required EX VLANs preserved by safety checks:")
         for item in stale["preserve"]:
             print("    %s (%s): %s" % (item["name"], item["vlan_id"], item["reason"]))
-    print("  EX TEMP-RECOVERY: remove recovery-port membership and VLAN definition")
+    print("  EX TEMP-RECOVERY: preserve local recovery-port membership and VLAN definition")
     for item in value["qfx_devices"]:
         print("  %s %s: remove %s from %s" % (
             item["role"],
@@ -503,7 +512,10 @@ def run(argv):
             return 2
 
         used_interfaces = [row["interface"] for row in classification["used"]]
-        unused_interfaces = [row["interface"] for row in classification["unused"]]
+        unused_interfaces = [
+            row["interface"] for row in classification["unused"]
+            if row["interface"] != recovery_interface
+        ]
         not_exposed_interfaces = [row["interface"] for row in classification["not_exposed"]]
         deleted_vlan_names = [row["name"] for row in stale_vlans["delete"]]
         hardening = hardening_statements(
@@ -536,6 +548,7 @@ def run(argv):
             recovery_vlan_name,
             recovery_vlan_id,
             prestage_vlan_id,
+            ex_state.get("recovery_port_disabled", False),
             qfx_ae_by_role,
             precheck,
             classification,
@@ -588,7 +601,10 @@ def run(argv):
         if locked_classification["result"] != "PASS":
             raise base.ProvisioningError("EX access-port safety state changed after cleanup locks were acquired")
         locked_used = {row["interface"] for row in locked_classification["used"]}
-        locked_unused = {row["interface"] for row in locked_classification["unused"]}
+        locked_unused = {
+            row["interface"] for row in locked_classification["unused"]
+            if row["interface"] != recovery_interface
+        }
         locked_not_exposed = {row["interface"] for row in locked_classification["not_exposed"]}
         if locked_used != set(used_interfaces) or locked_unused != set(unused_interfaces) or locked_not_exposed != set(not_exposed_interfaces):
             raise base.ProvisioningError("EX access-port classification changed after cleanup locks were acquired")
@@ -621,7 +637,7 @@ def run(argv):
             print(candidate_diffs[role].rstrip())
         print("\n  Commit check: PASS on EX4400 and both QFXs")
         answer = input(
-            "\nApprove exactly these diffs, CLOSE the TEMP-RECOVERY window, prune the listed proven-unused VLANs, and disable the listed unused EX4400 ports? [y/N]: "
+            "\nApprove exactly these diffs, CLOSE the upstream TEMP-RECOVERY path, preserve the disabled local EX4400 recovery attachment, prune the listed proven-unused VLANs, and disable the listed unused EX4400 ports? [y/N]: "
         ).strip().lower()
         if answer not in ("y", "yes"):
             for role in reversed(locked_roles):
@@ -728,14 +744,15 @@ def run(argv):
         print("\nMigration cleanup transaction: PASS")
         print("  Transaction: %s" % transaction["transaction_id"])
         print("  Used EX4400 edge ports kept enabled: %d" % len(used_interfaces))
-        print("  Unused EX4400 edge ports disabled: %d" % len(unused_interfaces))
+        print("  Unused non-recovery EX4400 edge ports disabled: %d" % len(unused_interfaces))
         if not_exposed_interfaces:
             print("  Lab template-range ports not exposed by vJunos: %d" % len(not_exposed_interfaces))
+        print("  Recovery EX4400 edge port disabled with TEMP-RECOVERY preserved: PASS")
         print("  Broad edge_ports voice policy preserved: PASS")
         print("  Final ae0 VLAN membership exact: PASS")
         print("  Proven-unused EX data VLANs removed: %d" % len(deleted_vlan_names))
         print("  Inactive VLAN 3998 excluded from ae0: PASS")
-        print("  TEMP-RECOVERY removed from EX4400: PASS")
+        print("  TEMP-RECOVERY removed from production EX uplink: PASS")
         print("  TEMP-RECOVERY removed from migration QFX AE pair: PASS")
         print("  QFX global TEMP-RECOVERY definition preserved: PASS")
         print("  Commit-confirmed validation: PASS")
