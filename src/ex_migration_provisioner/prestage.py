@@ -32,6 +32,28 @@ def _validate_vlan(value, label):
     return value
 
 
+def _prestage_access_interfaces(bootstrap_profile, recovery_interface):
+    vc = bootstrap_profile.get("virtual_chassis") or {}
+    members = vc.get("members") or []
+    if members:
+        member_ids = sorted(int(item["member_id"]) for item in members)
+    else:
+        _require(
+            bootstrap_profile.get("environment") == "lab" and vc.get("member_count") == 1,
+            "explicit virtual-chassis members are required to build pre-stage access interfaces",
+        )
+        member_ids = [0]
+
+    interfaces = [
+        "ge-%d/0/%d" % (member_id, port)
+        for member_id in member_ids
+        for port in range(2, 48)
+        if "ge-%d/0/%d" % (member_id, port) != recovery_interface
+    ]
+    _require(interfaces, "pre-stage access interface inventory is empty")
+    return interfaces
+
+
 def validate_pre_cutover_site_policy(policy):
     required = {
         "schema_version",
@@ -45,6 +67,7 @@ def validate_pre_cutover_site_policy(policy):
         "management_vlan",
         "voice_vlan",
         "temporary_recovery_vlan",
+        "prestage_access_vlan",
         "precutover_qfx_baseline",
         "esi",
         "validation",
@@ -80,9 +103,24 @@ def validate_pre_cutover_site_policy(policy):
     management_vlan = _validate_vlan(policy["management_vlan"], "management VLAN")
     voice_vlan = _validate_vlan(policy["voice_vlan"], "voice VLAN")
     recovery_vlan = _validate_vlan(policy["temporary_recovery_vlan"], "temporary recovery VLAN")
+    prestage_vlan = _validate_vlan(policy["prestage_access_vlan"], "pre-stage access VLAN")
     _require(
-        len({management_vlan["vlan_id"], voice_vlan["vlan_id"], recovery_vlan["vlan_id"]}) == 3,
-        "management, voice, and temporary recovery VLAN IDs must be distinct",
+        len({
+            management_vlan["vlan_id"],
+            voice_vlan["vlan_id"],
+            recovery_vlan["vlan_id"],
+            prestage_vlan["vlan_id"],
+        }) == 4,
+        "management, voice, temporary recovery, and pre-stage access VLAN IDs must be distinct",
+    )
+    _require(
+        len({
+            management_vlan["name"],
+            voice_vlan["name"],
+            recovery_vlan["name"],
+            prestage_vlan["name"],
+        }) == 4,
+        "management, voice, temporary recovery, and pre-stage access VLAN names must be distinct",
     )
 
     pools = policy["stage_port_pools"]
@@ -109,6 +147,10 @@ def validate_pre_cutover_site_policy(policy):
     _require(
         set(required_vlans) == {management_vlan["vlan_id"], recovery_vlan["vlan_id"]},
         "QFX baseline must contain exactly management and temporary recovery VLANs",
+    )
+    _require(
+        prestage_vlan["vlan_id"] not in set(required_vlans),
+        "pre-stage access VLAN must remain EX-only and cannot be part of the QFX pre-cutover baseline",
     )
 
     esi = policy["esi"]
@@ -156,6 +198,23 @@ def build_pre_stage_package(
         raise base.ProvisioningError("bootstrap profile and QFX site policy environments differ")
 
     variables = _render_variables(plan, site_policy, bootstrap_profile)
+    prestage_vlan = site_policy["prestage_access_vlan"]
+    configured = variables.get("configured_vlans", [])
+    _require(
+        all(
+            item.get("vlan_id") != prestage_vlan["vlan_id"]
+            and item.get("name") != prestage_vlan["name"]
+            for item in configured
+        ),
+        "pre-stage access VLAN collides with the approved configured VLAN inventory",
+    )
+    variables["prestage_access_vlan"] = dict(prestage_vlan)
+    variables["prestage_access_vlan_name"] = prestage_vlan["name"]
+    variables["prestage_access_vlan_id"] = prestage_vlan["vlan_id"]
+    variables["prestage_access_interfaces"] = _prestage_access_interfaces(
+        bootstrap_profile,
+        variables["recovery_interface"],
+    )
     variables["qfx"] = {
         "site_policy_id": site_policy["site_policy_id"],
         "attachment_state": "UNKNOWN_UNTIL_POST_CUTOVER_DISCOVERY",
@@ -219,6 +278,8 @@ def build_pre_stage_package(
             "LACP_FORCE_UP_PROHIBITED",
             "RENDER_VARIABLES_NORMALIZED",
             "RECOVERY_INTERFACE_BOUND",
+            "PRESTAGE_ACCESS_VLAN_BOUND",
+            "PRESTAGE_ACCESS_INTERFACES_BOUND",
             "INPUT_DIGESTS_BOUND",
         ],
     }
