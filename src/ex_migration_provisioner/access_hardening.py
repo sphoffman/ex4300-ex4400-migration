@@ -14,6 +14,9 @@ _TRUNK_MODE = re.compile(
 _TRUNK_MEMBER = re.compile(
     r"(?m)^set interfaces (?P<if>\S+) unit 0 family ethernet-switching vlan members (?P<value>\S+)\s*$"
 )
+_ACCESS_MEMBER = re.compile(
+    r"(?m)^set interfaces (?P<if>ge-\d+/0/\d+) unit 0 family ethernet-switching vlan members (?P<value>\S+)\s*$"
+)
 
 
 def _require(condition, message):
@@ -146,6 +149,56 @@ def trunk_inventory(config_text):
             if match.group("if") == interface
         ))
     return {"trunks": trunks, "memberships": memberships}
+
+
+def explicit_access_memberships(config_text):
+    values = {}
+    for match in _ACCESS_MEMBER.finditer(str(config_text or "")):
+        values.setdefault(match.group("if"), set()).add(match.group("value"))
+    return {interface: sorted(items) for interface, items in values.items()}
+
+
+def validate_pre_hardening_config(
+    config_text,
+    classification,
+    recovery_interface,
+    recovery_vlan_name,
+    voice_vlan_name,
+    uplink_interface="ae0",
+    inactive_vlan_name="default",
+):
+    lines = {line.strip() for line in str(config_text or "").splitlines() if line.strip()}
+    trunks = trunk_inventory(config_text)
+    memberships = explicit_access_memberships(config_text)
+    checks = {
+        "only_expected_access_uplink_trunk": trunks["trunks"] == [uplink_interface],
+        "uplink_currently_uses_all": (
+            "set interfaces %s unit 0 family ethernet-switching vlan members all" % uplink_interface
+        ) in lines,
+        "broad_voice_policy_present": (
+            "set switch-options voip interface edge_ports vlan %s" % voice_vlan_name
+        ) in lines,
+    }
+    unexpected = []
+    for row in classification.get("unused", []):
+        interface = row["interface"]
+        allowed = {inactive_vlan_name}
+        if interface == recovery_interface:
+            allowed.add(recovery_vlan_name)
+        current = set(memberships.get(interface, []))
+        extras = sorted(current - allowed)
+        if extras:
+            unexpected.append({
+                "interface": interface,
+                "memberships": sorted(current),
+                "unexpected": extras,
+            })
+    checks["unused_ports_have_no_unexpected_explicit_vlan_membership"] = not unexpected
+    return {
+        "checks": checks,
+        "unexpected_unused_port_memberships": unexpected,
+        "result": "PASS" if all(checks.values()) else "FAIL",
+    }
 
 
 def hardening_statements(
