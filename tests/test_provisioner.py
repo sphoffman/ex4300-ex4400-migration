@@ -88,6 +88,7 @@ def bootstrap():
         "environment": "lab",
         "provisioning_mode": "in-place-lab",
         "production_eligible": False,
+        "uplink_interfaces": ["ge-0/0/0", "ge-0/0/1"],
         "virtual_chassis": {"member_count": 1, "members": []},
     }
 
