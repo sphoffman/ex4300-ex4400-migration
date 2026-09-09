@@ -70,6 +70,25 @@ def inverse_statements(statements):
     return result
 
 
+def complete_stale_vlan_object_deletes(statements, access_hardening):
+    """Delete the proven-unused VLAN object after deleting its observed leaves.
+
+    Junos can retain a named hierarchy node after its child leaves are removed
+    (for example a DHCP-security group under a VLAN).  The final broad delete is
+    therefore required to guarantee that no residual VLAN hierarchy remains.
+    The leaf deletes stay in the transaction so inverse_statements() still has
+    the exact observed leaves available for compensating rollback.
+    """
+    result = list(statements)
+    for item in access_hardening.get("stale_vlans", {}).get("delete", []):
+        name = str(item.get("name") or "")
+        _require(name, "proven-unused VLAN cleanup record is missing a name")
+        statement = "delete vlans %s" % name
+        if statement not in result:
+            result.append(statement)
+    return result
+
+
 def ex_recovery_state(config_text, recovery_interface, recovery_vlan_name, recovery_vlan_id, prestage_vlan_id):
     lines = {line.strip() for line in str(config_text or "").splitlines() if line.strip()}
     member = (
@@ -248,7 +267,11 @@ def build_cleanup_plan(
     created_at=None,
 ):
     _require(precheck.get("result") == "PASS", "TEMP-RECOVERY cleanup prechecks did not pass")
-    ex_statements = list(access_hardening_statements) + ex_cleanup_statements(
+    hardened_statements = complete_stale_vlan_object_deletes(
+        access_hardening_statements,
+        access_hardening,
+    )
+    ex_statements = list(hardened_statements) + ex_cleanup_statements(
         recovery_interface,
         recovery_vlan_name,
     )
