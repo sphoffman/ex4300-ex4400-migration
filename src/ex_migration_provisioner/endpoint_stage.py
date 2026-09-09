@@ -135,6 +135,8 @@ def correlate_endpoint_intent(
     voice_vlan_id,
     temporary_recovery_vlan_id,
     observed_at=None,
+    prestage_access_vlan_name=None,
+    prestage_access_vlan_id=None,
 ):
     vlan_names = _vlan_by_id(plan)
     observations = parse_mac_table_text(
@@ -142,6 +144,9 @@ def correlate_endpoint_intent(
         observed_at,
         "post-cutover-ex4400-mac-table",
     )
+
+    prestage_name = str(prestage_access_vlan_name or "").strip()
+    prestage_id = int(prestage_access_vlan_id) if prestage_access_vlan_id is not None else None
 
     by_mac = defaultdict(set)
     observed_rows = []
@@ -203,11 +208,14 @@ def correlate_endpoint_intent(
             })
             continue
         vlan_id = int(vlan_id)
-        if vlan_id in {
+        infrastructure_ids = {
             int(management_vlan_id),
             int(voice_vlan_id),
             int(temporary_recovery_vlan_id),
-        }:
+        }
+        if prestage_id is not None:
+            infrastructure_ids.add(prestage_id)
+        if vlan_id in infrastructure_ids:
             holds.append({
                 "old_interface": old_interface,
                 "reason": "DATA_VLAN_COLLIDES_WITH_INFRASTRUCTURE_VLAN",
@@ -226,6 +234,11 @@ def correlate_endpoint_intent(
             continue
 
         statements = []
+        if prestage_name:
+            statements.append(
+                "delete interfaces %s unit 0 family ethernet-switching vlan members %s"
+                % (new_interface, prestage_name)
+            )
         description_statement = _description_statement(
             new_interface,
             port.get("description"),
@@ -242,6 +255,7 @@ def correlate_endpoint_intent(
             "description": port.get("description"),
             "data_vlan_id": vlan_id,
             "data_vlan_name": vlan_name,
+            "prestage_access_vlan_name": prestage_name or None,
             "expected_macs": expected_macs,
             "observed_support": supporting,
             "statements": statements,
