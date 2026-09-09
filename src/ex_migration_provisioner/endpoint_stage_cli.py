@@ -13,7 +13,9 @@ from . import cli_base as base
 from .endpoint_stage import (
     build_correlation_artifact,
     build_endpoint_transaction,
+    committed_endpoint_state,
     correlate_endpoint_intent,
+    detect_silent_up_ports,
     persist_endpoint_transaction,
     qfx_plan_for_transaction,
     resolve_postcutover_access,
@@ -28,9 +30,10 @@ def _parser():
     parser = argparse.ArgumentParser(
         prog="ex-migration-provisioner activate-endpoints",
         description=(
-            "POST-CUTOVER: connect to the replacement EX4400, correlate approved "
-            "historical endpoint MACs to current edge ports, and apply only "
-            "unambiguous descriptions/data-VLAN assignments using commit confirmed."
+            "POST-CUTOVER: connect to the replacement EX4400, reconcile already-completed "
+            "endpoint mappings, correlate unresolved historical MACs to current edge ports, "
+            "report up-but-silent edge ports, and apply only new unambiguous endpoint intent "
+            "using commit confirmed. The command is safe to rerun."
         ),
     )
     parser.add_argument("migration_id")
@@ -164,6 +167,37 @@ def _planned_config_rows(config_text, activated):
     return hard_pass, rows
 
 
+def _reconcile_completed_state(config_text, historical):
+    live_by_old = {}
+    live_by_new = {}
+    stale = []
+    for old_interface in sorted(historical.get("by_old", {})):
+        row = historical["by_old"][old_interface]
+        ok, _rows = _planned_config_rows(config_text, [row])
+        if not ok:
+            stale.append({
+                "old_interface": old_interface,
+                "new_interface": row.get("new_interface"),
+                "transaction_id": row.get("transaction_id"),
+                "reason": "HISTORICAL_COMPLETION_NOT_PRESENT_IN_CURRENT_CONFIG",
+            })
+            continue
+        new_interface = str(row.get("new_interface") or "")
+        if new_interface in live_by_new and live_by_new[new_interface] != old_interface:
+            raise base.ProvisioningError(
+                "live completed endpoint state maps multiple old interfaces to %s" % new_interface
+            )
+        live_by_old[old_interface] = row
+        live_by_new[new_interface] = old_interface
+    return {
+        "by_old": live_by_old,
+        "by_new": live_by_new,
+        "completed": [live_by_old[key] for key in sorted(live_by_old)],
+        "stale": stale,
+        "transaction_ids": historical.get("transaction_ids", []),
+    }
+
+
 def _validate_preload_port_config(dev, activated):
     text = _interfaces_config_set(dev, "committed")
     for item in activated:
@@ -204,7 +238,8 @@ def _print_correlation(value):
             value["access"]["transport_address"],
             value["access"]["port"],
         ))
-    print("  Unambiguous endpoint intents: %d" % len(correlation["activated"]))
+    print("  Completed endpoint intents: %d" % len(correlation.get("completed", [])))
+    print("  Newly resolvable endpoint intents: %d" % len(correlation["activated"]))
     for item in correlation["activated"]:
         supporting = sorted(item["observed_support"])
         print(
@@ -219,9 +254,21 @@ def _print_correlation(value):
         )
         if item.get("description"):
             print("      description: %s" % item["description"])
+    stale = correlation.get("stale_historical_completions", [])
+    if stale:
+        print("  Historical completions reopened: %d" % len(stale))
+        for item in stale:
+            print("    %s -> %s" % (item["old_interface"], item.get("new_interface")))
     print("  Holds: %d" % len(correlation["holds"]))
     for item in correlation["holds"]:
         print("    %s: %s" % (item["old_interface"], item["reason"]))
+    silent = correlation.get("silent_up_ports", [])
+    print("  Up/up edge ports with no dynamic MAC: %d" % len(silent))
+    for item in silent:
+        suffix = ""
+        if item.get("completed_old_interface"):
+            suffix = " | completed mapping: %s" % item["completed_old_interface"]
+        print("    %s%s" % (item["interface"], suffix))
     print("  Result: %s" % value["result"])
 
 
@@ -287,6 +334,10 @@ def run(argv):
     qfx_plan = qfx_plan_for_transaction(
         migration_root,
         qfx_transaction,
+        selected_plan["plan_digest"],
+    )
+    historical_completed = committed_endpoint_state(
+        migration_root,
         selected_plan["plan_digest"],
     )
 
@@ -359,7 +410,10 @@ def run(argv):
             expected_hostname,
         )
 
+        committed_config = _interfaces_config_set(dev, "committed")
+        completed = _reconcile_completed_state(committed_config, historical_completed)
         mac_text = dev.cli("show ethernet-switching table extensive", warning=False) or ""
+        terse_text = dev.cli("show interfaces terse", warning=False) or ""
         correlation = correlate_endpoint_intent(
             selected_plan["plan"],
             mac_text,
@@ -370,6 +424,15 @@ def run(argv):
             observed_at=utc_now(),
             prestage_access_vlan_id=prestage_access_vlan_id,
             uplink_interfaces=uplink_interfaces,
+            completed=completed["by_old"],
+        )
+        correlation["stale_historical_completions"] = completed["stale"]
+        correlation["silent_up_ports"] = detect_silent_up_ports(
+            terse_text,
+            mac_text,
+            recovery_interface,
+            uplink_interfaces=uplink_interfaces,
+            completed_by_new=completed["by_new"],
         )
         value = build_correlation_artifact(
             args.migration_id,
@@ -384,21 +447,27 @@ def run(argv):
             access,
             correlation,
             mac_text,
+            terse_text=terse_text,
             created_at=utc_now(),
         )
         correlation_dir, value, action = write_correlation(
             migration_root,
             value,
             mac_text,
+            terse_text=terse_text,
         )
         _print_correlation(value)
         print("\nEndpoint correlation: %s (%s)" % (value["correlation_id"], action))
         print("  Record: %s" % (correlation_dir / "correlation.json"))
 
         if not correlation["activated"]:
-            raise base.ProvisioningError(
-                "no endpoint intent was safe to activate; resolve/observe held endpoints before writing"
-            )
+            if correlation["holds"]:
+                print("\nNo new endpoint intents are currently safe to activate.")
+            else:
+                print("\nAll approved endpoint intents are already completed.")
+            print("  EX4400 writes performed: no")
+            print("  QFX writes performed: no")
+            return 0
         if args.plan_only:
             print("  EX4400 writes performed: no (--plan-only)")
             print("  QFX writes performed: no")
@@ -528,8 +597,12 @@ def run(argv):
 
         print("\nEX4400 endpoint activation transaction: PASS")
         print("  Transaction: %s" % transaction["transaction_id"])
-        print("  Activated endpoint intents: %d" % len(correlation["activated"]))
+        print("  Newly activated endpoint intents: %d" % len(correlation["activated"]))
+        print("  Cumulative completed endpoint intents: %d" % (
+            len(correlation.get("completed", [])) + len(correlation["activated"])
+        ))
         print("  Holds remaining: %d" % len(correlation["holds"]))
+        print("  Up/up silent edge ports observed: %d" % len(correlation.get("silent_up_ports", [])))
         print("  Commit-confirmed validation: PASS")
         print("  Final confirmation: PASS")
         print("  Record: %s" % (tx_dir / "transaction.json"))
