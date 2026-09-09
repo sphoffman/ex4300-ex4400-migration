@@ -49,7 +49,7 @@ def test_lab_bootstrap_is_never_production_eligible_and_binds_uplinks():
     Draft202012Validator(schema).validate(profile)
 
 
-def test_template_excludes_bootstrap_and_device_write_material():
+def test_template_keeps_edge_regex_and_uses_default_holding_vlan():
     template = (ROOT / "templates/ex4400/ex4400.set.j2").read_text(encoding="utf-8")
     assert "fxp0_management_ip" not in template
     assert "fxp0_management_gateway" not in template
@@ -57,14 +57,15 @@ def test_template_excludes_bootstrap_and_device_write_material():
     assert "vlan members all" in template
     assert "{{management_prefix}}" in template
     assert "{{management_ip}}/24" not in template
-    assert "set interfaces interface-range edge_ports member {{interface}}" in template
-    assert "for interface in prestage_access_interfaces" in template
+    assert 'set interfaces interface-range edge_ports member "ge-[0-9]/0/[2-47]"' in template
+    assert "prestage_access_interfaces" not in template
     assert "for interface in uplink_interfaces" in template
     assert "gigether-options 802.3ad ae0" in template
     assert "ether-options 802.3ad ae0" in template
-    assert "set interfaces {{interface}} unit 0 family ethernet-switching vlan members {{prestage_access_vlan_name}}" in template
     assert "set interfaces {{recovery_interface}} unit 0 family ethernet-switching vlan members {{temporary_recovery_vlan_name}}" in template
-    assert "set vlans {{prestage_access_vlan_name}} vlan-id {{prestage_access_vlan_id}}" in template
+    assert "set vlans default vlan-id {{prestage_access_vlan_id}}" in template
+    assert "set vlans default description {{prestage_access_vlan_name}}" in template
+    assert "set vlans {{prestage_access_vlan_name}} vlan-id" not in template
     assert "set protocols layer2-control nonstop-bridging" in template
     assert 'provisioning_mode == "in-place-lab"' in template
     assert "deactivate protocols layer2-control" in template
@@ -80,19 +81,21 @@ def test_contract_keeps_bootstrap_variables_outside_template():
     assert "voice_vlan" in required
     assert "prestage_access_vlan_name" in required
     assert "prestage_access_vlan_id" in required
-    assert "prestage_access_interfaces" in collections
+    assert "prestage_access_interfaces" not in collections
     assert "uplink_interfaces" in collections
     assert "recovery_interface" in required
     assert "provisioning_mode" in required
     assert "fxp0_management_ip" in bootstrap
     assert "uplink_interfaces" in bootstrap
     assert not required.intersection(bootstrap)
-    assert "EXPLICIT_AE0_UPLINK_MEMBERS" in contract["phase_contract"]["pre_stage"]["include"]
-    assert "DERIVED_NON_AE_GE_EDGE_PORTS" in contract["phase_contract"]["pre_stage"]["include"]
-    assert "PRESTAGE_ACCESS_VLAN" in contract["phase_contract"]["pre_stage"]["include"]
-    assert "PRESTAGE_ACCESS_PORT_ASSIGNMENTS" in contract["phase_contract"]["pre_stage"]["include"]
-    assert "TEMPORARY_RECOVERY_PORT_OVERLAY" in contract["phase_contract"]["pre_stage"]["include"]
-    assert "PLATFORM_AWARE_NONSTOP_BRIDGING" in contract["phase_contract"]["pre_stage"]["include"]
+    includes = contract["phase_contract"]["pre_stage"]["include"]
+    excludes = contract["phase_contract"]["pre_stage"]["exclude"]
+    assert "TEMPLATE_DEFINED_EDGE_PORT_RANGE" in includes
+    assert "EXPLICIT_AE0_UPLINK_MEMBERS" in includes
+    assert "PRESTAGE_DEFAULT_VLAN" in includes
+    assert "TEMPORARY_RECOVERY_PORT_OVERLAY" in includes
+    assert "PLATFORM_AWARE_NONSTOP_BRIDGING" in includes
+    assert "EXPLICIT_PRESTAGE_ACCESS_PORT_ASSIGNMENTS" in excludes
     assert contract["safety"]["credentials_allowed"] is False
 
 
