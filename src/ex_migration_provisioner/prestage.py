@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from ex_migration_analyzer.core import (
     atomic_json,
     canonical_bytes,
@@ -15,6 +17,7 @@ from .core import _render_variables
 
 PACKAGE_SCHEMA_VERSION = "1.1"
 SITE_POLICY_SCHEMA_VERSION = "1.1"
+_PHYSICAL_INTERFACE = re.compile(r"^(?:ge|xe|et)-[0-9]+/[0-9]+/[0-9]+$")
 
 
 def _require(condition, message):
@@ -32,6 +35,19 @@ def _validate_vlan(value, label):
     return value
 
 
+def _uplink_interfaces(bootstrap_profile):
+    values = bootstrap_profile.get("uplink_interfaces")
+    _require(isinstance(values, list) and values, "bootstrap profile must define EX4400 uplink_interfaces")
+    normalized = [str(value).strip() for value in values]
+    _require(all(normalized), "bootstrap uplink interface names cannot be empty")
+    _require(len(normalized) == len(set(normalized)), "bootstrap uplink interface inventory contains duplicates")
+    _require(
+        all(_PHYSICAL_INTERFACE.fullmatch(value) for value in normalized),
+        "bootstrap uplink interface inventory contains an unsupported physical interface",
+    )
+    return normalized
+
+
 def _prestage_access_interfaces(bootstrap_profile, recovery_interface):
     vc = bootstrap_profile.get("virtual_chassis") or {}
     members = vc.get("members") or []
@@ -44,11 +60,14 @@ def _prestage_access_interfaces(bootstrap_profile, recovery_interface):
         )
         member_ids = [0]
 
+    uplinks = set(_uplink_interfaces(bootstrap_profile))
+    _require(recovery_interface not in uplinks, "recovery interface cannot also be an EX4400 AE uplink member")
     interfaces = [
         "ge-%d/0/%d" % (member_id, port)
         for member_id in member_ids
-        for port in range(2, 48)
-        if "ge-%d/0/%d" % (member_id, port) != recovery_interface
+        for port in range(0, 48)
+        if "ge-%d/0/%d" % (member_id, port) not in uplinks
+        and "ge-%d/0/%d" % (member_id, port) != recovery_interface
     ]
     _require(interfaces, "pre-stage access interface inventory is empty")
     return interfaces
@@ -211,6 +230,7 @@ def build_pre_stage_package(
     variables["prestage_access_vlan"] = dict(prestage_vlan)
     variables["prestage_access_vlan_name"] = prestage_vlan["name"]
     variables["prestage_access_vlan_id"] = prestage_vlan["vlan_id"]
+    variables["uplink_interfaces"] = _uplink_interfaces(bootstrap_profile)
     variables["prestage_access_interfaces"] = _prestage_access_interfaces(
         bootstrap_profile,
         variables["recovery_interface"],
@@ -278,6 +298,7 @@ def build_pre_stage_package(
             "LACP_FORCE_UP_PROHIBITED",
             "RENDER_VARIABLES_NORMALIZED",
             "RECOVERY_INTERFACE_BOUND",
+            "EX4400_UPLINK_INTERFACES_BOUND",
             "PRESTAGE_ACCESS_VLAN_BOUND",
             "PRESTAGE_ACCESS_INTERFACES_BOUND",
             "INPUT_DIGESTS_BOUND",
