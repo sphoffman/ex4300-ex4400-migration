@@ -45,8 +45,26 @@ def bootstrap():
     }
 
 
-def observed(host_key="SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"):
-    return observe_ex4400_identity(FakeEX(), "10.0.0.15", 830, host_key)
+def observed(
+    host_key="SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    model="EX4400-48F",
+    serial="AB1234",
+    address="10.255.3.18",
+):
+    value = observe_ex4400_identity(
+        FakeEX(model=model, serial=serial),
+        address,
+        830,
+        host_key,
+        allow_vjunos_switch=(model == "EX9214"),
+    )
+    value["oob_management"] = {
+        "address": address + "/24",
+        "routing_instance": "mgmt_junos",
+        "default_gateway": "10.0.0.2",
+        "gateway_source": "observed-configured-mgmt_junos-default",
+    }
+    return value
 
 
 def test_virtual_chassis_parser_extracts_member_identity():
@@ -60,25 +78,18 @@ def test_virtual_chassis_parser_extracts_member_identity():
     ]
 
 
-def test_vjunos_ex9214_rejected_without_transport_override():
+def test_vjunos_ex9214_rejected_without_lab_allowance():
     with pytest.raises(WriteError):
         observe_ex4400_identity(
             FakeEX(model="EX9214", serial="VM1234"),
-            "10.0.0.15",
+            "10.255.3.18",
             830,
             "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         )
 
 
-def test_vjunos_ex9214_allowed_only_for_explicit_lab_transport():
-    value = observe_ex4400_identity(
-        FakeEX(model="EX9214", serial="VM1234"),
-        "10.0.0.15",
-        830,
-        "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        allow_vjunos_switch=True,
-    )
-    value["connection"]["transport_address"] = "10.255.3.18"
+def test_vjunos_ex9214_allowed_with_same_oob_identity_model_in_lab():
+    value = observed(model="EX9214", serial="VM1234")
     identity = build_bootstrap_identity(
         "sw1203",
         bootstrap(),
@@ -86,31 +97,14 @@ def test_vjunos_ex9214_allowed_only_for_explicit_lab_transport():
         value,
         "2026-09-08T12:00:00Z",
     )
+    assert identity["schema_version"] == "1.1"
     assert identity["observed"]["device"]["model"] == "EX9214"
-    assert identity["observed"]["connection"]["address"] == "10.0.0.15"
-    assert identity["observed"]["connection"]["transport_address"] == "10.255.3.18"
+    assert identity["observed"]["connection"]["address"] == "10.255.3.18"
+    assert "transport_address" not in identity["observed"]["connection"]
+    assert identity["observed"]["oob_management"]["address"] == "10.255.3.18/24"
 
 
-def test_vjunos_ex9214_binding_rejected_if_transport_equals_logical_address():
-    value = observe_ex4400_identity(
-        FakeEX(model="EX9214", serial="VM1234"),
-        "10.0.0.15",
-        830,
-        "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        allow_vjunos_switch=True,
-    )
-    value["connection"]["transport_address"] = "10.0.0.15"
-    with pytest.raises(WriteError):
-        build_bootstrap_identity(
-            "sw1203",
-            bootstrap(),
-            "a" * 64,
-            value,
-            "2026-09-08T12:00:00Z",
-        )
-
-
-def test_lab_bootstrap_identity_binds_host_key_serial_and_model():
+def test_lab_bootstrap_identity_binds_host_key_serial_model_and_oob():
     value = build_bootstrap_identity(
         "sw1203",
         bootstrap(),
@@ -122,6 +116,7 @@ def test_lab_bootstrap_identity_binds_host_key_serial_and_model():
     assert value["eligibility"]["status"] == "LAB_ONLY"
     assert value["observed"]["device"]["serial_number"] == "AB1234"
     assert value["observed"]["connection"]["ssh_host_key_sha256"].startswith("SHA256:")
+    assert value["observed"]["oob_management"]["default_gateway"] == "10.0.0.2"
 
 
 def test_bound_identity_rejects_host_key_change():
