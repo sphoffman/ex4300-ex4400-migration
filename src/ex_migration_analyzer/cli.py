@@ -9,7 +9,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import __version__
-from .core import AnalysisError, analyze, atomic_json, canonical_bytes, evaluate_policy, read_json, render_report, sha256_bytes, sha256_file, utc_now, validate_collection
+from .composite import build_composite_evidence
+from .core import (
+    AnalysisError,
+    analyze,
+    atomic_json,
+    canonical_bytes,
+    evaluate_policy,
+    read_json,
+    render_report,
+    sha256_bytes,
+    sha256_file,
+    utc_now,
+    validate_collection,
+)
 
 
 _DISPLAY_TIMEZONE = "America/New_York"
@@ -21,9 +34,11 @@ def load_settings(path):
         "analysis_policy": "policies/production-old-v1.json",
         "display_timezone": "America/New_York",
     }
-    if path.is_file(): defaults.update(read_json(path))
+    if path.is_file():
+        defaults.update(read_json(path))
     local_path = path.with_name("site.local.json")
-    if local_path.is_file(): defaults.update(read_json(local_path))
+    if local_path.is_file():
+        defaults.update(read_json(local_path))
     if os.environ.get("EX_MIGRATION_ANALYSIS_POLICY"):
         defaults["analysis_policy"] = os.environ["EX_MIGRATION_ANALYSIS_POLICY"]
     if os.environ.get("EX_MIGRATION_DISPLAY_TIMEZONE"):
@@ -61,9 +76,8 @@ def readable_time(value):
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
         local = _as_local(parsed)
-        return "%s %s (%s UTC)" % (
+        return "%s (%s UTC)" % (
             local.strftime("%b %-d, %Y %H:%M %Z"),
-            "",
             parsed.strftime("%b %-d, %Y %H:%M"),
         )
     except (AttributeError, TypeError, ValueError, OSError):
@@ -74,124 +88,22 @@ def inspect_candidates(directories, policy, policy_digest):
     complete, incomplete, rejected = [], [], []
     for directory in directories:
         if "_pending_" in directory.name or not (directory / "snapshot.json").is_file():
-            incomplete.append(directory); continue
+            incomplete.append(directory)
+            continue
         try:
             snapshot, envelope = validate_collection(directory)
             preview = analyze(snapshot, envelope, policy, policy_digest, "PREVIEW", __version__)
             blockers, _reviews = evaluate_policy(snapshot, policy)
-            complete.append({"path": directory, "snapshot": snapshot, "envelope": envelope, "preview": preview, "blockers": blockers})
+            complete.append({
+                "path": directory,
+                "snapshot": snapshot,
+                "envelope": envelope,
+                "preview": preview,
+                "blockers": blockers,
+            })
         except AnalysisError as exc:
             rejected.append((directory, str(exc)))
     return complete, incomplete, rejected
-
-
-def prepare_history(candidates):
-    """Attach deterministic all-candidate coverage without changing any snapshot."""
-    eligible = [candidate for candidate in candidates if not candidate["blockers"]]
-    catalog = {}
-    for candidate in eligible:
-        snapshot_id = candidate["snapshot"]["snapshot_id"]
-        for mac, vlan, port in endpoint_observations(candidate):
-            key = (mac, vlan, port)
-            catalog.setdefault(key, []).append(snapshot_id)
-    catalog_rows = [
-        {"mac": key[0], "vlan_id": int(key[1]), "interface": key[2], "snapshot_ids": sorted(set(snapshot_ids))}
-        for key, snapshot_ids in sorted(catalog.items(), key=lambda item: (item[0][2], item[0][0], item[0][1]))
-    ]
-    history = {
-        "catalog": catalog_rows,
-        "catalog_digest": sha256_bytes(canonical_bytes(catalog_rows)),
-        "supporting_snapshots": sorted(
-            ({"snapshot_id": item["snapshot"]["snapshot_id"], "collection_digest": item["envelope"]["collection_digest"]} for item in eligible),
-            key=lambda item: item["snapshot_id"],
-        ),
-    }
-    all_identities = {(mac, port) for mac, _vlan, port in catalog}
-    for candidate in candidates:
-        observed = endpoint_observations(candidate)
-        observed_identities = {(mac, port) for mac, _vlan, port in observed}
-        missing = all_identities - observed_identities
-        candidate["historical_coverage"] = len(observed_identities & all_identities)
-        candidate["historical_total"] = len(all_identities)
-        candidate["historically_missing"] = sorted(
-            ((mac, ",".join(sorted(vlan for item_mac, vlan, item_port in catalog if (item_mac, item_port) == (mac, port))), port) for mac, port in missing),
-            key=lambda item: (item[2], item[0], item[1]),
-        )
-        candidate["history"] = history
-    return history
-
-
-def candidate_rank(candidate):
-    snapshot = candidate["snapshot"]; policy = snapshot.get("collection_policy", {})
-    review_count = sum(1 for finding in candidate["preview"]["findings"] if finding["severity"] == "REVIEW")
-    return (not bool(candidate["blockers"]), candidate.get("historical_coverage", 0), -len(candidate.get("historically_missing", [])), int(policy.get("duration_seconds", 0)), int(policy.get("samples", 0)), -review_count, snapshot.get("completed_at", ""))
-
-
-def show_candidate(index, candidate, recommended, policy_id):
-    snapshot = candidate["snapshot"]; preview = candidate["preview"]; collection_policy = snapshot.get("collection_policy", {})
-    endpoint_ports = sum(1 for port in preview["ports"] if port["unique_macs"])
-    successful = sum(1 for run in snapshot.get("sample_runs", []) if all(entry.get("status") == "SUCCESS" for entry in run.get("commands", [])))
-    marker = " (recommended)" if recommended else ""
-    print("  [%d] %s%s" % (index, readable_time(snapshot.get("started_at")), marker))
-    print("      Host: %s" % (snapshot.get("device", {}).get("hostname") or "unknown"))
-    print("      Snapshot: %s | %ss | %s/%s successful samples" % (snapshot.get("snapshot_id"), collection_policy.get("duration_seconds", 0), successful, collection_policy.get("samples", 0)))
-    print("      Endpoints: %s unique MACs on %s access ports | Findings: %s" % (preview["statistics"]["unique_endpoint_macs"], endpoint_ports, len(preview["findings"])))
-    reconciliation = collection_policy.get("mac_table_reconciliation", [])
-    if reconciliation:
-        reconciled = sum(1 for item in reconciliation if item.get("status") == "RECONCILED")
-        summary_only = sum(len(item.get("summary_only", [])) for item in reconciliation)
-        detail_only = sum(len(item.get("detail_only", [])) for item in reconciliation)
-        print("      MAC reconciliation: %s/%s samples | summary-only rows: %s | detail-only rows: %s" % (reconciled, len(reconciliation), summary_only, detail_only))
-    print("      Historical coverage: %s/%s | Missing known observations: %s" % (candidate.get("historical_coverage", 0), candidate.get("historical_total", 0), len(candidate.get("historically_missing", []))))
-    for mac, vlan, port in candidate.get("historically_missing", []):
-        print("        Missing: %s %s VLAN %s" % (port, mac, vlan))
-    print("      Policy %s: %s" % (policy_id, "ELIGIBLE" if not candidate["blockers"] else "NOT ELIGIBLE"))
-    if candidate["blockers"]: print("      Blockers: %s" % "; ".join(code for code, _message in candidate["blockers"]))
-
-
-def choose_candidate(candidates, incomplete, rejected, policy, interactive):
-    if incomplete:
-        print("Incomplete collections ignored: %d" % len(incomplete))
-        for path in incomplete: print("  - %s" % path.name)
-        print()
-    if rejected:
-        print("Corrupt or unreadable collections rejected: %d" % len(rejected))
-        for path, error in rejected: print("  - %s: %s" % (path.name, error))
-        print()
-    if not candidates: raise AnalysisError("no complete, integrity-valid old-switch collections were found")
-    prepare_history(candidates)
-    ranked = sorted(candidates, key=candidate_rank, reverse=True)
-    eligible = [candidate for candidate in ranked if not candidate["blockers"]]
-    if not eligible:
-        print("Completed snapshots:")
-        for index, candidate in enumerate(ranked, 1): show_candidate(index, candidate, False, policy["policy_id"])
-        raise AnalysisError("no snapshot is approvable under %s" % policy["policy_id"])
-    recommended = eligible[0]
-    print("Completed snapshots:")
-    for index, candidate in enumerate(ranked, 1): show_candidate(index, candidate, candidate is recommended, policy["policy_id"])
-    if len(eligible) == 1:
-        print("\nOnly one eligible snapshot; selecting it automatically."); return recommended, False
-    if not interactive: return recommended, False
-    default_index = ranked.index(recommended) + 1
-    answer = input("\nSelect baseline [%d]: " % default_index).strip() or str(default_index)
-    try: selected = ranked[int(answer) - 1]
-    except (ValueError, IndexError): raise AnalysisError("invalid snapshot selection")
-    if selected["blockers"]: raise AnalysisError("selected snapshot is not eligible under %s" % policy["policy_id"])
-    return selected, selected is not recommended
-
-
-def show_analysis_summary(candidate):
-    snapshot = candidate["snapshot"]; preview = candidate["preview"]; policy = snapshot["collection_policy"]
-    print("\n%s baseline analysis" % ("Selected" if candidate.get("operator_override") else "Recommended"))
-    print("  Collected: %s through %s" % (readable_time(snapshot["started_at"]), readable_time(snapshot["completed_at"])))
-    print("  Snapshot: %s" % snapshot["snapshot_id"])
-    print("  Observation: %s seconds / %s samples" % (policy.get("duration_seconds"), policy.get("samples")))
-    print("  Unique endpoint MACs: %s" % preview["statistics"]["unique_endpoint_macs"])
-    print("  Excluded infrastructure observations: %s" % preview["statistics"]["excluded_observations"])
-    print("  Result: %s" % preview["result"]); print("  Findings:")
-    if preview["findings"]:
-        for finding in preview["findings"]: print("    - %s [%s]: %s" % (finding["subject"], finding["code"], finding["message"]))
-    else: print("    - None")
 
 
 def endpoint_observations(candidate):
@@ -207,53 +119,296 @@ def endpoint_observations(candidate):
     return observations
 
 
-def find_approval(migration_root, candidate, policy_digest):
+def prepare_history(candidates):
+    """Backward-compatible historical catalog helper used by tests and old artifacts."""
+    eligible = [candidate for candidate in candidates if not candidate["blockers"]]
+    catalog = {}
+    for candidate in eligible:
+        snapshot_id = candidate["snapshot"]["snapshot_id"]
+        for mac, vlan, port in endpoint_observations(candidate):
+            key = (mac, vlan, port)
+            catalog.setdefault(key, []).append(snapshot_id)
+    catalog_rows = [
+        {
+            "mac": key[0],
+            "vlan_id": int(key[1]),
+            "interface": key[2],
+            "snapshot_ids": sorted(set(snapshot_ids)),
+        }
+        for key, snapshot_ids in sorted(catalog.items(), key=lambda item: (item[0][2], item[0][0], item[0][1]))
+    ]
+    history = {
+        "catalog": catalog_rows,
+        "catalog_digest": sha256_bytes(canonical_bytes(catalog_rows)),
+        "supporting_snapshots": sorted(
+            (
+                {
+                    "snapshot_id": item["snapshot"]["snapshot_id"],
+                    "collection_digest": item["envelope"]["collection_digest"],
+                }
+                for item in eligible
+            ),
+            key=lambda item: item["snapshot_id"],
+        ),
+    }
+    all_identities = {(mac, port) for mac, _vlan, port in catalog}
+    for candidate in candidates:
+        observed = endpoint_observations(candidate)
+        observed_identities = {(mac, port) for mac, _vlan, port in observed}
+        missing = all_identities - observed_identities
+        candidate["historical_coverage"] = len(observed_identities & all_identities)
+        candidate["historical_total"] = len(all_identities)
+        candidate["historically_missing"] = sorted(
+            (
+                (
+                    mac,
+                    ",".join(sorted(vlan for item_mac, vlan, item_port in catalog if (item_mac, item_port) == (mac, port))),
+                    port,
+                )
+                for mac, port in missing
+            ),
+            key=lambda item: (item[2], item[0], item[1]),
+        )
+        candidate["history"] = history
+    return history
+
+
+def candidate_rank(candidate):
+    """Retained for compatibility; composite analysis no longer selects a baseline."""
+    snapshot = candidate["snapshot"]
+    policy = snapshot.get("collection_policy", {})
+    review_count = sum(1 for finding in candidate["preview"]["findings"] if finding["severity"] == "REVIEW")
+    return (
+        not bool(candidate["blockers"]),
+        candidate.get("historical_coverage", 0),
+        -len(candidate.get("historically_missing", [])),
+        int(policy.get("duration_seconds", 0)),
+        int(policy.get("samples", 0)),
+        -review_count,
+        snapshot.get("completed_at", ""),
+    )
+
+
+def _show_collection_issues(candidates, incomplete, rejected, policy):
+    ineligible = [candidate for candidate in candidates if candidate["blockers"]]
+    if incomplete:
+        print("Incomplete collections ignored: %d" % len(incomplete))
+        for path in incomplete:
+            print("  - %s" % path.name)
+    if rejected:
+        print("Corrupt or unreadable collections rejected: %d" % len(rejected))
+        for path, error in rejected:
+            print("  - %s: %s" % (path.name, error))
+    if ineligible:
+        print("Policy-ineligible collections excluded: %d" % len(ineligible))
+        for candidate in sorted(ineligible, key=lambda item: item["snapshot"].get("completed_at", "")):
+            print(
+                "  - %s | %s | %s"
+                % (
+                    candidate["snapshot"]["snapshot_id"],
+                    readable_time(candidate["snapshot"].get("started_at")),
+                    ", ".join(code for code, _message in candidate["blockers"]),
+                )
+            )
+    if incomplete or rejected or ineligible:
+        print()
+
+
+def _apply_composite_metadata(result, composite):
+    findings = list(result.get("findings", [])) + list(composite.get("findings", []))
+    result["findings"] = sorted(
+        findings,
+        key=lambda item: (item.get("severity", ""), item.get("code", ""), item.get("subject", "")),
+    )
+    if any(item.get("severity") == "BLOCKER" for item in result["findings"]):
+        result["result"] = "BLOCKED"
+    elif any(item.get("severity") == "REVIEW" for item in result["findings"]):
+        result["result"] = "REVIEW_REQUIRED"
+    else:
+        result["result"] = "READY"
+    evidence = composite["evidence"]
+    result["inputs"].update({
+        "input_kind": "COMPOSITE_EVIDENCE_SET",
+        "evidence_set_id": evidence["evidence_set_id"],
+        "evidence_set_digest": evidence["evidence_set_digest"],
+        "supporting_snapshots": [
+            {
+                "snapshot_id": item["snapshot_id"],
+                "collection_digest": item["collection_digest"],
+            }
+            for item in evidence["collections"]
+        ],
+    })
+    result["composite_evidence"] = evidence
+    for port in result.get("ports", []):
+        if port.get("unique_macs"):
+            port["observation_history"] = "OBSERVED_IN_EVIDENCE_SET"
+    return result
+
+
+def _analyze_composite(composite, policy, policy_digest, approval_digest):
+    result = analyze(
+        composite["snapshot"],
+        composite["envelope"],
+        policy,
+        policy_digest,
+        approval_digest,
+        __version__,
+        composite["history"],
+    )
+    return _apply_composite_metadata(result, composite)
+
+
+def show_composite_summary(composite, preview):
+    evidence = composite["evidence"]
+    consistency = evidence["configuration_consistency"]
+    endpoints = evidence["endpoint_statistics"]
+    print("Discovery evidence")
+    print("  Eligible collections: %d" % len(evidence["collections"]))
+    print(
+        "  Observation span: %s through %s"
+        % (
+            readable_time(evidence["observation_span"]["started_at"]),
+            readable_time(evidence["observation_span"]["completed_at"]),
+        )
+    )
+    print("  Evidence set: %s" % evidence["evidence_set_id"])
+    print("  Configuration consistency:")
+    print("    Device identity: %s" % consistency["device_identity"])
+    print("    Management:      %s" % consistency["management"])
+    print("    Interfaces:      %s" % consistency["interfaces"])
+    print("    VLANs:           %s" % consistency["vlans"])
+    print("    Voice policy:    %s" % consistency["voice_policy"])
+    print("    Junos version:   %s" % consistency["junos_version"])
+    print("  Endpoint evidence:")
+    print("    Unique MACs:                 %d" % endpoints["unique_macs"])
+    print("    Consistent MAC/port IDs:     %d" % endpoints["consistent_mac_port_identities"])
+    print("    Historical MAC conflicts:    %d" % endpoints["conflicting_macs"])
+    print("  Composite analysis: %s" % preview["result"])
+    if preview.get("findings"):
+        print("  Findings: %d" % len(preview["findings"]))
+        for finding in preview["findings"]:
+            print(
+                "    - %s [%s]: %s"
+                % (finding["subject"], finding["code"], finding["message"])
+            )
+    else:
+        print("  Findings: None")
+
+
+def write_evidence_set(migration_root, evidence):
+    destination = migration_root / "old-switch" / "evidence-sets" / evidence["evidence_set_id"]
+    output = destination / "evidence.json"
+    if output.is_file():
+        if read_json(output) != evidence:
+            raise AnalysisError("existing evidence-set ID has different content")
+        integrity = read_json(destination / "integrity.json")
+        if sha256_file(output) != integrity.get("evidence.json"):
+            raise AnalysisError("existing evidence set failed integrity validation")
+        return destination, "UNCHANGED"
+    destination.mkdir(parents=True, exist_ok=False)
+    atomic_json(output, evidence)
+    atomic_json(destination / "integrity.json", {"evidence.json": sha256_file(output)})
+    return destination, "CREATED"
+
+
+def find_approval(migration_root, evidence, preview, policy_digest):
     approvals = migration_root / "old-switch" / "approvals"
-    preview_digest = sha256_bytes(canonical_bytes(candidate["preview"]))
+    preview_digest = sha256_bytes(canonical_bytes(preview))
     if approvals.is_dir():
         for path in sorted(approvals.glob("*/approval.json")):
             value = read_json(path)
-            if value.get("collection_digest") == candidate["envelope"]["collection_digest"] and value.get("policy_digest") == policy_digest and value.get("analysis_preview_digest") == preview_digest and value.get("historical_evidence_catalog_digest") == candidate["history"]["catalog_digest"] and value.get("supporting_snapshots") == candidate["history"]["supporting_snapshots"]: return value, path
+            if (
+                value.get("evidence_set_digest") == evidence["evidence_set_digest"]
+                and value.get("policy_digest") == policy_digest
+                and value.get("analysis_preview_digest") == preview_digest
+            ):
+                return value, path
     return None, None
 
 
-def approve(migration_root, candidate, policy, policy_digest, interactive, override_reason=None):
-    existing, path = find_approval(migration_root, candidate, policy_digest)
-    if existing: return existing, sha256_file(path), False
-    if not interactive: raise AnalysisError("no matching approval exists; interactive approval is required")
-    print("\nCollection digest: sha256:%s" % candidate["envelope"]["collection_digest"])
-    if input("Use this snapshot and analysis as the approved old-switch baseline? [y/N]: ").strip().lower() not in ("y", "yes"): raise AnalysisError("baseline was not approved")
+def approve(migration_root, evidence, preview, policy, policy_digest, interactive):
+    existing, path = find_approval(migration_root, evidence, preview, policy_digest)
+    if existing:
+        return existing, sha256_file(path), False
+    if not interactive:
+        raise AnalysisError("no matching composite evidence approval exists; interactive approval is required")
+    print("\nEvidence-set digest: sha256:%s" % evidence["evidence_set_digest"])
+    answer = input("Use this composite discovery evidence set as the approved old-switch analysis input? [y/N]: ").strip().lower()
+    if answer not in ("y", "yes"):
+        raise AnalysisError("composite discovery evidence set was not approved")
     approval = {
-        "schema_version": "1.1", "migration_id": candidate["snapshot"]["migration_id"], "snapshot_id": candidate["snapshot"]["snapshot_id"],
-        "snapshot_schema_version": candidate["snapshot"]["schema_version"], "snapshot_sha256": candidate["envelope"]["snapshot_sha256"],
-        "collection_digest": candidate["envelope"]["collection_digest"], "analysis_preview_digest": sha256_bytes(canonical_bytes(candidate["preview"])),
-        "historical_evidence_catalog_digest": candidate["history"]["catalog_digest"], "supporting_snapshots": candidate["history"]["supporting_snapshots"],
-        "policy_id": policy["policy_id"], "policy_digest": policy_digest, "approved_by": getpass.getuser(), "approved_at": utc_now(),
-        "reason": override_reason or "Selected recommended analyzer baseline", "waivers": [],
+        "schema_version": "1.2",
+        "input_kind": "COMPOSITE_EVIDENCE_SET",
+        "migration_id": evidence["migration_id"],
+        "evidence_set_id": evidence["evidence_set_id"],
+        "evidence_set_digest": evidence["evidence_set_digest"],
+        "supporting_snapshots": [
+            {
+                "snapshot_id": item["snapshot_id"],
+                "collection_digest": item["collection_digest"],
+            }
+            for item in evidence["collections"]
+        ],
+        "analysis_preview_digest": sha256_bytes(canonical_bytes(preview)),
+        "policy_id": policy["policy_id"],
+        "policy_digest": policy_digest,
+        "approved_by": getpass.getuser(),
+        "approved_at": utc_now(),
+        "reason": "Approved composite discovery evidence set",
+        "waivers": [],
     }
     approval["approval_id"] = sha256_bytes(canonical_bytes(approval))[:16]
     path = migration_root / "old-switch" / "approvals" / approval["approval_id"] / "approval.json"
-    atomic_json(path, approval); return approval, sha256_file(path), True
+    atomic_json(path, approval)
+    return approval, sha256_file(path), True
 
 
 def write_analysis(migration_root, analysis):
-    destination = migration_root / "analyses" / analysis["analysis_id"]; output = destination / "analysis.json"
+    destination = migration_root / "analyses" / analysis["analysis_id"]
+    output = destination / "analysis.json"
     if output.is_file():
-        if read_json(output) != analysis: raise AnalysisError("existing analysis ID has different content")
+        if read_json(output) != analysis:
+            raise AnalysisError("existing analysis ID has different content")
         integrity = read_json(destination / "integrity.json")
-        if sha256_file(output) != integrity.get("analysis.json") or sha256_file(destination / "report.md") != integrity.get("report.md"): raise AnalysisError("existing analysis output failed integrity validation")
+        if (
+            sha256_file(output) != integrity.get("analysis.json")
+            or sha256_file(destination / "report.md") != integrity.get("report.md")
+        ):
+            raise AnalysisError("existing analysis output failed integrity validation")
         return destination, "UNCHANGED"
-    destination.mkdir(parents=True, exist_ok=False); atomic_json(output, analysis)
+    destination.mkdir(parents=True, exist_ok=False)
+    atomic_json(output, analysis)
     (destination / "report.md").write_text(render_report(analysis), encoding="utf-8")
-    atomic_json(destination / "integrity.json", {"analysis.json": sha256_file(output), "report.md": sha256_file(destination / "report.md")})
+    atomic_json(
+        destination / "integrity.json",
+        {
+            "analysis.json": sha256_file(output),
+            "report.md": sha256_file(destination / "report.md"),
+        },
+    )
     return destination, "CREATED"
 
 
 def finding_choices(finding, analysis, policy):
     if finding["code"] == "VIRTUAL_CHASSIS_UNSUPPORTED" and not policy.get("production_eligible", True):
         return ["ACKNOWLEDGED_LAB_LIMITATION", "REQUIRES_INVESTIGATION", "BLOCKED"]
-    port = next((item for item in analysis.get("ports", []) if item["interface"] == finding["subject"]), None)
-    if finding["code"] == "CONFIGURED_NO_MAC" and port and port.get("observation_history") == "HISTORICALLY_OBSERVED":
+    if finding["code"] in (
+        "INTERFACE_CONFIGURATION_CHANGED",
+        "VLAN_CONFIGURATION_CHANGED",
+        "VOICE_POLICY_CHANGED",
+        "JUNOS_VERSION_CHANGED",
+    ):
+        return ["ACCEPT_LATEST_CONFIGURATION", "REQUIRES_INVESTIGATION", "BLOCKED"]
+    port = next(
+        (item for item in analysis.get("ports", []) if item["interface"] == finding["subject"]),
+        None,
+    )
+    if (
+        finding["code"] == "CONFIGURED_NO_MAC"
+        and port
+        and port.get("observation_history") == "HISTORICALLY_OBSERVED"
+    ):
         return ["ACCEPT_HISTORICAL_EVIDENCE", "ACTIVE_PROBE_REQUESTED", "REQUIRES_INVESTIGATION", "BLOCKED"]
     if finding["code"] in ("CONFIGURED_NO_MAC", "ACTIVE_UNASSIGNED_SILENT"):
         return ["REQUIRES_INVESTIGATION", "ACTIVE_PROBE_REQUESTED", "BLOCKED"]
@@ -265,7 +420,11 @@ def find_existing_review(destination, analysis_digest, findings_digest, policy_d
     if reviews.is_dir():
         for path in sorted(reviews.glob("*/review.json"), reverse=True):
             value = read_json(path)
-            if value.get("analysis_digest") == analysis_digest and value.get("findings_digest") == findings_digest and value.get("policy_digest") == policy_digest:
+            if (
+                value.get("analysis_digest") == analysis_digest
+                and value.get("findings_digest") == findings_digest
+                and value.get("policy_digest") == policy_digest
+            ):
                 return value, path
     return None, None
 
@@ -286,7 +445,10 @@ def review_findings(destination, analysis, policy, policy_digest, interactive):
     decisions = []
     for index, finding in enumerate(findings, 1):
         choices = finding_choices(finding, analysis, policy)
-        print("  [%d/%d] %s [%s]: %s" % (index, len(findings), finding["subject"], finding["code"], finding["message"]))
+        print(
+            "  [%d/%d] %s [%s]: %s"
+            % (index, len(findings), finding["subject"], finding["code"], finding["message"])
+        )
         for number, choice in enumerate(choices, 1):
             marker = " (recommended)" if number == 1 else ""
             print("        %d. %s%s" % (number, choice, marker))
@@ -301,20 +463,38 @@ def review_findings(destination, analysis, policy, policy_digest, interactive):
             if not note:
                 raise AnalysisError("a note is required for %s" % disposition)
         decisions.append({
-            "finding_digest": sha256_bytes(canonical_bytes(finding)), "severity": finding["severity"],
-            "code": finding["code"], "subject": finding["subject"], "disposition": disposition,
+            "finding_digest": sha256_bytes(canonical_bytes(finding)),
+            "severity": finding["severity"],
+            "code": finding["code"],
+            "subject": finding["subject"],
+            "disposition": disposition,
             "note": note or None,
         })
     dispositions = {item["disposition"] for item in decisions}
-    review_result = "BLOCKED" if "BLOCKED" in dispositions else "ACTION_REQUIRED" if dispositions & {"REQUIRES_INVESTIGATION", "ACTIVE_PROBE_REQUESTED"} else "ACCEPTED"
+    review_result = (
+        "BLOCKED"
+        if "BLOCKED" in dispositions
+        else "ACTION_REQUIRED"
+        if dispositions & {"REQUIRES_INVESTIGATION", "ACTIVE_PROBE_REQUESTED"}
+        else "ACCEPTED"
+    )
     review = {
-        "schema_version": "1.0", "migration_id": analysis["template_variables"]["migration_id"],
-        "analysis_id": analysis["analysis_id"], "analysis_digest": analysis_digest,
-        "findings_digest": findings_digest, "historical_evidence_catalog_digest": analysis.get("historical_evidence", {}).get("catalog_digest"),
-        "policy_id": policy["policy_id"], "policy_digest": policy_digest,
-        "decisions": decisions, "result": review_result,
-        "production_eligible": bool(policy.get("production_eligible", True)) and "ACKNOWLEDGED_LAB_LIMITATION" not in dispositions and review_result == "ACCEPTED",
-        "reviewed_by": getpass.getuser(), "reviewed_at": utc_now(),
+        "schema_version": "1.0",
+        "migration_id": analysis["template_variables"]["migration_id"],
+        "analysis_id": analysis["analysis_id"],
+        "analysis_digest": analysis_digest,
+        "findings_digest": findings_digest,
+        "historical_evidence_catalog_digest": analysis.get("historical_evidence", {}).get("catalog_digest"),
+        "evidence_set_digest": analysis.get("inputs", {}).get("evidence_set_digest"),
+        "policy_id": policy["policy_id"],
+        "policy_digest": policy_digest,
+        "decisions": decisions,
+        "result": review_result,
+        "production_eligible": bool(policy.get("production_eligible", True))
+        and "ACKNOWLEDGED_LAB_LIMITATION" not in dispositions
+        and review_result == "ACCEPTED",
+        "reviewed_by": getpass.getuser(),
+        "reviewed_at": utc_now(),
     }
     review["review_id"] = sha256_bytes(canonical_bytes(review))[:16]
     review_path = destination / "reviews" / review["review_id"] / "review.json"
@@ -324,38 +504,74 @@ def review_findings(destination, analysis, policy, policy_digest, interactive):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Offline EX migration analyzer"); parser.add_argument("command", choices=("run",)); parser.add_argument("migration_id", nargs="?")
-    parser.add_argument("--settings", type=Path, default=Path("config/site.json")); parser.add_argument("--policy", type=Path); parser.add_argument("--non-interactive", action="store_true")
-    args = parser.parse_args(argv); interactive = not args.non_interactive
+    parser = argparse.ArgumentParser(description="Offline EX migration analyzer")
+    parser.add_argument("command", choices=("run",))
+    parser.add_argument("migration_id", nargs="?")
+    parser.add_argument("--settings", type=Path, default=Path("config/site.json"))
+    parser.add_argument("--policy", type=Path)
+    parser.add_argument("--non-interactive", action="store_true")
+    args = parser.parse_args(argv)
+    interactive = not args.non_interactive
     migration_id = args.migration_id or (input("Migration ID: ").strip() if interactive else "")
-    if not safe_id(migration_id): parser.error("a path-safe migration ID is required")
+    if not safe_id(migration_id):
+        parser.error("a path-safe migration ID is required")
     try:
-        settings = load_settings(args.settings); set_display_timezone(settings.get("display_timezone")); root = Path(settings["snapshot_root"]); policy_path = args.policy or Path(settings["analysis_policy"])
-        policy = read_json(policy_path); policy_digest = sha256_bytes(canonical_bytes(policy)); migration_root = root / "migrations" / migration_id
-        candidates, incomplete, rejected = inspect_candidates(collection_directories(root, migration_id), policy, policy_digest)
-        candidate, overridden = choose_candidate(candidates, incomplete, rejected, policy, interactive)
-        if candidate["snapshot"]["migration_id"] != migration_id: raise AnalysisError("selected snapshot migration ID does not match requested migration")
-        candidate["operator_override"] = overridden; show_analysis_summary(candidate); override_reason = None
-        if overridden:
-            override_reason = input("Reason for choosing a non-recommended snapshot: ").strip()
-            if not override_reason: raise AnalysisError("an override reason is required")
-        _approval, approval_digest, created = approve(migration_root, candidate, policy, policy_digest, interactive, override_reason)
-        result = analyze(candidate["snapshot"], candidate["envelope"], policy, policy_digest, approval_digest, __version__, candidate["history"])
+        settings = load_settings(args.settings)
+        set_display_timezone(settings.get("display_timezone"))
+        root = Path(settings["snapshot_root"])
+        policy_path = args.policy or Path(settings["analysis_policy"])
+        policy = read_json(policy_path)
+        policy_digest = sha256_bytes(canonical_bytes(policy))
+        migration_root = root / "migrations" / migration_id
+        candidates, incomplete, rejected = inspect_candidates(
+            collection_directories(root, migration_id), policy, policy_digest
+        )
+        _show_collection_issues(candidates, incomplete, rejected, policy)
+        composite = build_composite_evidence(candidates, policy, policy_digest)
+        if composite["evidence"]["migration_id"] != migration_id:
+            raise AnalysisError("composite evidence migration ID does not match requested migration")
+        evidence_dir, evidence_action = write_evidence_set(migration_root, composite["evidence"])
+        preview = _analyze_composite(composite, policy, policy_digest, "PREVIEW")
+        show_composite_summary(composite, preview)
+        print("  Evidence record: %s (%s)" % (evidence_dir / "evidence.json", evidence_action))
+
+        _approval, approval_digest, created = approve(
+            migration_root,
+            composite["evidence"],
+            preview,
+            policy,
+            policy_digest,
+            interactive,
+        )
+        result = _analyze_composite(composite, policy, policy_digest, approval_digest)
         destination, action = write_analysis(migration_root, result)
         review, review_action = review_findings(destination, result, policy, policy_digest, interactive)
-        print("\nApproval: %s" % ("CREATED" if created else "EXISTING")); print("Analysis: %s (%s)" % (result["result"], action))
+
+        print("\nApproval: %s" % ("CREATED" if created else "EXISTING"))
+        print("Analysis: %s (%s)" % (result["result"], action))
         if review:
-            print("Finding review: %s (%s) | production eligible: %s" % (review["result"], review_action, str(review["production_eligible"]).lower()))
-            print("Review record: %s" % (destination / "reviews" / review["review_id"] / "review.json"))
-        else: print("Finding review: NOT_REQUIRED")
-        print("Report: %s" % (destination / "report.md")); return 0
+            print(
+                "Finding review: %s (%s) | production eligible: %s"
+                % (review["result"], review_action, str(review["production_eligible"]).lower())
+            )
+            print(
+                "Review record: %s"
+                % (destination / "reviews" / review["review_id"] / "review.json")
+            )
+        else:
+            print("Finding review: NOT_REQUIRED")
+        print("Report: %s" % (destination / "report.md"))
+        return 0
     except AnalysisError as exc:
-        print("ERROR: %s" % exc, file=sys.stderr); return 2
+        print("ERROR: %s" % exc, file=sys.stderr)
+        return 2
 
 
 def safe_id(value):
     import re
+
     return bool(re.fullmatch(r"[A-Za-z0-9_.-]+", value or ""))
 
 
-if __name__ == "__main__": sys.exit(main())
+if __name__ == "__main__":
+    sys.exit(main())
