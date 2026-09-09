@@ -4,8 +4,8 @@ build-backend="setuptools.build_meta"
 
 [project]
 name="ex-migration-discovery"
-version="0.24.1"
-description="Read-only discovery, analysis, planning, guarded EX/QFX migration staging, silent-port pre-cutover probing, old-switch recovery, endpoint activation, port-state comparison, facilities reporting, and final recovery/access hardening for Juniper EX migrations"
+version="0.25.0"
+description="Evidence-driven EX4300-to-EX4400 migration automation with guided operator workflow, historical MAC lookup, discovery, planning, guarded EX/QFX staging, recovery, endpoint activation, validation, and cleanup"
 requires-python=">=3.8"
 dependencies=["junos-eznc>=2.7.3,<3", "lxml>=5,<7", "jinja2>=3.1,<4", "paramiko>=3,<5"]
 
@@ -17,6 +17,7 @@ ex-migration-discovery="ex_migration_discovery.cli:main"
 ex-migration-analyzer="ex_migration_analyzer.cli:main"
 ex-migration-planner="ex_migration_planner.cli:main"
 ex-migration-provisioner="ex_migration_provisioner.cli:main"
+ex-migration-operator="ex_migration_operator.cli:main"
 ex-migration-precutover-probe="ex_migration_provisioner.precutover_probe_cli:main"
 ex-migration-qfx-plan="ex_migration_provisioner.qfx_plan_cli:main"
 ex-migration-qfx-stage="ex_migration_provisioner.qfx_stage_cli:main"
