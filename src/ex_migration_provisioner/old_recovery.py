@@ -68,7 +68,6 @@ def build_recovery_transaction(
     bootstrap_identity_digest=None,
     bootstrap_profile_digest=None,
     master_defaults_before=None,
-    replaced_vme_addresses=None,
 ):
     diff_digest = sha256_bytes(str(candidate_diff or "").encode("utf-8"))
     key = {
@@ -112,7 +111,6 @@ def build_recovery_transaction(
             "logical_address": str(ipaddress.ip_interface(str(recovery_address)).ip),
             "address_source": "APPROVED_REPLACEMENT_IDENTITY_OOB",
             "gateway_source": "APPROVED_REPLACEMENT_IDENTITY_MGMT_JUNOS_DEFAULT",
-            "replaced_vme_addresses": sorted(set(replaced_vme_addresses or [])),
         },
         "source_ssh_host_key_sha256": source_ssh_host_key_sha256,
         "candidate_diff_sha256": diff_digest,
@@ -132,7 +130,7 @@ def build_recovery_transaction(
             "existing_inband_management_preserved": True,
             "master_routing_table_default_unchanged": True,
             "dedicated_management_instance_required": True,
-            "vme_ipv4_replaced_with_approved_oob": True,
+            "vme_interface_replaced_with_approved_recovery_state": True,
             "commit_confirmed_required": True,
             "post_cable_recovery_verification_optional": True,
             "same_ssh_host_key_required_if_post_cable_verified": True,
