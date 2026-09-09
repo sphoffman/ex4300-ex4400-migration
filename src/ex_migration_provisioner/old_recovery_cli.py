@@ -22,10 +22,9 @@ def _parser():
     parser = argparse.ArgumentParser(
         prog="ex-migration-provisioner stage-old-recovery",
         description=(
-            "PRE-CUTOVER: transfer the approved replacement-bootstrap OOB address to the old "
-            "EX4300 Virtual Chassis VME interface in mgmt_junos, commit-confirm it, prove a "
-            "second NETCONF connection through the recovery path, then finally confirm. The "
-            "existing in-band management and master routing table are preserved."
+            "PRE-CUTOVER: pre-stage the approved replacement-bootstrap OOB address on the old "
+            "EX4300 Virtual Chassis VME interface in mgmt_junos. The replacement may still "
+            "own the same OOB address while the two OOB paths remain physically isolated."
         ),
     )
     parser.add_argument("migration_id")
@@ -34,7 +33,6 @@ def _parser():
     parser.add_argument("--identity-id")
     parser.add_argument("--management-interface", default="vme", help="old-switch logical OOB management interface; EX4300 VC default: vme")
     parser.add_argument("--transport-address", help="LAB ONLY: reachable transport for the old switch's current in-band management")
-    parser.add_argument("--recovery-transport-address", help="LAB ONLY: transport used to simulate the recovery connection when the lab cannot expose vme directly")
     parser.add_argument("--username")
     parser.add_argument("--password-env")
     parser.add_argument("--port", type=int, default=830)
@@ -68,7 +66,7 @@ def _bootstrap_inputs(settings, migration_root, bootstrap_override, identity_id)
     bound_digest = str(identity.get("bootstrap", {}).get("profile_digest") or "")
     if profile_digest != bound_digest:
         raise base.ProvisioningError(
-            "approved bootstrap identity is stale: bootstrap profile digest changed; rerun identify before transferring its OOB address"
+            "approved bootstrap identity is stale: bootstrap profile digest changed; rerun identify before staging old-switch recovery"
         )
 
     connection = identity.get("observed", {}).get("connection", {})
@@ -91,10 +89,7 @@ def _bootstrap_inputs(settings, migration_root, bootstrap_override, identity_id)
 
     return {
         "identity": identity,
-        "identity_path": selected_identity["identity_path"],
         "identity_digest": sha256_file(selected_identity["identity_path"]),
-        "profile": profile,
-        "profile_path": paths["bootstrap"],
         "profile_digest": profile_digest,
         "recovery_address": str(recovery),
         "recovery_ip": str(recovery.ip),
@@ -133,7 +128,6 @@ def _validate_existing_mgmt_default(config_text, gateway):
             "existing mgmt_junos default route conflicts with bootstrap OOB gateway %s: %s"
             % (gateway, ", ".join(existing))
         )
-    return existing
 
 
 def _validate_recovery_config(dev, statements, master_defaults_before):
@@ -151,52 +145,6 @@ def _validate_recovery_config(dev, statements, master_defaults_before):
     return True
 
 
-def _prove_recovery_path(host, port, username, password, expected_hostname, expected_fingerprint, statements, master_defaults_before):
-    current_fingerprint = base.ssh_host_key_fingerprint(host, port)
-    if current_fingerprint != expected_fingerprint:
-        raise base.ProvisioningError("recovery path SSH host key does not match the old switch reached on the original management path")
-
-    from jnpr.junos import Device
-
-    recovery = Device(
-        host=host,
-        user=username,
-        passwd=password,
-        port=port,
-        gather_facts=True,
-    )
-    try:
-        recovery.open(auto_probe=10, hostkey_verify=False)
-        hostname = _configured_hostname(recovery)
-        if hostname.lower() != expected_hostname.lower():
-            raise base.ProvisioningError(
-                "recovery path reached hostname %r instead of approved old-switch hostname %r"
-                % (hostname, expected_hostname)
-            )
-        _validate_recovery_config(recovery, statements, master_defaults_before)
-    finally:
-        try:
-            recovery.close()
-        except Exception:
-            pass
-    return current_fingerprint
-
-
-def _acknowledge_oob_transfer(bootstrap):
-    print("\nBootstrap OOB address transfer")
-    print("  Approved replacement bootstrap identity: %s" % bootstrap["identity"].get("identity_id"))
-    print("  OOB address to transfer: %s" % bootstrap["recovery_address"])
-    print("  OOB gateway: %s" % bootstrap["gateway"])
-    print("  Destination on old EX4300 VC: vme.0 in %s" % MGMT_INSTANCE)
-    print("\nSAFETY: the replacement EX4400 must no longer own or be connected to this OOB address.")
-    answer = input(
-        "Confirm the replacement EX4400 has released %s before transferring it to the old switch? [y/N]: "
-        % bootstrap["recovery_ip"]
-    ).strip().lower()
-    if answer not in ("y", "yes"):
-        raise base.ProvisioningError("bootstrap OOB address transfer was not acknowledged")
-
-
 def run(argv):
     args = _parser().parse_args(argv)
     if args.confirm_minutes < 1:
@@ -208,8 +156,8 @@ def run(argv):
 
     settings = base.load_settings(args.settings)
     environment = _site_environment(settings)
-    if environment != "lab" and (args.transport_address or args.recovery_transport_address or args.no_host_key_check):
-        raise base.ProvisioningError("transport overrides and --no-host-key-check are permitted only by a lab site policy")
+    if environment != "lab" and (args.transport_address or args.no_host_key_check):
+        raise base.ProvisioningError("transport override and --no-host-key-check are permitted only by a lab site policy")
 
     migration_root = Path(settings["snapshot_root"]) / "migrations" / args.migration_id
     selected = base.choose_approved_plan(migration_root)
@@ -223,12 +171,16 @@ def run(argv):
     bootstrap = _bootstrap_inputs(settings, migration_root, args.bootstrap, args.identity_id)
     if bootstrap["recovery_ip"] == management_ip:
         raise base.ProvisioningError("bootstrap OOB IP must differ from the production management IP")
-    _acknowledge_oob_transfer(bootstrap)
+
+    print("\nOld-switch recovery pre-stage")
+    print("  Approved replacement bootstrap identity: %s" % bootstrap["identity"].get("identity_id"))
+    print("  OOB address pre-staged on old VC: %s" % bootstrap["recovery_address"])
+    print("  OOB gateway: %s" % bootstrap["gateway"])
+    print("  Destination: vme.0 in %s" % MGMT_INSTANCE)
+    print("  Replacement EX4400 may still own %s before cutover." % bootstrap["recovery_ip"])
+    print("  Safety boundary: old/new OOB interfaces remain physically L2-isolated until the cable move.")
 
     source_transport = str(args.transport_address or management_ip)
-    recovery_transport = str(args.recovery_transport_address or bootstrap["recovery_ip"])
-    path_proof_mode = "LAB_TRANSPORT_OVERRIDE" if args.recovery_transport_address else "DIRECT_RECOVERY_ADDRESS"
-
     statements = recovery_statements(
         args.management_interface,
         bootstrap["recovery_address"],
@@ -264,8 +216,14 @@ def run(argv):
             )
 
         pre_config = _configuration_set(dev)
+        pre_lines = {line.strip() for line in str(pre_config).splitlines() if line.strip()}
         master_defaults_before = _master_default_lines(pre_config)
         _validate_existing_mgmt_default(pre_config, bootstrap["gateway"])
+
+        print("\nRequired recovery state")
+        for statement in statements:
+            state = "already present" if statement in pre_lines else "candidate addition"
+            print("  [%s] %s" % (state, statement))
 
         cu = Config(dev)
         cu.lock()
@@ -275,8 +233,7 @@ def run(argv):
         cu.load(payload, format="set", merge=True)
         if cu.commit_check() is not True:
             raise base.ProvisioningError("old-switch recovery commit-check did not return PASS")
-        raw_diff = cu.diff()
-        candidate_diff = str(raw_diff or "")
+        candidate_diff = str(cu.diff() or "")
 
         print("\nOld EX4300 recovery intent")
         print("  Approved source hostname: %s" % expected_hostname)
@@ -286,7 +243,7 @@ def run(argv):
         print("  Recovery address: %s" % bootstrap["recovery_address"])
         print("  Recovery default: 0.0.0.0/0 -> %s (%s only)" % (bootstrap["gateway"], MGMT_INSTANCE))
         print("  Master routing-table default changed: no")
-        print("  Recovery path proof: %s -> %s:%s" % (path_proof_mode, recovery_transport, args.port))
+        print("  Post-cable recovery verification: separate read-only diagnostic")
 
         def new_transaction(diff):
             return build_recovery_transaction(
@@ -300,35 +257,29 @@ def run(argv):
                 args.management_interface,
                 bootstrap["recovery_address"],
                 bootstrap["gateway"],
-                recovery_transport,
                 source_fingerprint,
                 diff,
                 utc_now(),
                 args.confirm_minutes,
-                path_proof_mode,
                 bootstrap_identity_id=bootstrap["identity"].get("identity_id"),
                 bootstrap_identity_digest=bootstrap["identity_digest"],
                 bootstrap_profile_digest=bootstrap["profile_digest"],
+                master_defaults_before=master_defaults_before,
             )
 
         if not candidate_diff:
-            print("  Recovery configuration is already present; no candidate commit is required.")
-            recovery_fingerprint = _prove_recovery_path(
-                recovery_transport,
-                args.port,
-                username,
-                password,
-                expected_hostname,
-                source_fingerprint,
-                statements,
-                master_defaults_before,
-            )
+            print("  Recovery configuration is already present; validating committed state.")
+            _validate_recovery_config(dev, statements, master_defaults_before)
             transaction = new_transaction("")
-            transaction["recovery_ssh_host_key_sha256"] = recovery_fingerprint
-            transaction["commit"] = {"status": "ALREADY_PRESENT_VALIDATED", "confirmed": True, "confirmed_at": utc_now()}
+            transaction["commit"] = {
+                "status": "ALREADY_PRESENT_VALIDATED",
+                "confirmed": True,
+                "confirmed_at": utc_now(),
+            }
             transaction["validation"] = {
                 "result": "PASS",
                 "validated_at": utc_now(),
+                "recovery_path_verified": False,
                 "checks": [
                     "APPROVED_SOURCE_HOSTNAME_MATCH",
                     "BOOTSTRAP_OOB_LINEAGE_MATCH",
@@ -336,13 +287,12 @@ def run(argv):
                     "RECOVERY_CONFIGURATION_PRESENT",
                     "MGMT_JUNOS_DEFAULT_PRESENT",
                     "MASTER_DEFAULT_ROUTE_UNCHANGED",
-                    "RECOVERY_SSH_HOST_KEY_MATCH",
-                    "RECOVERY_SECONDARY_NETCONF_CONNECTION",
                 ],
+                "warnings": ["POST_CABLE_RECOVERY_VERIFICATION_PENDING"],
             }
             directory = persist_recovery_transaction(migration_root, transaction, "")
-            print("\nOld-switch recovery path: PASS")
-            print("  Transaction: %s" % transaction["transaction_id"])
+            print("\nOld-switch recovery pre-stage: PASS")
+            print("  Recovery path verified now: no (physical cable has not moved)")
             print("  Record: %s" % (directory / "transaction.json"))
             return 0
 
@@ -364,25 +314,15 @@ def run(argv):
         ) is not True:
             raise base.ProvisioningError("old-switch recovery commit confirmed did not return success")
         commit_confirmed_started = True
-        transaction["commit"]["status"] = "CONFIRMED_PENDING_RECOVERY_PATH_VALIDATION"
+        transaction["commit"]["status"] = "CONFIRMED_PENDING_INBAND_VALIDATION"
         transaction["commit"]["commit_confirmed_at"] = utc_now()
         persist_recovery_transaction(migration_root, transaction, candidate_diff)
 
         _validate_recovery_config(dev, statements, master_defaults_before)
-        recovery_fingerprint = _prove_recovery_path(
-            recovery_transport,
-            args.port,
-            username,
-            password,
-            expected_hostname,
-            source_fingerprint,
-            statements,
-            master_defaults_before,
-        )
-        transaction["recovery_ssh_host_key_sha256"] = recovery_fingerprint
         transaction["validation"] = {
             "result": "PASS",
             "validated_at": utc_now(),
+            "recovery_path_verified": False,
             "checks": [
                 "APPROVED_SOURCE_HOSTNAME_MATCH",
                 "BOOTSTRAP_OOB_LINEAGE_MATCH",
@@ -390,9 +330,8 @@ def run(argv):
                 "RECOVERY_CONFIGURATION_PRESENT",
                 "MGMT_JUNOS_DEFAULT_PRESENT",
                 "MASTER_DEFAULT_ROUTE_UNCHANGED",
-                "RECOVERY_SSH_HOST_KEY_MATCH",
-                "RECOVERY_SECONDARY_NETCONF_CONNECTION",
             ],
+            "warnings": ["POST_CABLE_RECOVERY_VERIFICATION_PENDING"],
         }
         transaction["commit"]["status"] = "VALIDATED_PENDING_FINAL_CONFIRMATION"
         persist_recovery_transaction(migration_root, transaction, candidate_diff)
@@ -408,11 +347,10 @@ def run(argv):
         transaction["commit"]["confirmed_at"] = utc_now()
         persist_recovery_transaction(migration_root, transaction, candidate_diff)
 
-        print("\nOld-switch recovery transaction: PASS")
-        print("  Transaction: %s" % transaction["transaction_id"])
-        print("  Recovery path proof: PASS (%s)" % path_proof_mode)
+        print("\nOld-switch recovery pre-stage: PASS")
         print("  Existing in-band management changed: no")
         print("  Master routing-table default changed: no")
+        print("  Recovery path verified now: no (physical cable has not moved)")
         print("  Final confirmation: PASS")
         print("  Record: %s" % (directory / "transaction.json"))
         return 0
