@@ -55,6 +55,8 @@ def _validate_contract(contract):
     _require(isinstance(variables.get("required_collections"), list), "template contract required_collections is invalid")
     pre_stage = contract.get("phase_contract", {}).get("pre_stage", {})
     includes = pre_stage.get("include", [])
+    _require("EXPLICIT_AE0_UPLINK_MEMBERS" in includes, "pre-stage contract must bind explicit AE0 uplink members")
+    _require("DERIVED_NON_AE_GE_EDGE_PORTS" in includes, "pre-stage contract must derive edge ports from non-AE GE interfaces")
     _require("PRESTAGE_ACCESS_VLAN" in includes, "pre-stage contract must include the temporary access VLAN")
     _require("PRESTAGE_ACCESS_PORT_ASSIGNMENTS" in includes, "pre-stage contract must include temporary access port assignments")
     _require("TEMPORARY_RECOVERY_PORT_OVERLAY" in includes, "pre-stage contract must include the temporary recovery port overlay")
@@ -83,6 +85,11 @@ def _render_jinja(template_text, variables):
     rendered = environment.from_string(template_text).render(**variables)
     lines = [line.rstrip() for line in rendered.splitlines() if line.strip()]
     return "\n".join(lines) + "\n"
+
+
+def _uplink_statement(interface):
+    hierarchy = "gigether-options" if str(interface).startswith("ge-") else "ether-options"
+    return "set interfaces %s %s 802.3ad ae0" % (interface, hierarchy)
 
 
 def validate_pre_stage_render(rendered, package):
@@ -120,12 +127,40 @@ def validate_pre_stage_render(rendered, package):
     recovery_interface = variables["recovery_interface"]
     _require(bool(re.fullmatch(r"ge-[0-9]/0/47", recovery_interface)), "recovery interface is outside the standard edge-port range")
     prestage_interfaces = list(variables["prestage_access_interfaces"])
+    uplink_interfaces = list(variables["uplink_interfaces"])
     _require(len(prestage_interfaces) == len(set(prestage_interfaces)), "pre-stage access interface inventory contains duplicates")
+    _require(len(uplink_interfaces) == len(set(uplink_interfaces)), "uplink interface inventory contains duplicates")
     _require(recovery_interface not in prestage_interfaces, "recovery interface cannot be assigned to the pre-stage access VLAN")
+    _require(recovery_interface not in uplink_interfaces, "recovery interface cannot also be an AE0 uplink member")
+    _require(not (set(prestage_interfaces) & set(uplink_interfaces)), "AE0 uplink member cannot also be an edge access interface")
     _require(
-        all(re.fullmatch(r"ge-[0-9]/0/(?:[2-9]|[1-3][0-9]|4[0-7])", interface) for interface in prestage_interfaces),
-        "pre-stage access interface inventory contains a port outside the standard edge range",
+        all(re.fullmatch(r"ge-[0-9]/0/(?:[0-9]|[1-3][0-9]|4[0-7])", interface) for interface in prestage_interfaces),
+        "pre-stage access interface inventory contains a port outside the standard EX4400 GE access range",
     )
+    _require(
+        all(re.fullmatch(r"(?:ge|xe|et)-[0-9]+/[0-9]+/[0-9]+", interface) for interface in uplink_interfaces),
+        "uplink interface inventory contains an unsupported physical interface",
+    )
+
+    expected_edge_members = {
+        "set interfaces interface-range edge_ports member %s" % interface
+        for interface in prestage_interfaces
+    }
+    actual_edge_members = {
+        line for line in lines
+        if line.startswith("set interfaces interface-range edge_ports member ")
+    }
+    _require(
+        actual_edge_members == expected_edge_members,
+        "edge_ports interface-range must contain exactly the derived non-AE GE access interfaces",
+    )
+
+    expected_uplinks = {_uplink_statement(interface) for interface in uplink_interfaces}
+    actual_uplinks = {
+        line for line in lines
+        if re.match(r"^set interfaces (?:ge|xe|et)-\d+/\d+/\d+ (?:gigether-options|ether-options) 802\.3ad ae0$", line)
+    }
+    _require(actual_uplinks == expected_uplinks, "AE0 physical member configuration does not match the approved uplink interface inventory")
 
     expected_recovery_assignment = (
         "set interfaces %s unit 0 family ethernet-switching vlan members %s"
@@ -153,11 +188,8 @@ def validate_pre_stage_render(rendered, package):
         "set system syslog source-address %s" % variables["management_ip"],
         "set system ntp source-address %s" % variables["management_ip"],
         "set system services netconf ssh",
-        "set interfaces interface-range edge_ports member \"ge-[0-9]/0/[2-47]\"",
         expected_recovery_assignment,
         "set interfaces irb unit %s family inet address %s" % (variables["management_vlan_id"], variables["management_prefix"]),
-        "set interfaces ge-0/0/0 gigether-options 802.3ad ae0",
-        "set interfaces ge-0/0/1 gigether-options 802.3ad ae0",
         "set interfaces ae0 aggregated-ether-options lacp active",
         "set interfaces ae0 unit 0 family ethernet-switching interface-mode trunk",
         "set interfaces ae0 unit 0 family ethernet-switching vlan members all",
@@ -171,6 +203,8 @@ def validate_pre_stage_render(rendered, package):
         "set vlans %s vlan-id %s" % (variables["prestage_access_vlan_name"], variables["prestage_access_vlan_id"]),
         "set vlans %s vlan-id %s" % (variables["temporary_recovery_vlan_name"], variables["temporary_recovery_vlan_id"]),
     }
+    required.update(expected_edge_members)
+    required.update(expected_uplinks)
     required.update(expected_access_assignments)
     missing = sorted(required - line_set)
     _require(not missing, "pre-stage render is missing required statements: %s" % "; ".join(missing))
@@ -218,6 +252,8 @@ def validate_pre_stage_render(rendered, package):
             "NO_FXP0_CONFIGURATION",
             "NO_ENDPOINT_DESCRIPTIONS",
             "NONSTOP_BRIDGING_MODE_VALID",
+            "EXPLICIT_AE0_UPLINK_MEMBERS_PRESENT",
+            "EDGE_PORTS_EXCLUDE_AE0_MEMBERS",
             "PRESTAGE_ACCESS_VLAN_PRESENT",
             "ALL_ORDINARY_EDGE_PORTS_ON_PRESTAGE_ACCESS_VLAN",
             "RECOVERY_PORT_EXCLUDED_FROM_PRESTAGE_ACCESS_VLAN",
