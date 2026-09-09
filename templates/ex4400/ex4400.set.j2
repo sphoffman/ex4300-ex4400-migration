@@ -10,6 +10,9 @@ set chassis aggregated-devices ethernet device-count 1
 set interfaces interface-range edge_ports member "ge-[0-9]/0/[2-47]"
 set interfaces interface-range edge_ports unit 0 family ethernet-switching interface-mode access
 set interfaces interface-range edge_ports unit 0 family ethernet-switching storm-control ACCESS_STORM
+{% for interface in prestage_access_interfaces %}
+set interfaces {{interface}} unit 0 family ethernet-switching vlan members {{prestage_access_vlan_name}}
+{% endfor %}
 set interfaces {{recovery_interface}} unit 0 family ethernet-switching vlan members {{temporary_recovery_vlan_name}}
 set interfaces irb unit {{management_vlan_id}} family inet address {{management_prefix}}
 set interfaces ge-0/0/0 gigether-options 802.3ad ae0
@@ -51,4 +54,5 @@ set vlans {{voice_vlan}} forwarding-options dhcp-security group DHCP_TRUST overr
 set vlans {{voice_vlan}} forwarding-options dhcp-security group DHCP_TRUST interface ae0.0
 set vlans {{management_vlan_name}} description management
 set vlans {{management_vlan_name}} l3-interface irb.{{management_vlan_id}}
+set vlans {{prestage_access_vlan_name}} vlan-id {{prestage_access_vlan_id}}
 set vlans {{temporary_recovery_vlan_name}} vlan-id {{temporary_recovery_vlan_id}}
