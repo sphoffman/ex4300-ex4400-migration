@@ -1,19 +1,19 @@
 {
   "schema_version": "1.0",
   "template_id": "campus-ex4400-v1",
-  "template_version": "1.5.0",
+  "template_version": "1.6.0",
   "render_format": "junos-set",
   "variables": {
     "required_scalars": ["new_hostname", "management_ip", "management_prefix", "management_gateway", "management_vlan_name", "management_vlan_id", "voice_vlan", "voice_vlan_id", "snmp_location", "snmp_engine_id", "temporary_recovery_vlan_name", "temporary_recovery_vlan_id", "prestage_access_vlan_name", "prestage_access_vlan_id", "recovery_interface", "provisioning_mode"],
-    "required_collections": ["configured_vlans", "uplink_interfaces", "prestage_access_interfaces"],
+    "required_collections": ["configured_vlans", "uplink_interfaces"],
     "post_move_required_collections": ["post_move_endpoint_assignments"],
     "bootstrap_only": ["fxp0_management_ip", "fxp0_prefix_length", "fxp0_management_gateway", "uplink_interfaces", "virtual_chassis", "bootstrap_authentication"],
     "metadata_only": ["migration_id", "old_hostname", "plan_id", "qfx"]
   },
   "phase_contract": {
     "pre_stage": {
-      "include": ["AUTHORITATIVE_BOILERPLATE", "ALL_CONFIGURED_VLANS", "VOICE_VLAN", "MANAGEMENT_VLAN", "EXPLICIT_AE0_UPLINK_MEMBERS", "DERIVED_NON_AE_GE_EDGE_PORTS", "PRESTAGE_ACCESS_VLAN", "PRESTAGE_ACCESS_PORT_ASSIGNMENTS", "TEMPORARY_RECOVERY_VLAN", "TEMPORARY_RECOVERY_PORT_OVERLAY", "AE0_VLAN_MEMBERS_ALL", "PLATFORM_AWARE_NONSTOP_BRIDGING"],
-      "exclude": ["ENDPOINT_DESCRIPTIONS", "ENDPOINT_DATA_VLAN_ASSIGNMENTS"]
+      "include": ["AUTHORITATIVE_BOILERPLATE", "TEMPLATE_DEFINED_EDGE_PORT_RANGE", "ALL_CONFIGURED_VLANS", "VOICE_VLAN", "MANAGEMENT_VLAN", "EXPLICIT_AE0_UPLINK_MEMBERS", "PRESTAGE_DEFAULT_VLAN", "TEMPORARY_RECOVERY_VLAN", "TEMPORARY_RECOVERY_PORT_OVERLAY", "AE0_VLAN_MEMBERS_ALL", "PLATFORM_AWARE_NONSTOP_BRIDGING"],
+      "exclude": ["ENDPOINT_DESCRIPTIONS", "ENDPOINT_DATA_VLAN_ASSIGNMENTS", "EXPLICIT_PRESTAGE_ACCESS_PORT_ASSIGNMENTS"]
     },
     "post_move": {
       "include": ["UNAMBIGUOUS_ENDPOINT_DESCRIPTIONS", "UNAMBIGUOUS_ENDPOINT_DATA_VLAN_ASSIGNMENTS"],
