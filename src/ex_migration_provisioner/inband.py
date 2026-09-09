@@ -98,6 +98,14 @@ def _qfx_transaction_plan_digest(migration_root, transaction):
     return digest
 
 
+def _current_approved_plan_digest(migration_root):
+    try:
+        from . import cli_base
+        return str(cli_base.choose_approved_plan(migration_root)["plan_digest"])
+    except (KeyError, ProvisioningError):
+        return None
+
+
 def choose_qfx_transaction(migration_root, transaction_id=None, approved_plan_digest=None):
     values = qfx_transaction_candidates(migration_root)
     if transaction_id:
@@ -105,6 +113,9 @@ def choose_qfx_transaction(migration_root, transaction_id=None, approved_plan_di
             item for item in values
             if item["transaction"].get("transaction_id") == transaction_id
         ]
+
+    if approved_plan_digest is None:
+        approved_plan_digest = _current_approved_plan_digest(migration_root)
 
     if approved_plan_digest is not None:
         approved_plan_digest = str(approved_plan_digest)
