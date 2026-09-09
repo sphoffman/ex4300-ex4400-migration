@@ -138,13 +138,48 @@ def _explicit_vlan_members(config_text, interface):
     return sorted(set(values))
 
 
+def _interfaces_config_set(dev, database):
+    """Retrieve all interface configuration in set form with one NETCONF RPC."""
+    options = {"format": "set"}
+    if database == "committed":
+        options["database"] = "committed"
+    elif database != "candidate":
+        raise base.ProvisioningError("unsupported configuration database %r" % database)
+    reply = dev.rpc.get_config(
+        filter_xml="interfaces",
+        options=options,
+        normalize=False,
+    )
+    return str(getattr(reply, "text", "") or "")
+
+
+def _planned_config_rows(config_text, activated):
+    """Verify every intended endpoint statement against one configuration snapshot."""
+    configured = {
+        _canonical(line)
+        for line in str(config_text or "").splitlines()
+        if line.strip()
+    }
+    rows = []
+    hard_pass = True
+    for item in activated:
+        wanted = [_canonical(line) for line in item["statements"]]
+        missing = [line for line in wanted if line not in configured]
+        config_ok = not missing
+        hard_pass = hard_pass and config_ok
+        rows.append({
+            "old_interface": item["old_interface"],
+            "new_interface": item["new_interface"],
+            "configuration_present": config_ok,
+            "missing_statements": missing,
+        })
+    return hard_pass, rows
+
+
 def _validate_preload_port_config(dev, activated):
+    text = _interfaces_config_set(dev, "committed")
     for item in activated:
         interface = item["new_interface"]
-        text = dev.cli(
-            "show configuration interfaces %s | display set" % interface,
-            warning=False,
-        ) or ""
         memberships = _explicit_vlan_members(text, interface)
         unexpected = [name for name in memberships if name != item["data_vlan_name"]]
         if unexpected:
@@ -152,6 +187,20 @@ def _validate_preload_port_config(dev, activated):
                 "%s already has unexpected explicit VLAN membership(s): %s"
                 % (interface, ", ".join(unexpected))
             )
+
+
+def _validate_loaded_candidate(dev, activated):
+    candidate_text = _interfaces_config_set(dev, "candidate")
+    hard_ok, rows = _planned_config_rows(candidate_text, activated)
+    if not hard_ok:
+        missing = []
+        for row in rows:
+            missing.extend(row["missing_statements"])
+        raise base.ProvisioningError(
+            "EX4400 candidate is missing %d intended endpoint statement(s) after NETCONF load: %s"
+            % (len(missing), "; ".join(missing[:5]))
+        )
+    return rows
 
 
 def _print_correlation(value):
@@ -187,29 +236,24 @@ def _print_correlation(value):
     print("  Result: %s" % value["result"])
 
 
+def _interface_up_from_terse(terse_text, interface):
+    return bool(re.search(
+        r"(?m)^%s(?:\.\d+)?\s+up\s+up(?:\s|$)" % re.escape(interface),
+        str(terse_text or ""),
+    ))
+
+
 def _config_validation(dev, activated):
+    config_text = _interfaces_config_set(dev, "committed")
+    terse_text = dev.cli("show interfaces terse", warning=False) or ""
+    hard_pass, config_rows = _planned_config_rows(config_text, activated)
     rows = []
-    hard_pass = True
-    for item in activated:
-        interface = item["new_interface"]
-        config = dev.cli(
-            "show configuration interfaces %s | display set" % interface,
-            warning=False,
-        ) or ""
-        configured = {_canonical(line) for line in config.splitlines() if line.strip()}
-        wanted = [_canonical(line) for line in item["statements"]]
-        config_ok = all(line in configured for line in wanted)
-        hard_pass = hard_pass and config_ok
-        terse = dev.cli("show interfaces %s terse" % interface, warning=False) or ""
-        oper_up = bool(re.search(
-            r"(?m)^%s(?:\.\d+)?\s+up\s+up(?:\s|$)" % re.escape(interface),
-            terse,
-        ))
+    for row in config_rows:
         rows.append({
-            "old_interface": item["old_interface"],
-            "new_interface": interface,
-            "configuration_present": config_ok,
-            "interface_up": oper_up,
+            "old_interface": row["old_interface"],
+            "new_interface": row["new_interface"],
+            "configuration_present": row["configuration_present"],
+            "interface_up": _interface_up_from_terse(terse_text, row["new_interface"]),
         })
     return hard_pass, rows
 
@@ -376,14 +420,17 @@ def run(argv):
             statements.extend(item["statements"])
         payload = "\n".join(statements) + "\n"
         cu.load(payload, format="set", merge=True)
+
+        # Do not rely only on an RPC success or commit-check. Read the candidate
+        # back over NETCONF and prove that every intended endpoint statement is
+        # present before an operator can approve the candidate.
+        candidate_rows = _validate_loaded_candidate(dev, correlation["activated"])
         if cu.commit_check() is not True:
             raise base.ProvisioningError("EX4400 endpoint activation commit-check did not return PASS")
         raw_diff = cu.diff()
         if not raw_diff:
-            hard_ok, config_rows = _config_validation(dev, correlation["activated"])
-            if not hard_ok:
-                raise base.ProvisioningError("endpoint configuration produced no diff but intended state is not present")
             print("\nEX4400 endpoint configuration is already present.")
+            print("Candidate verification: PASS (%d endpoint intents)" % len(candidate_rows))
             print("No candidate diff exists; no commit was performed.")
             print("  Holds remaining: %d" % len(correlation["holds"]))
             return 0
@@ -391,6 +438,7 @@ def run(argv):
         candidate_diff = str(raw_diff)
         print("\nEX4400 endpoint candidate diff")
         print("  SHA256: %s" % sha256_bytes(candidate_diff.encode("utf-8")))
+        print("  Candidate verification: PASS (%d endpoint intents)" % len(candidate_rows))
         print("  Commit check: PASS")
         print("\n%s" % candidate_diff.rstrip())
         answer = input(
