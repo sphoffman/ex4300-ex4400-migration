@@ -27,17 +27,17 @@ PREPARE EX4400 PACKAGE
         ->
 RENDER EX4400 PRE-STAGE CONFIG
         ->
-IDENTIFY REPLACEMENT EX4400
+IDENTIFY REPLACEMENT EX4400 + BIND OOB ADDRESS/GATEWAY
         ->
 PRE-STAGE EX4400
         ->
-RELEASE REPLACEMENT BOOTSTRAP OOB ADDRESS
-        ->
-TRANSFER BOOTSTRAP OOB TO OLD EX4300 VC
-        ->
-STAGE + PROVE OLD EX4300 VC RECOVERY
+PRE-STAGE OLD EX4300 VC RECOVERY WHILE IN-BAND ACCESS STILL EXISTS
         ->
 ---------------- PHYSICAL CUTOVER ----------------
+        ->
+MOVE OOB/RECOVERY CABLING
+        ->
+OPTIONAL READ-ONLY OLD-EX RECOVERY VERIFICATION
         ->
 DISCOVER + APPROVE QFX ATTACHMENT
         ->
@@ -159,21 +159,39 @@ The render includes everything safely known before physical cutover, including:
 
 Endpoint-specific descriptions and data-VLAN memberships are deliberately excluded.
 
-### 6. Identify and bind the replacement EX4400
+### 6. Identify and bind the replacement EX4400 and OOB management intent
+
+The address supplied to `identify` is a first-class migration input. It is the address
+used to reach the replacement, the address/prefix pinned to the approved replacement
+identity, and the address that will later be pre-staged on the old EX4300 VC as
+`vme.0` recovery management.
 
 Lab/vJunos example:
 
 ```bash
 py -m ex_migration_provisioner.cli identify sw1203 \
-  --transport-address 10.255.3.18
+  --oob-address 10.255.3.18/24
 ```
 
-The identity record pins the replacement device's SSH host key, chassis/VC identity,
-model, serial information, and bootstrap transport. The operator explicitly approves
-binding that device to the migration.
+Production uses the same command and semantics with the replacement EX4400's actual
+reachable OOB address/prefix. There is no separate replacement `transport_address`
+concept for new identities.
 
-Production uses the pre-established temporary management bootstrap path rather than
-the vJunos transport override.
+During the same read-only connection, `identify` reads the configured IPv4 default
+next-hop under `mgmt_junos`. The approved identity pins:
+
+- the operator-supplied OOB address/prefix;
+- the configured `mgmt_junos` default gateway observed on the replacement;
+- SSH host key;
+- hostname/model/serial and VC member identity.
+
+The automation intentionally does not require the supplied OOB address to be bound to
+a particular Junos interface on the replacement. That keeps lab and production on the
+same identity/lineage path. On the old EX4300 VC, the approved OOB address will always
+be staged on `vme.0`.
+
+Historical schema-1.0 lab identities containing a separate `transport_address` remain
+readable, but new identity artifacts use schema 1.1 and one authoritative OOB address.
 
 ### 7. Pre-stage the EX4400
 
@@ -181,7 +199,8 @@ the vJunos transport override.
 py -m ex_migration_provisioner.cli run <migration-id>
 ```
 
-This is the first EX4400 write-capable phase. It:
+This is the first EX4400 write-capable phase. It connects to the address pinned by
+`identify` and:
 
 1. revalidates the approved replacement identity;
 2. locks the candidate configuration;
@@ -193,24 +212,12 @@ This is the first EX4400 write-capable phase. It:
 8. validates migration-critical running state;
 9. confirms only after validation passes.
 
-### 8. Stage and prove old EX4300 VC recovery management
+### 8. Pre-stage old EX4300 VC recovery management
 
 For an EX4300 Virtual Chassis, the VC-wide logical management interface is `vme`.
-The recovery workflow transfers the **same OOB identity used to bootstrap the
-replacement EX4400** to the old switch after replacement pre-stage is complete.
-
-The recovery address is not operator-supplied. The command:
-
-- selects the approved bootstrap identity bound to this migration;
-- verifies that the current bootstrap profile still matches the identity's pinned
-  profile digest;
-- derives the OOB IP from the approved identity;
-- derives the prefix length and gateway from that exact bootstrap profile;
-- requires the operator to acknowledge that the replacement EX4400 has released
-  the OOB address before the old switch can take ownership.
-
-For the current lab bootstrap profile, that means the logical recovery identity is
-`10.0.0.15/24` with gateway `10.0.0.2`.
+The recovery workflow consumes the OOB address/prefix and `mgmt_junos` default gateway
+already pinned by the approved replacement identity. Recovery addressing is not
+entered again at this stage.
 
 Production form:
 
@@ -218,47 +225,65 @@ Production form:
 py -m ex_migration_provisioner.cli stage-old-recovery <migration-id>
 ```
 
-The recovery candidate is deliberately isolated from the master routing table. It
-contains the equivalent of:
+The current lab may still use `--transport-address` only to reach the **old EX4300's
+existing source/in-band path** through vrnetlab. That option is unrelated to the
+replacement identity model and is rejected by production policy.
+
+The deterministic recovery candidate is limited to the equivalent of:
 
 ```text
 set system management-instance
-set interfaces vme unit 0 family inet address <approved-bootstrap-ip/prefix>
-set routing-instances mgmt_junos routing-options static route 0.0.0.0/0 next-hop <approved-bootstrap-gateway>
+set interfaces vme unit 0 family inet address <approved-oob-address/prefix>
+set routing-instances mgmt_junos routing-options static route 0.0.0.0/0 next-hop <approved-mgmt_junos-gateway>
 ```
 
+`mgmt_junos` is the reserved Junos management instance. `set system
+management-instance` places the supported VC management interface in that instance;
+the workflow does not add a normal `routing-instances mgmt_junos interface vme.0`
+statement.
+
 The command never adds or changes a master `routing-options` default route. If an
-existing `mgmt_junos` default route conflicts with the approved bootstrap gateway,
-the transaction fails closed rather than replacing or combining it.
+existing `mgmt_junos` default route conflicts with the gateway pinned during
+`identify`, the transaction fails closed rather than replacing or combining it.
+
+This phase must run **before physical cutover**, while the old EX4300 is still
+reachable through its existing management path. The replacement may still own the
+same OOB address at this point. The safety boundary is physical: the replacement OOB
+path and the old-switch recovery OOB path must remain L2-isolated until the recovery
+cable is moved.
 
 The guarded transaction:
 
-1. resolves the approved old hostname and current production management IP from the
-   approved plan;
-2. resolves and integrity-validates the approved replacement bootstrap identity and
-   its exact bootstrap profile;
-3. requires explicit acknowledgement that the replacement has released the OOB
-   address;
-4. connects through the current old-switch in-band management path;
-5. requires the configured hostname to match the approved source identity;
-6. records the existing master routing-table default configuration and preserves it;
-7. enables the dedicated `mgmt_junos` management instance, configures `vme.0`, and
-   adds the OOB default route only inside `mgmt_junos`;
-8. locks the candidate, requires it to be clean, commit-checks, and shows the exact
-   diff/digest;
+1. resolves the approved old hostname and production management IP from the approved
+   plan;
+2. resolves and integrity-validates the approved replacement identity;
+3. inherits the identity's OOB address/prefix and observed `mgmt_junos` gateway;
+4. connects to the still-reachable old EX4300 source path;
+5. requires the configured hostname to match approved source identity;
+6. records and preserves the master routing-table default configuration;
+7. loads only the deterministic `mgmt_junos`/`vme.0` recovery state;
+8. locks the candidate, requires it to be clean, commit-checks, and shows the actual
+   Junos delta/digest;
 9. asks one operator approval;
 10. commit-confirms the change;
-11. validates the committed recovery statements and proves the master default-route
-    configuration did not change;
-12. opens a second NETCONF connection through the transferred OOB address;
-13. requires the recovery path to present the same SSH host key and hostname;
-14. confirms the commit only after that second-path proof succeeds.
+11. validates the complete intended recovery state through the existing source path
+    and proves the master default-route configuration did not change;
+12. finally confirms the commit.
 
-If second-path validation fails, the command explicitly rolls back or leaves the
-commit-confirmed timer as the final safety boundary.
+The candidate display is intentionally the Junos delta. Statements that already exist
+(for example `set system management-instance` or the matching `mgmt_junos` default)
+will not be repeated in the diff, but the complete intended state is still validated.
 
-Lab transport overrides exist only to exercise workflow logic when vJunos cannot
-expose `vme` directly; they are not accepted under a production site policy.
+After the physical OOB cable move, an optional read-only diagnostic can verify that
+the old VC is reachable through the recovery address:
+
+```bash
+py -m ex_migration_provisioner.cli verify-old-recovery <migration-id>
+```
+
+Failure of this optional diagnostic does not roll back or invalidate the pre-staged
+recovery configuration. The first operator action is to verify/move the physical
+recovery cabling, because that is the recovery path by design.
 
 ### 9. Perform the physical cutover
 
@@ -266,7 +291,9 @@ Operator/facilities action:
 
 - move the old EX4300 uplinks to the replacement EX4400;
 - move the upstream ends from the existing EX9200 environment to the QFX pair;
-- move endpoint cables from the old EX4300 VC to the new EX4400 VC.
+- move endpoint cables from the old EX4300 VC to the new EX4400 VC;
+- move the OOB/recovery cable so the approved OOB address is physically presented to
+  the old EX4300 VC recovery path rather than the replacement bootstrap path.
 
 The QFX migration-facing AEs are independently pre-provisioned. Before migration,
 they carry only the migration baseline: management VLAN 163 and temporary recovery
@@ -389,8 +416,8 @@ physical moves.
 During the recovery window:
 
 - the replacement EX4400 owns the production management IP;
-- the old EX4300 VC remains independently reachable through its transferred bootstrap
-  OOB address on `vme.0` in `mgmt_junos`;
+- the old EX4300 VC retains the approved migration OOB address on `vme.0` in
+  `mgmt_junos` after the recovery cable is moved;
 - TEMP-RECOVERY VLAN 3999 remains present until cleanup is explicitly authorized.
 
 Automation for removing the temporary old-switch recovery address and removing the
