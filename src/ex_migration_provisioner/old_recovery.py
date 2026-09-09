@@ -40,7 +40,6 @@ def recovery_statements(interface, address, gateway, routing_instance=MGMT_INSTA
     except ValueError as exc:
         raise ProvisioningError("invalid old-switch OOB recovery addressing: %s" % exc)
     _require(recovery.version == 4 and next_hop.version == 4, "old-switch OOB recovery must use IPv4")
-    _require(next_hop in recovery.network, "old-switch OOB gateway is not on the recovery subnet")
     _require(next_hop != recovery.ip, "old-switch OOB gateway cannot equal the recovery IP")
     return [
         "set system management-instance",
@@ -83,7 +82,7 @@ def build_recovery_transaction(
     transaction_id = sha256_bytes(canonical_bytes(key))[:16]
     expected_hostname = str(plan.get("template_variables", {}).get("old_hostname") or "")
     return {
-        "schema_version": "1.3",
+        "schema_version": "1.4",
         "transaction_id": transaction_id,
         "migration_id": migration_id,
         "approved_at": approved_at,
@@ -110,6 +109,8 @@ def build_recovery_transaction(
             "address": recovery_address,
             "gateway": recovery_gateway,
             "logical_address": str(ipaddress.ip_interface(str(recovery_address)).ip),
+            "address_source": "APPROVED_REPLACEMENT_IDENTITY_OOB",
+            "gateway_source": "APPROVED_REPLACEMENT_IDENTITY_MGMT_JUNOS_DEFAULT",
         },
         "source_ssh_host_key_sha256": source_ssh_host_key_sha256,
         "candidate_diff_sha256": diff_digest,
@@ -124,15 +125,15 @@ def build_recovery_transaction(
             "recovery_path_verified": False,
         },
         "safety": {
-            "duplicate_bootstrap_ip_requires_physical_l2_isolation_until_cable_move": True,
-            "replacement_may_still_own_bootstrap_ip_before_cutover": True,
+            "duplicate_oob_ip_requires_physical_l2_isolation_until_cable_move": True,
+            "replacement_may_still_own_oob_ip_before_cutover": True,
             "existing_inband_management_preserved": True,
             "master_routing_table_default_unchanged": True,
             "dedicated_management_instance_required": True,
             "commit_confirmed_required": True,
-            "post_cable_recovery_verification_required": True,
-            "same_ssh_host_key_required_after_cable_move": True,
-            "same_configured_hostname_required_after_cable_move": True,
+            "post_cable_recovery_verification_optional": True,
+            "same_ssh_host_key_required_if_post_cable_verified": True,
+            "same_configured_hostname_required_if_post_cable_verified": True,
         },
     }
 
@@ -168,7 +169,11 @@ def validate_existing_recovery_transaction(directory, migration_id, require_comm
     transaction = read_json(tx_path)
     _require(transaction.get("migration_id") == migration_id, "old-switch recovery migration ID mismatch")
     if require_committed:
-        _require(transaction.get("commit", {}).get("status") == "COMMITTED_AND_CONFIRMED", "old-switch recovery transaction is not committed and confirmed")
+        status = transaction.get("commit", {}).get("status")
+        _require(
+            status in ("COMMITTED_AND_CONFIRMED", "ALREADY_PRESENT_VALIDATED"),
+            "old-switch recovery transaction is not committed/validated",
+        )
         _require(transaction.get("commit", {}).get("confirmed") is True, "old-switch recovery final confirmation is missing")
         _require(transaction.get("validation", {}).get("result") == "PASS", "old-switch recovery pre-cutover validation did not pass")
     return {
@@ -197,7 +202,7 @@ def choose_recovery_transaction(migration_root, transaction_id=None):
             tx = selected["transaction"]
             stamp = str(tx.get("commit", {}).get("confirmed_at") or tx.get("approved_at") or "")
             candidates.append((stamp, str(tx.get("transaction_id") or directory.name), selected))
-    _require(candidates, "no integrity-valid committed-and-confirmed old-switch recovery transaction was found")
+    _require(candidates, "no integrity-valid committed/validated old-switch recovery transaction was found")
     candidates.sort(reverse=True, key=lambda item: (item[0], item[1]))
     return candidates[0][2]
 
