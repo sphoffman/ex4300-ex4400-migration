@@ -6,20 +6,42 @@ from jsonschema import Draft202012Validator
 
 from ex_migration_analyzer.core import canonical_bytes, sha256_bytes
 from ex_migration_provisioner import RENDERER_VERSION
-from ex_migration_provisioner.core import build_package, run_qfx_preflight
+from ex_migration_provisioner.prestage import build_pre_stage_package
 from ex_migration_provisioner.render import RenderError, build_render_manifest, render_pre_stage, validate_pre_stage_render
-from test_provisioner import bootstrap, devices_for, digest, plan_variables, policy
+from test_provisioner import bootstrap, digest, plan_variables
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def package_for_render():
-    qfx_policy = policy()
-    preflight = run_qfx_preflight(qfx_policy, "sw1203", devices_for(), observed_at="2026-09-08T01:00:00Z")
-    plan = {"plan_id": "0123456789abcdef", "migration_id": "sw1203", "eligibility": {"production_eligible": False}, "template_variables": plan_variables()}
-    approval = {"plan_id": plan["plan_id"], "plan_digest": digest("a"), "production_eligible": False}
-    return build_package(plan, digest("a"), approval, digest("c"), digest("d"), digest("e"), digest("f"), qfx_policy, digest("1"), bootstrap(), digest("2"), preflight, digest("b"), RENDERER_VERSION)
+    qfx_policy = json.loads((ROOT / "config/qfx-site-policy.lab.json").read_text())
+    plan = {
+        "plan_id": "0123456789abcdef",
+        "migration_id": "sw1203",
+        "eligibility": {"production_eligible": False},
+        "template_variables": plan_variables(),
+    }
+    approval = {
+        "plan_id": plan["plan_id"],
+        "plan_digest": digest("a"),
+        "production_eligible": False,
+    }
+    return build_pre_stage_package(
+        plan,
+        digest("a"),
+        approval,
+        digest("c"),
+        digest("d"),
+        digest("e"),
+        digest("f"),
+        qfx_policy,
+        digest("1"),
+        bootstrap(),
+        digest("2"),
+        RENDERER_VERSION,
+        created_at="2026-09-09T15:00:00Z",
+    )
 
 
 def test_pre_stage_render_is_deterministic_and_contains_only_approved_vlan_definitions():
@@ -32,6 +54,10 @@ def test_pre_stage_render_is_deterministic_and_contains_only_approved_vlan_defin
     assert validation_a == validation_b
     assert validation_a["result"] == "PASS"
     assert "set interfaces interface-range edge_ports member \"ge-[0-9]/0/[2-47]\"" in rendered_a
+    assert "set interfaces ge-0/0/2 unit 0 family ethernet-switching vlan members TEMP-ACCESS" in rendered_a
+    assert "set interfaces ge-0/0/46 unit 0 family ethernet-switching vlan members TEMP-ACCESS" in rendered_a
+    assert "set interfaces ge-0/0/47 unit 0 family ethernet-switching vlan members TEMP-ACCESS" not in rendered_a
+    assert rendered_a.count("family ethernet-switching vlan members TEMP-ACCESS") == 45
     assert "set interfaces ge-0/0/47 unit 0 family ethernet-switching vlan members TEMP-RECOVERY" in rendered_a
     assert "set interfaces irb unit 163 family inet address 10.100.163.30/24" in rendered_a
     assert "set protocols layer2-control nonstop-bridging" in rendered_a
@@ -41,9 +67,11 @@ def test_pre_stage_render_is_deterministic_and_contains_only_approved_vlan_defin
     assert "set vlans v200 vlan-id 200" in rendered_a
     assert "set vlans UNUSED-TEST vlan-id 300" in rendered_a
     assert "set vlans voip vlan-id 1111" in rendered_a
+    assert "set vlans TEMP-ACCESS vlan-id 3998" in rendered_a
     assert "set vlans TEMP-RECOVERY vlan-id 3999" in rendered_a
     assert rendered_a.count("set vlans voip vlan-id 1111") == 1
     assert rendered_a.count("set vlans v163 vlan-id 163") == 1
+    assert "set vlans TEMP-ACCESS l3-interface" not in rendered_a
     assert "fxp0" not in rendered_a
     assert "encrypted-password" not in rendered_a
 
@@ -65,6 +93,19 @@ def test_pre_stage_static_validation_rejects_endpoint_vlan_assignment():
     contract = json.loads((ROOT / "templates/ex4400/contract-v1.json").read_text())
     rendered, _validation = render_pre_stage(template, contract, package, RENDERER_VERSION)
     tampered = rendered + "set interfaces ge-0/0/12 unit 0 family ethernet-switching vlan members v100\n"
+    with pytest.raises(RenderError):
+        validate_pre_stage_render(tampered, package)
+
+
+def test_pre_stage_static_validation_rejects_missing_temp_access_assignment():
+    package = package_for_render()
+    template = (ROOT / "templates/ex4400/ex4400.set.j2").read_text()
+    contract = json.loads((ROOT / "templates/ex4400/contract-v1.json").read_text())
+    rendered, _validation = render_pre_stage(template, contract, package, RENDERER_VERSION)
+    tampered = rendered.replace(
+        "set interfaces ge-0/0/12 unit 0 family ethernet-switching vlan members TEMP-ACCESS\n",
+        "",
+    )
     with pytest.raises(RenderError):
         validate_pre_stage_render(tampered, package)
 
