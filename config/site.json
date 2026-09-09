@@ -2,7 +2,7 @@
   "schema_version": "1.2",
   "snapshot_root": "snapshots",
   "analysis_policy": "policies/production-old-v1.json",
-  "display_timezone": "America/New_York",
+  "display_timezone": "EST5EDT,M3.2.0,M11.1.0",
   "default_management_vlan_id": 163,
   "default_collection_duration_seconds": 1800,
   "default_collection_interval_seconds": 60,
