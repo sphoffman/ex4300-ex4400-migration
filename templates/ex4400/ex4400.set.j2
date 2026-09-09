@@ -7,7 +7,9 @@ set system syslog source-address {{management_ip}}
 set system ntp source-address {{management_ip}}
 set chassis redundancy graceful-switchover
 set chassis aggregated-devices ethernet device-count 1
-set interfaces interface-range edge_ports member "ge-[0-9]/0/[2-47]"
+{% for interface in prestage_access_interfaces %}
+set interfaces interface-range edge_ports member {{interface}}
+{% endfor %}
 set interfaces interface-range edge_ports unit 0 family ethernet-switching interface-mode access
 set interfaces interface-range edge_ports unit 0 family ethernet-switching storm-control ACCESS_STORM
 {% for interface in prestage_access_interfaces %}
@@ -15,8 +17,13 @@ set interfaces {{interface}} unit 0 family ethernet-switching vlan members {{pre
 {% endfor %}
 set interfaces {{recovery_interface}} unit 0 family ethernet-switching vlan members {{temporary_recovery_vlan_name}}
 set interfaces irb unit {{management_vlan_id}} family inet address {{management_prefix}}
-set interfaces ge-0/0/0 gigether-options 802.3ad ae0
-set interfaces ge-0/0/1 gigether-options 802.3ad ae0
+{% for interface in uplink_interfaces %}
+{% if interface.startswith("ge-") %}
+set interfaces {{interface}} gigether-options 802.3ad ae0
+{% else %}
+set interfaces {{interface}} ether-options 802.3ad ae0
+{% endif %}
+{% endfor %}
 set interfaces ae0 aggregated-ether-options lacp active
 set interfaces ae0 unit 0 family ethernet-switching interface-mode trunk
 set interfaces ae0 unit 0 family ethernet-switching vlan members all
