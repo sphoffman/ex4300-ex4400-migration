@@ -435,6 +435,12 @@ def main(argv=None):
     if command == "activate-endpoints":
         from . import endpoint_stage_cli
         return endpoint_stage_cli.main(values[1:])
+    if command == "stage-old-recovery":
+        from . import old_recovery_cli
+        return old_recovery_cli.main(values[1:])
+    if command == "cabling-report":
+        from . import cabling_report_cli
+        return cabling_report_cli.main(values[1:])
     if command == "prepare":
         try:
             return _prepare(values[1:])
