@@ -12,7 +12,9 @@ from .access_hardening import (
     classify_final_ports,
     current_port_states,
     edge_interfaces,
+    final_production_vlan_names,
     hardening_statements,
+    stale_vlan_cleanup,
     validate_final_hardening,
     validate_pre_hardening_config,
 )
@@ -51,8 +53,9 @@ def _parser():
         description=(
             "FINALIZATION: close the TEMP-RECOVERY window, remove the temporary recovery "
             "VLAN from the replacement/QFX attachment, convert the EX uplink from 'all' to "
-            "the approved production VLAN list, and disable configured unused edge ports in "
-            "the inactive default VLAN. State-only evidence never authorizes endpoint VLANs."
+            "the current-plan QFX production VLAN set plus management, disable proven-unused "
+            "edge ports in the inactive default VLAN, and remove only proven-unused legacy "
+            "data VLANs. State-only evidence never authorizes endpoint VLANs."
         ),
     )
     parser.add_argument("migration_id")
@@ -124,9 +127,11 @@ def _print_plan(value):
     hardening = value["access_hardening"]
     used = [row["interface"] for row in hardening.get("used", [])]
     unused = [row["interface"] for row in hardening.get("unused", [])]
+    stale = hardening.get("stale_vlans", {})
     print("\nMigration cleanup and access hardening plan")
     print("  Migration: %s" % value["migration_id"])
     print("  Cleanup plan: %s" % value["cleanup_plan_id"])
+    print("  edge_ports definition: %s" % hardening.get("edge_ports_expression"))
     print("  Confirmed used edge ports kept enabled: %d" % len(used))
     if used:
         print("    %s" % ", ".join(used))
@@ -134,8 +139,16 @@ def _print_plan(value):
     if unused:
         print("    %s" % ", ".join(unused))
     print("  Inactive VLAN for disabled ports: default (%s)" % value["recovery"]["prestage_default_vlan_id"])
-    print("  EX uplink: replace VLAN members all with approved production VLAN list")
-    print("  EX voice policy: narrow edge_ports policy to confirmed used ports")
+    print("  EX uplink final VLANs: %s" % ", ".join(value["production_vlan_names"]))
+    print("  EX voice policy: preserve broad edge_ports policy")
+    if stale.get("delete"):
+        print("  Proven-unused EX data VLANs to delete:")
+        for item in stale["delete"]:
+            print("    %s (%s)" % (item["name"], item["vlan_id"]))
+    if stale.get("preserve"):
+        print("  Non-required EX VLANs preserved by safety checks:")
+        for item in stale["preserve"]:
+            print("    %s (%s): %s" % (item["name"], item["vlan_id"], item["reason"]))
     print("  EX TEMP-RECOVERY: remove recovery-port membership and VLAN definition")
     for item in value["qfx_devices"]:
         print("  %s %s: remove %s from %s" % (
@@ -295,17 +308,19 @@ def run(argv):
     management_vlan_id = int(variables.get("management_vlan_id"))
     voice_vlan_name = str(variables.get("voice_vlan") or "")
     uplink_interfaces = list(variables.get("uplink_interfaces") or [])
-    production_vlan_names = sorted({
-        str(item.get("name"))
-        for item in variables.get("configured_vlans", [])
-        if item.get("name")
-    })
+    configured_vlans = list(variables.get("configured_vlans") or [])
     if not recovery_interface or not recovery_vlan_name or not voice_vlan_name or not uplink_interfaces:
         raise base.ProvisioningError("selected package is missing cleanup/hardening variables")
     if recovery_vlan_name != policy["temporary_recovery_vlan"]["name"] or recovery_vlan_id != int(policy["temporary_recovery_vlan"]["vlan_id"]):
         raise base.ProvisioningError("package recovery VLAN does not match QFX site policy")
 
     required_qfx_vlan_ids = list(qfx_plan.get("derivation", {}).get("required_vlan_ids") or [])
+    production_vlan_names = final_production_vlan_names(
+        configured_vlans,
+        management_vlan_id,
+        required_qfx_vlan_ids,
+    )
+    final_vlan_ids = sorted(set(int(value) for value in required_qfx_vlan_ids) | {management_vlan_id})
     historical_completed = committed_endpoint_state(
         migration_root,
         selected_plan["plan_digest"],
@@ -384,7 +399,9 @@ def run(argv):
         ]
         if not member_ids:
             raise base.ProvisioningError("approved identity has no VC member inventory")
-        eligible_edges = edge_interfaces(member_ids, uplink_interfaces)
+        eligible_edges = edge_interfaces(ex_config, member_ids, uplink_interfaces)
+        if recovery_interface not in eligible_edges:
+            raise base.ProvisioningError("approved recovery interface is outside the live template-owned edge_ports range")
         port_states = current_port_states(terse_text, mac_text, eligible_edges, observed_at=utc_now())
         classification = classify_final_ports(
             selected_plan["plan"],
@@ -400,8 +417,19 @@ def run(argv):
             voice_vlan_name,
         )
         classification["configuration_precheck"] = config_precheck
+        classification["edge_ports_expression"] = config_precheck.get("edge_ports_expression")
         if config_precheck["result"] != "PASS":
             classification["result"] = "FAIL"
+
+        stale_vlans = stale_vlan_cleanup(
+            ex_config,
+            mac_text,
+            configured_vlans,
+            final_vlan_ids,
+            observed_at=utc_now(),
+        )
+        classification["stale_vlans"] = stale_vlans
+        classification["final_uplink_vlan_names"] = production_vlan_names
 
         ex_state = ex_recovery_state(
             ex_config,
@@ -436,6 +464,7 @@ def run(argv):
 
         used_interfaces = [row["interface"] for row in classification["used"]]
         unused_interfaces = [row["interface"] for row in classification["unused"]]
+        deleted_vlan_names = [row["name"] for row in stale_vlans["delete"]]
         hardening = hardening_statements(
             ex_config,
             unused_interfaces,
@@ -443,6 +472,7 @@ def run(argv):
             production_vlan_names,
             voice_vlan_name,
             recovery_vlan_name,
+            stale_vlan_names=deleted_vlan_names,
         )
         qfx_ae_by_role = {
             role: qfx_plan_by_role[role]["ae_interface"]
@@ -491,7 +521,6 @@ def run(argv):
             if cu.diff():
                 raise base.ProvisioningError("%s candidate already contains uncommitted changes" % role)
 
-        # Recheck topology and endpoint completion after all candidates are locked.
         locked_pair = validate_post_commit_pair(qfx_devices, qfx_plan, expected_ex_hostname)
         if locked_pair["result"] != "PASS":
             raise base.ProvisioningError("QFX topology changed after cleanup locks were acquired")
@@ -518,7 +547,7 @@ def run(argv):
             print(candidate_diffs[role].rstrip())
         print("\n  Commit check: PASS on EX4400 and both QFXs")
         answer = input(
-            "\nApprove exactly these diffs, CLOSE the TEMP-RECOVERY window, and disable the listed unused EX4400 ports? [y/N]: "
+            "\nApprove exactly these diffs, CLOSE the TEMP-RECOVERY window, prune the listed proven-unused VLANs, and disable the listed unused EX4400 ports? [y/N]: "
         ).strip().lower()
         if answer not in ("y", "yes"):
             for role in reversed(locked_roles):
@@ -571,6 +600,8 @@ def run(argv):
             unused_interfaces,
             production_vlan_names,
             voice_vlan_name,
+            deleted_vlan_names=deleted_vlan_names,
+            expected_edge_expression=classification["edge_ports_expression"],
         )
         post_ex_state = ex_recovery_state(
             post_ex_config,
@@ -624,6 +655,9 @@ def run(argv):
         print("  Transaction: %s" % transaction["transaction_id"])
         print("  Used EX4400 edge ports kept enabled: %d" % len(used_interfaces))
         print("  Unused EX4400 edge ports disabled: %d" % len(unused_interfaces))
+        print("  Broad edge_ports voice policy preserved: PASS")
+        print("  Final ae0 VLAN membership exact: PASS")
+        print("  Proven-unused EX data VLANs removed: %d" % len(deleted_vlan_names))
         print("  Inactive VLAN 3998 excluded from ae0: PASS")
         print("  TEMP-RECOVERY removed from EX4400: PASS")
         print("  TEMP-RECOVERY removed from migration QFX AE pair: PASS")
