@@ -50,31 +50,32 @@ def test_pre_stage_render_is_deterministic_and_contains_only_approved_vlan_defin
     contract = json.loads((ROOT / "templates/ex4400/contract-v1.json").read_text())
     rendered_a, validation_a = render_pre_stage(template, contract, package, RENDERER_VERSION)
     rendered_b, validation_b = render_pre_stage(template, contract, package, RENDERER_VERSION)
+    rendered_lines = set(rendered_a.splitlines())
     assert rendered_a == rendered_b
     assert validation_a == validation_b
     assert validation_a["result"] == "PASS"
-    assert "set interfaces interface-range edge_ports member ge-0/0/2" in rendered_a
-    assert "set interfaces interface-range edge_ports member ge-0/0/46" in rendered_a
-    assert "set interfaces interface-range edge_ports member ge-0/0/0" not in rendered_a
-    assert "set interfaces interface-range edge_ports member ge-0/0/1" not in rendered_a
-    assert "set interfaces interface-range edge_ports member ge-0/0/47" not in rendered_a
-    assert "set interfaces ge-0/0/0 gigether-options 802.3ad ae0" in rendered_a
-    assert "set interfaces ge-0/0/1 gigether-options 802.3ad ae0" in rendered_a
-    assert "set interfaces ge-0/0/2 unit 0 family ethernet-switching vlan members TEMP-ACCESS" in rendered_a
-    assert "set interfaces ge-0/0/46 unit 0 family ethernet-switching vlan members TEMP-ACCESS" in rendered_a
-    assert "set interfaces ge-0/0/47 unit 0 family ethernet-switching vlan members TEMP-ACCESS" not in rendered_a
+    assert "set interfaces interface-range edge_ports member ge-0/0/2" in rendered_lines
+    assert "set interfaces interface-range edge_ports member ge-0/0/46" in rendered_lines
+    assert "set interfaces interface-range edge_ports member ge-0/0/0" not in rendered_lines
+    assert "set interfaces interface-range edge_ports member ge-0/0/1" not in rendered_lines
+    assert "set interfaces interface-range edge_ports member ge-0/0/47" not in rendered_lines
+    assert "set interfaces ge-0/0/0 gigether-options 802.3ad ae0" in rendered_lines
+    assert "set interfaces ge-0/0/1 gigether-options 802.3ad ae0" in rendered_lines
+    assert "set interfaces ge-0/0/2 unit 0 family ethernet-switching vlan members TEMP-ACCESS" in rendered_lines
+    assert "set interfaces ge-0/0/46 unit 0 family ethernet-switching vlan members TEMP-ACCESS" in rendered_lines
+    assert "set interfaces ge-0/0/47 unit 0 family ethernet-switching vlan members TEMP-ACCESS" not in rendered_lines
     assert rendered_a.count("family ethernet-switching vlan members TEMP-ACCESS") == 45
-    assert "set interfaces ge-0/0/47 unit 0 family ethernet-switching vlan members TEMP-RECOVERY" in rendered_a
-    assert "set interfaces irb unit 163 family inet address 10.100.163.30/24" in rendered_a
-    assert "set protocols layer2-control nonstop-bridging" in rendered_a
-    assert "deactivate protocols layer2-control" in rendered_a
-    assert "set vlans v100 vlan-id 100" in rendered_a
-    assert "set vlans v163 vlan-id 163" in rendered_a
-    assert "set vlans v200 vlan-id 200" in rendered_a
-    assert "set vlans UNUSED-TEST vlan-id 300" in rendered_a
-    assert "set vlans voip vlan-id 1111" in rendered_a
-    assert "set vlans TEMP-ACCESS vlan-id 3998" in rendered_a
-    assert "set vlans TEMP-RECOVERY vlan-id 3999" in rendered_a
+    assert "set interfaces ge-0/0/47 unit 0 family ethernet-switching vlan members TEMP-RECOVERY" in rendered_lines
+    assert "set interfaces irb unit 163 family inet address 10.100.163.30/24" in rendered_lines
+    assert "set protocols layer2-control nonstop-bridging" in rendered_lines
+    assert "deactivate protocols layer2-control" in rendered_lines
+    assert "set vlans v100 vlan-id 100" in rendered_lines
+    assert "set vlans v163 vlan-id 163" in rendered_lines
+    assert "set vlans v200 vlan-id 200" in rendered_lines
+    assert "set vlans UNUSED-TEST vlan-id 300" in rendered_lines
+    assert "set vlans voip vlan-id 1111" in rendered_lines
+    assert "set vlans TEMP-ACCESS vlan-id 3998" in rendered_lines
+    assert "set vlans TEMP-RECOVERY vlan-id 3999" in rendered_lines
     assert rendered_a.count("set vlans voip vlan-id 1111") == 1
     assert rendered_a.count("set vlans v163 vlan-id 163") == 1
     assert "set vlans TEMP-ACCESS l3-interface" not in rendered_a
@@ -92,15 +93,16 @@ def test_production_et_uplinks_leave_ge_zero_and_one_as_edge_ports():
     template = (ROOT / "templates/ex4400/ex4400.set.j2").read_text()
     contract = json.loads((ROOT / "templates/ex4400/contract-v1.json").read_text())
     rendered, validation = render_pre_stage(template, contract, package, RENDERER_VERSION)
+    rendered_lines = set(rendered.splitlines())
     assert validation["result"] == "PASS"
-    assert "set interfaces et-0/1/0 ether-options 802.3ad ae0" in rendered
-    assert "set interfaces et-0/1/1 ether-options 802.3ad ae0" in rendered
-    assert "set interfaces ge-0/0/0 unit 0 family ethernet-switching vlan members TEMP-ACCESS" in rendered
-    assert "set interfaces ge-0/0/1 unit 0 family ethernet-switching vlan members TEMP-ACCESS" in rendered
-    assert "set interfaces interface-range edge_ports member ge-0/0/0" in rendered
-    assert "set interfaces interface-range edge_ports member ge-0/0/1" in rendered
-    assert "set interfaces ge-0/0/0 gigether-options 802.3ad ae0" not in rendered
-    assert "set interfaces ge-0/0/1 gigether-options 802.3ad ae0" not in rendered
+    assert "set interfaces et-0/1/0 ether-options 802.3ad ae0" in rendered_lines
+    assert "set interfaces et-0/1/1 ether-options 802.3ad ae0" in rendered_lines
+    assert "set interfaces ge-0/0/0 unit 0 family ethernet-switching vlan members TEMP-ACCESS" in rendered_lines
+    assert "set interfaces ge-0/0/1 unit 0 family ethernet-switching vlan members TEMP-ACCESS" in rendered_lines
+    assert "set interfaces interface-range edge_ports member ge-0/0/0" in rendered_lines
+    assert "set interfaces interface-range edge_ports member ge-0/0/1" in rendered_lines
+    assert "set interfaces ge-0/0/0 gigether-options 802.3ad ae0" not in rendered_lines
+    assert "set interfaces ge-0/0/1 gigether-options 802.3ad ae0" not in rendered_lines
 
 
 def test_non_in_place_render_keeps_nonstop_bridging_active():
