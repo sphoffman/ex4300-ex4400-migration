@@ -74,15 +74,19 @@ def test_unambiguous_endpoint_correlation_and_silent_hold():
         management_vlan_id=163,
         voice_vlan_id=1111,
         temporary_recovery_vlan_id=3999,
+        prestage_access_vlan_name="TEMP-ACCESS",
+        prestage_access_vlan_id=3998,
     )
     assert [(row["old_interface"], row["new_interface"]) for row in value["activated"]] == [
         ("ge-0/0/2", "ge-0/0/10"),
         ("ge-0/0/3", "ge-0/0/11"),
     ]
     assert value["activated"][0]["statements"] == [
+        "delete interfaces ge-0/0/10 unit 0 family ethernet-switching vlan members TEMP-ACCESS",
         'set interfaces ge-0/0/10 description "Desk A"',
         "set interfaces ge-0/0/10 unit 0 family ethernet-switching vlan members v100",
     ]
+    assert value["activated"][0]["prestage_access_vlan_name"] == "TEMP-ACCESS"
     assert value["holds"] == [
         {
             "old_interface": "ge-0/0/4",
@@ -163,12 +167,13 @@ def test_transport_override_is_lab_only():
         validate_postcutover_access(profile)
 
 
-def test_bulk_candidate_validation_requires_every_planned_statement():
+def test_bulk_candidate_validation_requires_sets_and_deletes():
     activated = [
         {
             "old_interface": "ge-0/0/2",
             "new_interface": "ge-0/0/10",
             "statements": [
+                "delete interfaces ge-0/0/10 unit 0 family ethernet-switching vlan members TEMP-ACCESS",
                 'set interfaces ge-0/0/10 description "Desk A"',
                 "set interfaces ge-0/0/10 unit 0 family ethernet-switching vlan members v100",
             ],
@@ -177,6 +182,7 @@ def test_bulk_candidate_validation_requires_every_planned_statement():
             "old_interface": "ge-0/0/3",
             "new_interface": "ge-0/0/11",
             "statements": [
+                "delete interfaces ge-0/0/11 unit 0 family ethernet-switching vlan members TEMP-ACCESS",
                 "set interfaces ge-0/0/11 unit 0 family ethernet-switching vlan members v200",
             ],
         },
@@ -189,6 +195,14 @@ def test_bulk_candidate_validation_requires_every_planned_statement():
     ok, rows = _planned_config_rows(complete, activated)
     assert ok is True
     assert all(row["configuration_present"] for row in rows)
+
+    lingering_temp = complete + "\nset interfaces ge-0/0/11 unit 0 family ethernet-switching vlan members TEMP-ACCESS\n"
+    ok, rows = _planned_config_rows(lingering_temp, activated)
+    assert ok is False
+    failed = next(row for row in rows if row["new_interface"] == "ge-0/0/11")
+    assert failed["missing_statements"] == [
+        "delete interfaces ge-0/0/11 unit 0 family ethernet-switching vlan members TEMP-ACCESS"
+    ]
 
     incomplete = complete.replace(
         "set interfaces ge-0/0/11 unit 0 family ethernet-switching vlan members v200",
