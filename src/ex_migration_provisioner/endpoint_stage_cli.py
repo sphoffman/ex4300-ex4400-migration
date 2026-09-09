@@ -51,11 +51,6 @@ def _parser():
 
 
 def _bind_lab_identity_transport(profile, identity):
-    """Bind lab post-cutover reachability to the approved OOB identity address.
-
-    New identities use one authoritative OOB/connection address. Historical 1.0
-    identities that contain a distinct transport_address remain supported.
-    """
     if profile.get("environment") != "lab":
         return profile
     access = profile.get("postcutover_ex_access") or {}
@@ -134,7 +129,6 @@ def _explicit_vlan_members(config_text, interface):
 
 
 def _interfaces_config_set(dev, database):
-    """Retrieve all interface configuration in set form with one NETCONF RPC."""
     options = {"format": "set"}
     if database == "committed":
         options["database"] = "committed"
@@ -149,11 +143,6 @@ def _interfaces_config_set(dev, database):
 
 
 def _planned_config_rows(config_text, activated):
-    """Verify every intended endpoint state against one configuration snapshot.
-
-    ``set`` statements must be present. ``delete`` statements describe desired
-    absence, so the equivalent set-format statement must not be present.
-    """
     configured = {
         _canonical(line)
         for line in str(config_text or "").splitlines()
@@ -163,14 +152,7 @@ def _planned_config_rows(config_text, activated):
     hard_pass = True
     for item in activated:
         wanted = [_canonical(line) for line in item["statements"]]
-        missing = []
-        for line in wanted:
-            if line.startswith("delete "):
-                forbidden = "set " + line[len("delete "):]
-                if forbidden in configured:
-                    missing.append(line)
-            elif line not in configured:
-                missing.append(line)
+        missing = [line for line in wanted if line not in configured]
         config_ok = not missing
         hard_pass = hard_pass and config_ok
         rows.append({
@@ -188,20 +170,11 @@ def _validate_preload_port_config(dev, activated):
         interface = item["new_interface"]
         memberships = _explicit_vlan_members(text, interface)
         target = item["data_vlan_name"]
-        prestage = str(item.get("prestage_access_vlan_name") or "").strip()
-        allowed = {target}
-        if prestage:
-            allowed.add(prestage)
-        unexpected = [name for name in memberships if name not in allowed]
+        unexpected = [name for name in memberships if name != target]
         if unexpected:
             raise base.ProvisioningError(
                 "%s already has unexpected explicit VLAN membership(s): %s"
                 % (interface, ", ".join(unexpected))
-            )
-        if prestage and prestage not in memberships and target not in memberships:
-            raise base.ProvisioningError(
-                "%s is not on the approved pre-stage access VLAN %s and does not already have target VLAN %s"
-                % (interface, prestage, target)
             )
 
 
@@ -213,7 +186,7 @@ def _validate_loaded_candidate(dev, activated):
         for row in rows:
             missing.extend(row["missing_statements"])
         raise base.ProvisioningError(
-            "EX4400 candidate is missing %d intended endpoint state transition(s) after NETCONF load: %s"
+            "EX4400 candidate is missing %d intended endpoint statement(s) after NETCONF load: %s"
             % (len(missing), "; ".join(missing[:5]))
         )
     return rows
@@ -244,8 +217,6 @@ def _print_correlation(value):
                 ", ".join(supporting),
             )
         )
-        if item.get("prestage_access_vlan_name"):
-            print("      transition: remove %s" % item["prestage_access_vlan_name"])
         if item.get("description"):
             print("      description: %s" % item["description"])
     print("  Holds: %d" % len(correlation["holds"]))
@@ -330,11 +301,11 @@ def run(argv):
     management_vlan_id = int(variables.get("management_vlan_id"))
     voice_vlan_id = int(variables.get("voice_vlan_id"))
     recovery_vlan_id = int(variables.get("temporary_recovery_vlan_id"))
-    prestage_access_vlan_name = str(variables.get("prestage_access_vlan_name") or "").strip()
     prestage_access_vlan_id = variables.get("prestage_access_vlan_id")
-    if not prestage_access_vlan_name or prestage_access_vlan_id is None:
+    uplink_interfaces = variables.get("uplink_interfaces")
+    if prestage_access_vlan_id is None or not isinstance(uplink_interfaces, list) or not uplink_interfaces:
         raise base.ProvisioningError(
-            "selected pre-stage package predates the explicit pre-stage access VLAN; rerun prepare/render/run before endpoint activation"
+            "selected pre-stage package predates the default holding-VLAN/uplink model; rerun prepare/render/run before endpoint activation"
         )
     prestage_access_vlan_id = int(prestage_access_vlan_id)
     recovery_interface = str(variables.get("recovery_interface") or _recovery_interface(selected_identity["identity"]))
@@ -397,8 +368,8 @@ def run(argv):
             voice_vlan_id,
             recovery_vlan_id,
             observed_at=utc_now(),
-            prestage_access_vlan_name=prestage_access_vlan_name,
             prestage_access_vlan_id=prestage_access_vlan_id,
+            uplink_interfaces=uplink_interfaces,
         )
         value = build_correlation_artifact(
             args.migration_id,
@@ -448,9 +419,6 @@ def run(argv):
         payload = "\n".join(statements) + "\n"
         cu.load(payload, format="set", merge=True)
 
-        # Do not rely only on an RPC success or commit-check. Read the candidate
-        # back over NETCONF and prove that every intended endpoint state transition
-        # is present before an operator can approve the candidate.
         candidate_rows = _validate_loaded_candidate(dev, correlation["activated"])
         if cu.commit_check() is not True:
             raise base.ProvisioningError("EX4400 endpoint activation commit-check did not return PASS")
@@ -530,7 +498,7 @@ def run(argv):
                 "SSH_HOST_KEY_MATCH",
                 "EX4400_CHASSIS_IDENTITY_MATCH",
                 "PLANNED_ENDPOINT_CONFIGURATION_PRESENT",
-                "PRESTAGE_ACCESS_VLAN_REMOVED_FROM_ACTIVATED_PORTS",
+                "TARGET_DATA_VLAN_EXPLICITLY_ASSIGNED",
             ],
             "configuration": config_rows,
             "endpoint_evidence": endpoint_evidence,
