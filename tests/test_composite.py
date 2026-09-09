@@ -6,6 +6,14 @@ from ex_migration_analyzer.cli import _apply_composite_metadata
 
 
 def _snapshot(snapshot_id, completed_at, mac, interface="ge-0/0/2", vlan_id=100):
+    reconciliation = [
+        {"sample_index": index, "status": "RECONCILED"}
+        for index in range(3)
+    ]
+    sample_runs = [
+        {"sample_index": index, "commands": [], "mac_table_reconciliation": reconciliation[index]}
+        for index in range(3)
+    ]
     return {
         "schema_version": "1.4",
         "snapshot_id": snapshot_id,
@@ -35,7 +43,7 @@ def _snapshot(snapshot_id, completed_at, mac, interface="ge-0/0/2", vlan_id=100)
             "mgmt_junos_default_gateways": [],
             "snmp": {"name": None, "location": "lab", "engine_id": "10.100.163.30", "v3_configured": True},
         },
-        "collection_policy": {"samples": 3, "duration_seconds": 120, "mac_table_reconciliation": []},
+        "collection_policy": {"samples": 3, "duration_seconds": 120, "mac_table_reconciliation": reconciliation},
         "capabilities": {},
         "virtual_chassis": {"status": "collected"},
         "interfaces": [
@@ -80,7 +88,7 @@ def _snapshot(snapshot_id, completed_at, mac, interface="ge-0/0/2", vlan_id=100)
         "raw_artifacts": [],
         "warnings": [],
         "errors": [],
-        "sample_runs": [],
+        "sample_runs": sample_runs,
     }
 
 
