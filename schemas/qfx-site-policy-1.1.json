@@ -15,6 +15,7 @@
     "management_vlan",
     "voice_vlan",
     "temporary_recovery_vlan",
+    "prestage_access_vlan",
     "precutover_qfx_baseline",
     "esi",
     "validation"
@@ -69,6 +70,7 @@
     "management_vlan": {"$ref": "#/$defs/vlan"},
     "voice_vlan": {"$ref": "#/$defs/vlan"},
     "temporary_recovery_vlan": {"$ref": "#/$defs/vlan"},
+    "prestage_access_vlan": {"$ref": "#/$defs/vlan"},
     "precutover_qfx_baseline": {
       "type": "object",
       "required": ["required_vlan_ids", "lacp_mode", "force_up"],
