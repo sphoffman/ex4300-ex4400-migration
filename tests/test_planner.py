@@ -127,3 +127,18 @@ def test_standard_plan_approval_uses_one_prompt_and_audit_reason(tmp_path, monke
     assert action == "CREATED"
     assert len(prompts) == 1
     assert approval["reason"] == "Approved generated migration intent without modification"
+
+
+def test_planner_main_applies_configured_display_timezone(tmp_path, monkeypatch):
+    from ex_migration_planner import cli
+
+    seen = {}
+    monkeypatch.setattr(cli, "load_settings", lambda _path: {
+        "snapshot_root": str(tmp_path),
+        "display_timezone": "America/New_York",
+    })
+    monkeypatch.setattr(cli, "set_display_timezone", lambda value: seen.setdefault("timezone", value))
+    monkeypatch.setattr(cli, "accepted_analyses", lambda _root: [])
+
+    assert cli.main(["build", "sw1203"]) == 2
+    assert seen["timezone"] == "America/New_York"
