@@ -8,7 +8,6 @@ from .core import ProvisioningError
 from .port_state import classify_port_state, parse_terse_states
 
 
-_EDGE = re.compile(r"^ge-(?P<member>\d+)/0/(?P<port>\d+)$")
 _TRUNK_MODE = re.compile(
     r"(?m)^set interfaces (?P<if>\S+) unit 0 family ethernet-switching interface-mode trunk\s*$"
 )
@@ -152,15 +151,21 @@ def hardening_statements(
     unused_interfaces,
     used_interfaces,
     production_vlan_names,
+    voice_vlan_name,
+    recovery_vlan_name,
     uplink_interface="ae0",
     inactive_vlan_name="default",
 ):
     _require(production_vlan_names, "at least one approved production VLAN is required")
+    _require(voice_vlan_name, "voice VLAN name is required")
     statements = [
         "delete interfaces %s unit 0 family ethernet-switching vlan members all" % uplink_interface,
     ]
     for name in sorted(set(str(value) for value in production_vlan_names)):
-        _require(name not in ("default", "TEMP-RECOVERY"), "inactive/recovery VLAN cannot be an uplink production member")
+        _require(
+            name not in (inactive_vlan_name, recovery_vlan_name),
+            "inactive/recovery VLAN cannot be an uplink production member",
+        )
         statements.append(
             "set interfaces %s unit 0 family ethernet-switching vlan members %s"
             % (uplink_interface, name)
@@ -175,7 +180,9 @@ def hardening_statements(
     # narrowed to ports that are actually carrying confirmed endpoint intent.
     statements.append("delete switch-options voip interface edge_ports")
     for interface in sorted(set(used_interfaces)):
-        statements.append("set switch-options voip interface %s vlan voip" % interface)
+        statements.append(
+            "set switch-options voip interface %s vlan %s" % (interface, voice_vlan_name)
+        )
     return statements
 
 
@@ -185,6 +192,7 @@ def validate_final_hardening(
     used_interfaces,
     unused_interfaces,
     production_vlan_names,
+    voice_vlan_name,
     uplink_interface="ae0",
     inactive_vlan_name="default",
 ):
@@ -202,9 +210,9 @@ def validate_final_hardening(
         "inactive_vlan_not_on_uplink": (
             "set interfaces %s unit 0 family ethernet-switching vlan members %s" % (uplink_interface, inactive_vlan_name)
         ) not in lines,
-        "broad_voice_policy_removed": "set switch-options voip interface edge_ports vlan voip" not in lines,
+        "broad_voice_policy_removed": "set switch-options voip interface edge_ports vlan %s" % voice_vlan_name not in lines,
         "voice_policy_on_used_ports": all(
-            "set switch-options voip interface %s vlan voip" % interface in lines
+            "set switch-options voip interface %s vlan %s" % (interface, voice_vlan_name) in lines
             for interface in used_interfaces
         ),
     }
