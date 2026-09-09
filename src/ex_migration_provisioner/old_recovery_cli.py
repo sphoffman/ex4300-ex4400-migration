@@ -134,7 +134,7 @@ def _validate_existing_mgmt_default(config_text, gateway):
         )
 
 
-def _validate_recovery_config(dev, statements, master_defaults_before):
+def _validate_recovery_config(dev, statements, master_defaults_before, interface, expected_address):
     text = _configuration_set(dev)
     configured = {line.strip() for line in str(text).splitlines() if line.strip()}
     missing = [statement for statement in statements if statement not in configured]
@@ -142,6 +142,20 @@ def _validate_recovery_config(dev, statements, master_defaults_before):
         raise base.ProvisioningError(
             "old-switch recovery configuration is incomplete: %s" % "; ".join(missing)
         )
+
+    expected_vme = "set interfaces %s unit 0 family inet address %s" % (
+        interface,
+        str(ipaddress.ip_interface(str(expected_address))),
+    )
+    actual_vme = sorted(
+        line for line in configured if line.startswith("set interfaces %s " % interface)
+    )
+    if actual_vme != [expected_vme]:
+        raise base.ProvisioningError(
+            "%s recovery configuration is not authoritative: expected only %s; found %s"
+            % (interface, expected_vme, "; ".join(actual_vme) or "none")
+        )
+
     if _master_default_lines(text) != master_defaults_before:
         raise base.ProvisioningError(
             "master routing-table default route changed during old-switch recovery staging"
@@ -181,6 +195,7 @@ def run(argv):
     print("  OOB address inherited from identify: %s" % oob["recovery_address"])
     print("  mgmt_junos default inherited from identify: %s" % oob["gateway"])
     print("  Destination: vme.0 in %s" % MGMT_INSTANCE)
+    print("  VME policy: replace entire existing interface with approved recovery state")
     print("  Replacement EX4400 may still own %s before cutover." % oob["recovery_ip"])
     print("  Safety boundary: old/new OOB interfaces remain physically L2-isolated until the cable move.")
 
@@ -190,7 +205,10 @@ def run(argv):
         oob["recovery_address"],
         oob["gateway"],
     )
-    payload = "\n".join(statements) + "\n"
+    payload = "delete interfaces %s\n%s\n" % (
+        args.management_interface,
+        "\n".join(statements),
+    )
     username, password = base._credentials(args, "Old EX4300")
     source_fingerprint = base.ssh_host_key_fingerprint(source_transport, args.port)
 
@@ -225,8 +243,12 @@ def run(argv):
         _validate_existing_mgmt_default(pre_config, oob["gateway"])
 
         print("\nRequired recovery state")
+        print("  [authoritative reset] delete interfaces %s" % args.management_interface)
         for statement in statements:
-            state = "already present" if statement in pre_lines else "candidate addition"
+            if statement.startswith("set interfaces %s " % args.management_interface):
+                state = "authoritative set"
+            else:
+                state = "already present" if statement in pre_lines else "candidate addition"
             print("  [%s] %s" % (state, statement))
 
         cu = Config(dev)
@@ -242,7 +264,7 @@ def run(argv):
         print("\nOld EX4300 recovery intent")
         print("  Approved source hostname: %s" % expected_hostname)
         print("  Existing production management: %s (preserved)" % management_ip)
-        print("  Recovery interface: %s.0" % args.management_interface)
+        print("  Recovery interface: %s.0 (authoritatively replaced)" % args.management_interface)
         print("  Recovery routing instance: %s" % MGMT_INSTANCE)
         print("  Recovery address: %s" % oob["recovery_address"])
         print("  Recovery default: 0.0.0.0/0 -> %s (%s only)" % (oob["gateway"], MGMT_INSTANCE))
@@ -272,8 +294,14 @@ def run(argv):
             )
 
         if not candidate_diff:
-            print("  Recovery configuration is already present; validating committed state.")
-            _validate_recovery_config(dev, statements, master_defaults_before)
+            print("  Recovery configuration is already authoritative; validating committed state.")
+            _validate_recovery_config(
+                dev,
+                statements,
+                master_defaults_before,
+                args.management_interface,
+                oob["recovery_address"],
+            )
             transaction = new_transaction("")
             transaction["commit"] = {
                 "status": "ALREADY_PRESENT_VALIDATED",
@@ -288,6 +316,7 @@ def run(argv):
                     "APPROVED_SOURCE_HOSTNAME_MATCH",
                     "APPROVED_IDENTITY_OOB_LINEAGE_MATCH",
                     "MGMT_JUNOS_ENABLED",
+                    "VME_AUTHORITATIVE_RECOVERY_STATE",
                     "RECOVERY_CONFIGURATION_PRESENT",
                     "MGMT_JUNOS_DEFAULT_PRESENT",
                     "MASTER_DEFAULT_ROUTE_UNCHANGED",
@@ -322,7 +351,13 @@ def run(argv):
         transaction["commit"]["commit_confirmed_at"] = utc_now()
         persist_recovery_transaction(migration_root, transaction, candidate_diff)
 
-        _validate_recovery_config(dev, statements, master_defaults_before)
+        _validate_recovery_config(
+            dev,
+            statements,
+            master_defaults_before,
+            args.management_interface,
+            oob["recovery_address"],
+        )
         transaction["validation"] = {
             "result": "PASS",
             "validated_at": utc_now(),
@@ -331,6 +366,7 @@ def run(argv):
                 "APPROVED_SOURCE_HOSTNAME_MATCH",
                 "APPROVED_IDENTITY_OOB_LINEAGE_MATCH",
                 "MGMT_JUNOS_ENABLED",
+                "VME_AUTHORITATIVE_RECOVERY_STATE",
                 "RECOVERY_CONFIGURATION_PRESENT",
                 "MGMT_JUNOS_DEFAULT_PRESENT",
                 "MASTER_DEFAULT_ROUTE_UNCHANGED",
@@ -352,6 +388,7 @@ def run(argv):
         persist_recovery_transaction(migration_root, transaction, candidate_diff)
 
         print("\nOld-switch recovery pre-stage: PASS")
+        print("  VME configuration replaced with approved recovery state: yes")
         print("  Existing in-band management changed: no")
         print("  Master routing-table default changed: no")
         print("  Recovery path verified now: no (optional after cable move)")
