@@ -79,15 +79,65 @@ def qfx_transaction_candidates(migration_root):
     )
 
 
-def choose_qfx_transaction(migration_root, transaction_id=None):
+def _qfx_transaction_plan_digest(migration_root, transaction):
+    qfx_plan_id = str(transaction.get("qfx_plan_id") or "").strip()
+    _require(qfx_plan_id, "QFX transaction has no QFX VLAN plan ID")
+    directory = migration_root / "qfx-vlan-plans" / qfx_plan_id
+    path = directory / "plan.json"
+    _require(path.is_file(), "QFX transaction references a missing VLAN plan")
+    integrity = read_json(directory / "integrity.json")
+    _require(
+        integrity.get("plan.json") == sha256_file(path),
+        "QFX VLAN plan integrity validation failed",
+    )
+    plan = read_json(path)
+    _require(plan.get("migration_id") == migration_root.name, "QFX VLAN plan migration ID mismatch")
+    _require(plan.get("result") == "PASS", "QFX VLAN plan did not pass")
+    digest = str(plan.get("inputs", {}).get("migration_plan_digest") or "").strip()
+    _require(digest, "QFX VLAN plan has no migration-plan lineage")
+    return digest
+
+
+def choose_qfx_transaction(migration_root, transaction_id=None, approved_plan_digest=None):
     values = qfx_transaction_candidates(migration_root)
     if transaction_id:
         values = [
             item for item in values
             if item["transaction"].get("transaction_id") == transaction_id
         ]
+
+    if approved_plan_digest is not None:
+        approved_plan_digest = str(approved_plan_digest)
+        compatible = []
+        stale = []
+        for item in values:
+            try:
+                plan_digest = _qfx_transaction_plan_digest(
+                    migration_root,
+                    item["transaction"],
+                )
+            except (OSError, ValueError, ProvisioningError):
+                if transaction_id:
+                    raise
+                continue
+            if plan_digest == approved_plan_digest:
+                compatible.append(item)
+            else:
+                stale.append(item)
+        if transaction_id and stale and not compatible:
+            raise ProvisioningError(
+                "QFX transaction %s is bound to a different approved migration plan"
+                % transaction_id
+            )
+        values = compatible
+
     if not values:
         suffix = " %s" % transaction_id if transaction_id else ""
+        if approved_plan_digest is not None:
+            raise ProvisioningError(
+                "no integrity-valid committed-and-confirmed QFX transaction%s bound to the current approved migration plan was found"
+                % suffix
+            )
         raise ProvisioningError(
             "no integrity-valid committed-and-confirmed QFX transaction%s was found" % suffix
         )
