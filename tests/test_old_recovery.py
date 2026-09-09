@@ -10,24 +10,29 @@ from ex_migration_provisioner.old_recovery import (
 
 
 def test_recovery_statement_uses_vme_for_ex4300_vc():
-    assert recovery_statement("vme", "10.0.0.15/24") == (
-        "set interfaces vme unit 0 family inet address 10.0.0.15/24"
+    assert recovery_statement("vme", "10.255.3.18/24") == (
+        "set interfaces vme unit 0 family inet address 10.255.3.18/24"
     )
 
 
 def test_complete_recovery_intent_uses_mgmt_junos_only():
-    statements = recovery_statements("vme", "10.0.0.15/24", "10.0.0.2")
+    statements = recovery_statements("vme", "10.255.3.18/24", "10.0.0.2")
     assert statements == [
         "set system management-instance",
-        "set interfaces vme unit 0 family inet address 10.0.0.15/24",
+        "set interfaces vme unit 0 family inet address 10.255.3.18/24",
         "set routing-instances mgmt_junos routing-options static route 0.0.0.0/0 next-hop 10.0.0.2",
     ]
     assert not any(line.startswith("set routing-options static route") for line in statements)
 
 
-def test_recovery_gateway_must_be_on_bootstrap_subnet():
-    with pytest.raises(ProvisioningError, match="gateway is not on"):
-        recovery_statements("vme", "10.0.0.15/24", "192.0.2.1")
+def test_recovery_gateway_may_be_off_subnet_when_inherited_from_approved_identity():
+    statements = recovery_statements("vme", "10.255.3.18/24", "10.0.0.2")
+    assert statements[-1].endswith("next-hop 10.0.0.2")
+
+
+def test_recovery_gateway_cannot_equal_recovery_ip():
+    with pytest.raises(ProvisioningError, match="cannot equal"):
+        recovery_statements("vme", "10.255.3.18/24", "10.255.3.18")
 
 
 def test_recovery_transaction_models_pre_cutover_physical_isolation():
@@ -44,10 +49,10 @@ def test_recovery_transaction_models_pre_cutover_physical_isolation():
         "10.100.163.30",
         "10.100.163.30",
         "vme",
-        "10.0.0.15/24",
+        "10.255.3.18/24",
         "10.0.0.2",
         "SHA256:old",
-        "[edit interfaces vme]\n+ unit 0 family inet address 10.0.0.15/24;\n",
+        "[edit interfaces vme]\n+ unit 0 family inet address 10.255.3.18/24;\n",
         "2026-09-09T12:00:00Z",
         10,
         bootstrap_identity_id="identity123",
@@ -57,17 +62,19 @@ def test_recovery_transaction_models_pre_cutover_physical_isolation():
             "set routing-options static route 0.0.0.0/0 next-hop 10.100.163.1"
         ],
     )
-    assert tx["schema_version"] == "1.3"
+    assert tx["schema_version"] == "1.4"
     assert tx["recovery"]["interface"] == "vme"
     assert tx["recovery"]["routing_instance"] == "mgmt_junos"
-    assert tx["recovery"]["address"] == "10.0.0.15/24"
+    assert tx["recovery"]["address"] == "10.255.3.18/24"
     assert tx["recovery"]["gateway"] == "10.0.0.2"
-    assert tx["recovery"]["logical_address"] == "10.0.0.15"
+    assert tx["recovery"]["logical_address"] == "10.255.3.18"
+    assert tx["recovery"]["address_source"] == "APPROVED_REPLACEMENT_IDENTITY_OOB"
+    assert tx["recovery"]["gateway_source"] == "APPROVED_REPLACEMENT_IDENTITY_MGMT_JUNOS_DEFAULT"
     assert tx["source_identity"]["configured_hostname"] == "home1-ex4300-vc-fd-sw1203"
     assert tx["inputs"]["bootstrap_identity_id"] == "identity123"
-    assert tx["safety"]["replacement_may_still_own_bootstrap_ip_before_cutover"] is True
-    assert tx["safety"]["duplicate_bootstrap_ip_requires_physical_l2_isolation_until_cable_move"] is True
-    assert tx["safety"]["post_cable_recovery_verification_required"] is True
+    assert tx["safety"]["replacement_may_still_own_oob_ip_before_cutover"] is True
+    assert tx["safety"]["duplicate_oob_ip_requires_physical_l2_isolation_until_cable_move"] is True
+    assert tx["safety"]["post_cable_recovery_verification_optional"] is True
     assert tx["validation"]["recovery_path_verified"] is False
     assert tx["commit"]["status"] == "APPROVED_PENDING_COMMIT"
 
