@@ -20,6 +20,9 @@ _ACCESS_MEMBER = re.compile(
 _VOICE = re.compile(
     r"(?m)^set switch-options voip interface (?P<if>\S+) vlan (?P<vlan>\S+)\s*$"
 )
+_EDGE_RANGE = re.compile(
+    r'(?m)^set interfaces interface-range edge_ports member "(?P<member>[^"]+)"\s*$'
+)
 
 
 def _require(condition, message):
@@ -27,15 +30,152 @@ def _require(condition, message):
         raise ProvisioningError(message)
 
 
-def edge_interfaces(member_ids, uplink_interfaces=None):
+def _expand_numeric_component(value):
+    text = str(value)
+    if text.isdigit():
+        return [int(text)]
+    match = re.fullmatch(r"\[(\d+)-(\d+)\]", text)
+    _require(match is not None, "unsupported Junos interface-range numeric component %r" % text)
+    low, high = int(match.group(1)), int(match.group(2))
+    _require(low <= high, "invalid descending Junos interface-range component %r" % text)
+    return list(range(low, high + 1))
+
+
+def edge_range_expression(config_text):
+    values = [match.group("member") for match in _EDGE_RANGE.finditer(str(config_text or ""))]
+    _require(len(values) == 1, "live EX configuration must contain exactly one quoted edge_ports member expression")
+    return values[0]
+
+
+def expand_edge_range(expression, member_ids=None):
+    match = re.fullmatch(
+        r"(?P<media>[a-z]+)-(?P<member>\d+|\[\d+-\d+\])/"
+        r"(?P<pic>\d+|\[\d+-\d+\])/(?P<port>\d+|\[\d+-\d+\])",
+        str(expression),
+    )
+    _require(match is not None, "unsupported edge_ports Junos interface-range expression %r" % expression)
+    _require(match.group("media") == "ge", "cleanup currently supports GE edge_ports expressions only")
+    members = _expand_numeric_component(match.group("member"))
+    pics = _expand_numeric_component(match.group("pic"))
+    ports = _expand_numeric_component(match.group("port"))
+    if member_ids is not None:
+        approved_members = {int(value) for value in member_ids}
+        members = [value for value in members if value in approved_members]
+        _require(members, "edge_ports expression has no interfaces on the approved VC members")
+    return [
+        "%s-%d/%d/%d" % (match.group("media"), member, pic, port)
+        for member in members
+        for pic in pics
+        for port in ports
+    ]
+
+
+def edge_interfaces(config_text, member_ids, uplink_interfaces=None):
+    expression = edge_range_expression(config_text)
+    values = expand_edge_range(expression, member_ids)
     excluded = {str(value) for value in (uplink_interfaces or [])}
-    values = []
-    for member in sorted(set(int(value) for value in member_ids)):
-        for port in range(48):
-            name = "ge-%d/0/%d" % (member, port)
-            if name not in excluded:
-                values.append(name)
+    overlap = sorted(set(values) & excluded)
+    _require(
+        not overlap,
+        "template-owned edge_ports range overlaps approved AE uplink interface(s): %s"
+        % ", ".join(overlap),
+    )
     return values
+
+
+def final_production_vlan_names(configured_vlans, management_vlan_id, required_qfx_vlan_ids):
+    by_id = {}
+    for item in configured_vlans or []:
+        vlan_id = item.get("vlan_id")
+        name = str(item.get("name") or "")
+        if vlan_id is None or not name:
+            continue
+        vlan_id = int(vlan_id)
+        _require(vlan_id not in by_id, "configured VLAN inventory contains duplicate VLAN ID %s" % vlan_id)
+        by_id[vlan_id] = name
+    required = {int(value) for value in (required_qfx_vlan_ids or [])}
+    required.add(int(management_vlan_id))
+    missing = sorted(required - set(by_id))
+    _require(
+        not missing,
+        "current QFX-plan VLAN lineage cannot be resolved in the approved EX VLAN inventory: %s"
+        % ", ".join(str(value) for value in missing),
+    )
+    return [by_id[vlan_id] for vlan_id in sorted(required)]
+
+
+def stale_vlan_cleanup(config_text, mac_table_text, configured_vlans, keep_vlan_ids, observed_at=None):
+    lines = [line.strip() for line in str(config_text or "").splitlines() if line.strip()]
+    dynamic_ids = set()
+    for row in parse_mac_table_text(
+        mac_table_text or "",
+        observed_at,
+        "final-access-hardening-vlan-prune",
+    ):
+        if row.mac_type == "dynamic" and getattr(row, "vlan", None) is not None:
+            vlan_id = getattr(row.vlan, "vlan_id", None)
+            if vlan_id is not None:
+                dynamic_ids.add(int(vlan_id))
+
+    keep = {int(value) for value in (keep_vlan_ids or [])}
+    delete = []
+    preserve = []
+    for item in sorted(
+        (dict(value) for value in (configured_vlans or []) if value.get("vlan_id") is not None),
+        key=lambda value: int(value["vlan_id"]),
+    ):
+        name = str(item.get("name") or "")
+        vlan_id = int(item["vlan_id"])
+        classification = str(item.get("classification") or "")
+        if vlan_id in keep:
+            continue
+        if classification != "data":
+            preserve.append({
+                "name": name,
+                "vlan_id": vlan_id,
+                "reason": "NON_DATA_VLAN",
+                "references": [],
+            })
+            continue
+
+        own_prefix = "set vlans %s " % name
+        external = sorted(
+            line for line in lines
+            if not line.startswith(own_prefix)
+            and (
+                re.search(r"(^|\s)%s(?:\s|$)" % re.escape(name), line)
+                or re.search(
+                    r"family ethernet-switching vlan members %s(?:\s|$)" % vlan_id,
+                    line,
+                )
+            )
+        )
+        l3 = sorted(
+            line for line in lines
+            if line.startswith(own_prefix + "l3-interface ")
+        )
+        reasons = []
+        if external:
+            reasons.append("EXTERNAL_CONFIGURATION_REFERENCE")
+        if l3:
+            reasons.append("L3_INTERFACE_PRESENT")
+        if vlan_id in dynamic_ids:
+            reasons.append("DYNAMIC_MAC_PRESENT")
+        if reasons:
+            preserve.append({
+                "name": name,
+                "vlan_id": vlan_id,
+                "reason": "+".join(reasons),
+                "references": external + l3,
+            })
+        else:
+            delete.append({
+                "name": name,
+                "vlan_id": vlan_id,
+                "reason": "PROVEN_UNUSED_DATA_VLAN",
+                "references": [],
+            })
+    return {"delete": delete, "preserve": preserve}
 
 
 def current_port_states(terse_text, mac_table_text, interfaces, observed_at=None):
@@ -99,9 +239,6 @@ def classify_final_ports(plan, live_completed_by_old, current_states, recovery_i
         elif completed_old:
             disposition = "USED_KEEP_ENABLED"
             reason = "CONFIRMED_ENDPOINT_MAPPING"
-        elif interface == recovery_interface:
-            disposition = "UNUSED_DISABLE"
-            reason = "RECOVERY_PORT_RETIRED_AT_CLEANUP"
         elif same_position_intent and same_position_intent.get("planned_action") == "CORRELATE_AFTER_CABLE_MOVE":
             disposition = "BLOCKED"
             reason = "APPROVED_ENDPOINT_INTENT_NOT_COMPLETED"
@@ -110,10 +247,24 @@ def classify_final_ports(plan, live_completed_by_old, current_states, recovery_i
             reason = "APPROVED_ENDPOINT_INTENT_REQUIRES_OPERATOR_RESOLUTION"
         elif observed["state"] in ("ACTIVE_MAC", "UP_SILENT"):
             disposition = "BLOCKED"
-            reason = "UNMAPPED_PORT_CURRENTLY_ACTIVE" if observed["state"] == "ACTIVE_MAC" else "UNMAPPED_PORT_UP_SILENT"
+            if interface == recovery_interface:
+                reason = (
+                    "RECOVERY_PORT_CURRENTLY_ACTIVE"
+                    if observed["state"] == "ACTIVE_MAC"
+                    else "RECOVERY_PORT_UP_SILENT"
+                )
+            else:
+                reason = (
+                    "UNMAPPED_PORT_CURRENTLY_ACTIVE"
+                    if observed["state"] == "ACTIVE_MAC"
+                    else "UNMAPPED_PORT_UP_SILENT"
+                )
         elif observed["state"] == "NOT_OBSERVED":
             disposition = "BLOCKED"
             reason = "CONFIGURED_EDGE_PORT_NOT_OBSERVED"
+        elif interface == recovery_interface:
+            disposition = "UNUSED_DISABLE"
+            reason = "RECOVERY_PORT_PROVEN_INACTIVE_AT_CLEANUP"
         else:
             disposition = "UNUSED_DISABLE"
             if same_position_intent and same_position_intent.get("planned_action") == "LEAVE_TEMPLATE_DEFAULT":
@@ -183,10 +334,12 @@ def validate_pre_hardening_config(
     trunks = trunk_inventory(config_text)
     memberships = explicit_access_memberships(config_text)
     voice = voice_inventory(config_text)
+    edge_expression = edge_range_expression(config_text)
     checks = {
         "only_expected_access_uplink_trunk": trunks["trunks"] == [uplink_interface],
         "uplink_membership_exactly_all": trunks["memberships"].get(uplink_interface) == ["all"],
         "voice_policy_exactly_broad_edge_range": voice == [{"interface": "edge_ports", "vlan": voice_vlan_name}],
+        "template_owned_edge_range_present": bool(edge_expression),
     }
     unexpected = []
     for row in classification.get("unused", []):
@@ -205,6 +358,7 @@ def validate_pre_hardening_config(
     checks["unused_ports_have_no_unexpected_explicit_vlan_membership"] = not unexpected
     return {
         "checks": checks,
+        "edge_ports_expression": edge_expression,
         "unexpected_unused_port_memberships": unexpected,
         "result": "PASS" if all(checks.values()) else "FAIL",
     }
@@ -217,6 +371,7 @@ def hardening_statements(
     production_vlan_names,
     voice_vlan_name,
     recovery_vlan_name,
+    stale_vlan_names=None,
     uplink_interface="ae0",
     inactive_vlan_name="default",
 ):
@@ -224,6 +379,9 @@ def hardening_statements(
     _require(voice_vlan_name, "voice VLAN name is required")
     lines = {line.strip() for line in str(config_text or "").splitlines() if line.strip()}
     statements = []
+
+    broad = "set switch-options voip interface edge_ports vlan %s" % voice_vlan_name
+    _require(broad in lines, "broad edge_ports voice policy is missing before cleanup")
 
     remove_all = "delete interfaces %s unit 0 family ethernet-switching vlan members all" % uplink_interface
     if "set " + remove_all[len("delete "):] in lines:
@@ -251,13 +409,17 @@ def hardening_statements(
         if inactive not in lines:
             statements.append(inactive)
 
-    broad = "set switch-options voip interface edge_ports vlan %s" % voice_vlan_name
-    if broad in lines:
-        statements.append("delete " + broad[len("set "):])
-    for interface in sorted(set(used_interfaces)):
-        statement = "set switch-options voip interface %s vlan %s" % (interface, voice_vlan_name)
-        if statement not in lines:
-            statements.append(statement)
+    for name in sorted(set(str(value) for value in (stale_vlan_names or []))):
+        _require(
+            name not in set(production_vlan_names) | {inactive_vlan_name, recovery_vlan_name, voice_vlan_name},
+            "protected VLAN cannot be deleted during access hardening",
+        )
+        owned = sorted(
+            (line for line in lines if line.startswith("set vlans %s " % name)),
+            key=lambda line: (-len(line.split()), line),
+        )
+        for line in owned:
+            statements.append("delete " + line[len("set "):])
     return statements
 
 
@@ -268,27 +430,28 @@ def validate_final_hardening(
     unused_interfaces,
     production_vlan_names,
     voice_vlan_name,
+    deleted_vlan_names=None,
+    expected_edge_expression=None,
     uplink_interface="ae0",
     inactive_vlan_name="default",
 ):
     lines = {line.strip() for line in str(config_text or "").splitlines() if line.strip()}
     trunks = trunk_inventory(config_text)
+    expected_members = sorted(set(str(value) for value in production_vlan_names))
+    voice = voice_inventory(config_text)
+    current_edge_expression = edge_range_expression(config_text)
     checks = {
         "only_expected_access_uplink_trunk": trunks["trunks"] == [uplink_interface],
         "uplink_all_membership_absent": (
             "set interfaces %s unit 0 family ethernet-switching vlan members all" % uplink_interface
         ) not in lines,
-        "all_approved_production_vlans_on_uplink": all(
-            "set interfaces %s unit 0 family ethernet-switching vlan members %s" % (uplink_interface, name) in lines
-            for name in production_vlan_names
-        ),
+        "uplink_membership_exactly_approved": trunks["memberships"].get(uplink_interface) == expected_members,
         "inactive_vlan_not_on_uplink": (
             "set interfaces %s unit 0 family ethernet-switching vlan members %s" % (uplink_interface, inactive_vlan_name)
         ) not in lines,
-        "broad_voice_policy_removed": "set switch-options voip interface edge_ports vlan %s" % voice_vlan_name not in lines,
-        "voice_policy_on_used_ports": all(
-            "set switch-options voip interface %s vlan %s" % (interface, voice_vlan_name) in lines
-            for interface in used_interfaces
+        "broad_voice_policy_preserved": voice == [{"interface": "edge_ports", "vlan": voice_vlan_name}],
+        "template_owned_edge_range_preserved": (
+            expected_edge_expression is None or current_edge_expression == expected_edge_expression
         ),
     }
     for interface in sorted(set(unused_interfaces)):
@@ -298,6 +461,10 @@ def validate_final_hardening(
         ) in lines
     for interface in sorted(set(used_interfaces)):
         checks["%s_not_disabled" % interface] = "set interfaces %s disable" % interface not in lines
+    for name in sorted(set(str(value) for value in (deleted_vlan_names or []))):
+        checks["vlan_%s_deleted" % name] = not any(
+            line.startswith("set vlans %s " % name) for line in lines
+        )
     return {
         "checks": checks,
         "result": "PASS" if all(checks.values()) else "FAIL",
