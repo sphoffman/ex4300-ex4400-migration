@@ -57,7 +57,10 @@ RECOVERY WINDOW
 TEMP-RECOVERY CLEANUP
 ```
 
-The final TEMP-RECOVERY cleanup phase is intentionally still pending implementation.
+The final cleanup is a guarded terminal migration transaction. Plan-only mode performs
+all live read-only prechecks and creates an immutable cleanup plan without writing any
+device. Live cleanup is currently restricted to lab policy until the end-to-end lab
+transaction has been validated.
 
 ### 1. Discover the existing EX4300
 
@@ -527,5 +530,59 @@ During the recovery window:
   `mgmt_junos` after the recovery cable is moved;
 - TEMP-RECOVERY VLAN 3999 remains present until cleanup is explicitly authorized.
 
-Automation for removing the temporary old-switch recovery address and removing the
-TEMP-RECOVERY overlay from the replacement is still pending.
+Run the finalization precheck first:
+
+```bash
+py -m ex_migration_provisioner.cli cleanup <migration-id> --plan-only
+```
+
+Plan-only mode connects read-only to the replacement EX4400 and both QFXs, revalidates
+current approved-plan lineage, and creates an immutable cleanup plan. It performs no
+configuration writes.
+
+The cleanup precheck and plan:
+
+- require the selected QFX staging transaction to be integrity-valid,
+  committed-and-confirmed, validation `PASS`, and bound to the current approved
+  migration plan;
+- reconcile all current-plan endpoint completions against the current EX4400 config
+  and reject unresolved endpoint/operator holds;
+- use the live template-owned `edge_ports` interface-range expression as the
+  authoritative access-port universe and expand Junos `[low-high]` components as
+  numeric ranges;
+- block on unmapped `ACTIVE_MAC` or `UP_SILENT` ports, an active/silent recovery port,
+  missing observations, or incomplete approved endpoint intent;
+- preserve the broad `switch-options voip interface edge_ports` policy; unused ports
+  are controlled by administrative disable rather than per-port voice-policy churn;
+- disable each proven-unused edge port individually and explicitly place it into the
+  renumbered Junos `default` VLAN (TEMP-ACCESS/3998);
+- replace `ae0 vlan members all` with exactly the management VLAN plus the production
+  VLANs required by the current-plan QFX VLAN lineage;
+- keep TEMP-ACCESS/default VLAN 3998 local to the EX and exclude it from `ae0`;
+- identify configured data VLANs that are outside the final QFX-derived set and delete
+  them only when the live EX proves they have no external configuration reference, no
+  L3 interface, and no dynamic MAC; otherwise they are preserved and reported;
+- remove TEMP-RECOVERY membership from the replacement recovery port and delete the EX
+  TEMP-RECOVERY VLAN definition;
+- remove TEMP-RECOVERY membership only from this migration's discovered QFX AE on both
+  QFXs while preserving the global QFX TEMP-RECOVERY VLAN definition;
+- leave the old EX4300 `vme.0` / `mgmt_junos` recovery configuration untouched.
+
+Live cleanup uses one explicit operator approval after candidate diffs and commit
+checks are displayed. It locks all three devices, requires clean candidates, uses
+commit-confirmed on the EX4400 and both QFXs, validates endpoint state, exact final EX
+trunk membership, disabled inactive ports, recovery removal, QFX topology/VLAN state,
+and preserved global recovery definition, then performs final confirmation only after
+all validations pass. Failure triggers coordinated rollback or compensating rollback.
+
+Cleanup plan and transaction records are immutable and digest-bound under:
+
+```text
+snapshots/migrations/<migration-id>/recovery-cleanup-plans/<cleanup-plan-id>/
+snapshots/migrations/<migration-id>/recovery-cleanup-transactions/<transaction-id>/
+```
+
+Live cleanup writes remain `LAB_ONLY` until the cleanup transaction has been validated
+end-to-end in the lab. Production can use plan-only/read-only validation first. Old
+EX4300 VME recovery retirement is intentionally a separate future decommission action
+and is never coupled automatically to TEMP-RECOVERY VLAN cleanup.
