@@ -3,6 +3,7 @@ import pytest
 from ex_migration_provisioner.core import ProvisioningError
 from ex_migration_provisioner.endpoint_stage import (
     correlate_endpoint_intent,
+    detect_silent_up_ports,
     resolve_postcutover_access,
     validate_postcutover_access,
 )
@@ -10,6 +11,7 @@ from ex_migration_provisioner.endpoint_stage_cli import (
     _interface_up_from_terse,
     _interfaces_config_set,
     _planned_config_rows,
+    _reconcile_completed_state,
 )
 
 
@@ -93,6 +95,55 @@ def test_unambiguous_endpoint_correlation_and_silent_hold():
     ]
 
 
+def test_rerun_skips_live_completed_old_interface():
+    text = "".join([
+        _mac("02:00:00:00:00:01", "v100", 100, "ge-0/0/10"),
+        _mac("02:00:00:00:00:03", "default", 3998, "ge-0/0/11"),
+    ])
+    completed = {
+        "ge-0/0/2": {
+            "old_interface": "ge-0/0/2",
+            "new_interface": "ge-0/0/10",
+            "data_vlan_id": 100,
+            "data_vlan_name": "v100",
+            "statements": [
+                'set interfaces ge-0/0/10 description "Desk A"',
+                "set interfaces ge-0/0/10 unit 0 family ethernet-switching vlan members v100",
+            ],
+        }
+    }
+    value = correlate_endpoint_intent(
+        _plan(), text, "ge-0/0/47", 163, 1111, 3999,
+        prestage_access_vlan_id=3998,
+        uplink_interfaces=["ge-0/0/0", "ge-0/0/1"],
+        completed=completed,
+    )
+    assert [row["old_interface"] for row in value["completed"]] == ["ge-0/0/2"]
+    assert [(row["old_interface"], row["new_interface"]) for row in value["activated"]] == [
+        ("ge-0/0/3", "ge-0/0/11")
+    ]
+
+
+def test_unresolved_intent_cannot_claim_completed_new_port():
+    plan = _plan()
+    plan["port_intents"][1]["endpoint_macs"] = ["02:00:00:00:00:01"]
+    completed = {
+        "ge-0/0/2": {
+            "old_interface": "ge-0/0/2",
+            "new_interface": "ge-0/0/10",
+            "statements": ["set interfaces ge-0/0/10 unit 0 family ethernet-switching vlan members v100"],
+        }
+    }
+    text = _mac("02:00:00:00:00:01", "v100", 100, "ge-0/0/10")
+    value = correlate_endpoint_intent(
+        plan, text, "ge-0/0/47", 163, 1111, 3999,
+        completed=completed,
+    )
+    desk_b = next(row for row in value["holds"] if row["old_interface"] == "ge-0/0/3")
+    assert desk_b["reason"] == "NEW_PORT_ALREADY_ASSIGNED_TO_COMPLETED_INTENT"
+    assert desk_b["completed_old_interface"] == "ge-0/0/2"
+
+
 def test_recovery_port_is_never_auto_correlated():
     text = _mac("02:00:00:00:00:01", "default", 3998, "ge-0/0/47")
     value = correlate_endpoint_intent(
@@ -134,6 +185,61 @@ def test_multiple_old_intents_cannot_claim_same_new_port():
         "ge-0/0/2": "MULTIPLE_APPROVED_PORT_INTENTS_MAP_TO_SAME_NEW_PORT",
         "ge-0/0/3": "MULTIPLE_APPROVED_PORT_INTENTS_MAP_TO_SAME_NEW_PORT",
     }
+
+
+def test_silent_up_port_detection_excludes_uplinks_recovery_and_ports_with_macs():
+    terse = "\n".join([
+        "ge-0/0/0               up    up",
+        "ge-0/0/10              up    up",
+        "ge-0/0/11              up    up",
+        "ge-0/0/12              up    down",
+        "ge-0/0/47              up    up",
+    ])
+    mac_text = _mac("02:00:00:00:00:01", "default", 3998, "ge-0/0/10")
+    silent = detect_silent_up_ports(
+        terse,
+        mac_text,
+        "ge-0/0/47",
+        uplink_interfaces=["ge-0/0/0", "ge-0/0/1"],
+        completed_by_new={"ge-0/0/11": "ge-0/0/4"},
+    )
+    assert silent == [{
+        "interface": "ge-0/0/11",
+        "completed_old_interface": "ge-0/0/4",
+    }]
+
+
+def test_historical_completion_is_reopened_when_live_config_no_longer_contains_it():
+    row = {
+        "old_interface": "ge-0/0/2",
+        "new_interface": "ge-0/0/10",
+        "transaction_id": "abc123",
+        "statements": [
+            'set interfaces ge-0/0/10 description "Desk A"',
+            "set interfaces ge-0/0/10 unit 0 family ethernet-switching vlan members v100",
+        ],
+    }
+    historical = {
+        "by_old": {"ge-0/0/2": row},
+        "by_new": {"ge-0/0/10": "ge-0/0/2"},
+        "transaction_ids": ["abc123"],
+    }
+    complete = "\n".join(row["statements"])
+    live = _reconcile_completed_state(complete, historical)
+    assert list(live["by_old"]) == ["ge-0/0/2"]
+    assert live["stale"] == []
+
+    stale = _reconcile_completed_state(
+        "set interfaces ge-0/0/10 unit 0 family ethernet-switching vlan members default\n",
+        historical,
+    )
+    assert stale["by_old"] == {}
+    assert stale["stale"] == [{
+        "old_interface": "ge-0/0/2",
+        "new_interface": "ge-0/0/10",
+        "transaction_id": "abc123",
+        "reason": "HISTORICAL_COMPLETION_NOT_PRESENT_IN_CURRENT_CONFIG",
+    }]
 
 
 def test_lab_transport_override_and_production_direct_management():
