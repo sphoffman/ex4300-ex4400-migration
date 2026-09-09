@@ -11,18 +11,21 @@ def _sorted_dicts(values):
 
 
 def _device_state(snapshot):
-    """Return stable observed logical-device identity.
+    """Return the logical old-switch identity used across discovery collections.
 
-    PyEZ's top-level serialnumber can follow the current VC master/RE, so it is
-    intentionally compared separately as review evidence rather than as a hard
-    identity invariant.
+    The migration tracks a logical closet switch.  VC mastership can change the
+    top-level PyEZ serial and observed fact hostname behavior can vary by
+    platform, so the configured hostname is the canonical identity invariant.
     """
     device = snapshot.get("device", {})
     return {
-        "hostname": device.get("hostname"),
-        "model": device.get("model"),
-        "configured_hostname": device.get("configured_hostname"),
+        "configured_hostname": device.get("configured_hostname") or device.get("hostname"),
     }
+
+
+def _device_model_state(snapshot):
+    device = snapshot.get("device", {})
+    return {"model": device.get("model")}
 
 
 def _device_serial_state(snapshot):
@@ -219,18 +222,21 @@ def build_composite_evidence(candidates, policy, policy_digest):
     if len(device_variants) > 1:
         findings.append(_finding(
             "BLOCKER", "DEVICE_IDENTITY_CHANGED", "device",
-            "stable observed old-switch identity changed across eligible discovery collections",
+            "configured old-switch hostname changed across eligible discovery collections",
             device_variants,
+        ))
+
+    model_variants = _variants(eligible, _device_model_state)
+    consistency["device_model"] = "CONSISTENT" if len(model_variants) == 1 else "CHANGED"
+    if len(model_variants) > 1:
+        findings.append(_finding(
+            "REVIEW", "DEVICE_MODEL_CHANGED", "device-model",
+            "reported device model changed across eligible discovery collections; latest eligible model is used as current platform state",
+            model_variants,
         ))
 
     serial_variants = _variants(eligible, _device_serial_state)
     consistency["device_serial_observation"] = "CONSISTENT" if len(serial_variants) == 1 else "CHANGED"
-    if len(serial_variants) > 1:
-        findings.append(_finding(
-            "REVIEW", "DEVICE_SERIAL_OBSERVATION_CHANGED", "device-serial",
-            "top-level reported device serial changed across eligible discovery collections; on a Virtual Chassis this may reflect RE/mastership or member hardware change",
-            serial_variants,
-        ))
 
     management_variants = _variants(eligible, _management_state)
     consistency["management"] = "CONSISTENT" if len(management_variants) == 1 else "CONFLICT"
@@ -302,6 +308,10 @@ def build_composite_evidence(candidates, policy, policy_digest):
         "current_configuration_source_snapshot_id": latest["snapshot"]["snapshot_id"],
         "configuration_consistency": consistency,
         "configuration_findings": findings,
+        "hardware_observations": {
+            "model_variants": model_variants,
+            "serial_variants": serial_variants,
+        },
         "endpoint_catalog": endpoint_catalog,
         "endpoint_statistics": {
             "unique_macs": len(mac_ports),
