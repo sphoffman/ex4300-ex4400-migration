@@ -90,6 +90,9 @@ def classify_final_ports(plan, live_completed_by_old, current_states, recovery_i
         if completed_old:
             disposition = "USED_KEEP_ENABLED"
             reason = "CONFIRMED_ENDPOINT_MAPPING"
+        elif interface == recovery_interface:
+            disposition = "UNUSED_DISABLE"
+            reason = "RECOVERY_PORT_RETIRED_AT_CLEANUP"
         elif same_position_intent and same_position_intent.get("planned_action") == "CORRELATE_AFTER_CABLE_MOVE":
             disposition = "BLOCKED"
             reason = "APPROVED_ENDPOINT_INTENT_NOT_COMPLETED"
@@ -99,14 +102,12 @@ def classify_final_ports(plan, live_completed_by_old, current_states, recovery_i
         elif observed["state"] in ("ACTIVE_MAC", "UP_SILENT"):
             disposition = "BLOCKED"
             reason = "UNMAPPED_PORT_CURRENTLY_ACTIVE" if observed["state"] == "ACTIVE_MAC" else "UNMAPPED_PORT_UP_SILENT"
-        elif observed["state"] == "NOT_OBSERVED" and interface != recovery_interface:
+        elif observed["state"] == "NOT_OBSERVED":
             disposition = "BLOCKED"
             reason = "CONFIGURED_EDGE_PORT_NOT_OBSERVED"
         else:
             disposition = "UNUSED_DISABLE"
-            if interface == recovery_interface:
-                reason = "RECOVERY_PORT_RETIRED_AT_CLEANUP"
-            elif same_position_intent and same_position_intent.get("planned_action") == "LEAVE_TEMPLATE_DEFAULT":
+            if same_position_intent and same_position_intent.get("planned_action") == "LEAVE_TEMPLATE_DEFAULT":
                 reason = "APPROVED_UNUSED_PORT_INTENT"
             else:
                 reason = "NO_APPROVED_ENDPOINT_INTENT_AND_NO_CURRENT_ACTIVITY"
@@ -176,8 +177,6 @@ def hardening_statements(
             "set interfaces %s unit 0 family ethernet-switching vlan members %s"
             % (interface, inactive_vlan_name),
         ])
-    # The pre-stage voice policy is intentionally broad. At finalization it is
-    # narrowed to ports that are actually carrying confirmed endpoint intent.
     statements.append("delete switch-options voip interface edge_ports")
     for interface in sorted(set(used_interfaces)):
         statements.append(
