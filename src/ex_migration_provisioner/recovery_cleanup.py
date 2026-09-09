@@ -127,6 +127,8 @@ def qfx_vlan_ids(ae_config_text, vlan_config_text, ae_interface):
         "tokens": sorted(set(tokens)),
         "vlan_ids": sorted(set(ids)),
         "unresolved": sorted(set(unresolved)),
+        "definitions": dict(sorted(definitions.items())),
+        "ambiguous_definitions": sorted(ambiguous),
     }
 
 
@@ -137,6 +139,7 @@ def validate_pre_cleanup(
     qfx_states,
     management_vlan_id,
     recovery_vlan_id,
+    recovery_vlan_name,
     required_production_vlan_ids,
     access_hardening,
 ):
@@ -162,6 +165,9 @@ def validate_pre_cleanup(
         checks["%s_vlan_membership_resolved" % role] = not state.get("unresolved")
         checks["%s_required_vlans_present" % role] = required_qfx <= ids
         checks["%s_recovery_vlan_present" % role] = int(recovery_vlan_id) in ids
+        checks["%s_recovery_vlan_definition_present" % role] = (
+            state.get("definitions", {}).get(recovery_vlan_name) == int(recovery_vlan_id)
+        )
         checks["%s_topology_validation_pass" % role] = state.get("topology_result") == "PASS"
     return {
         "checks": checks,
@@ -179,6 +185,7 @@ def validate_post_cleanup(
     qfx_states,
     management_vlan_id,
     recovery_vlan_id,
+    recovery_vlan_name,
     required_production_vlan_ids,
     access_hardening_validation,
 ):
@@ -203,6 +210,9 @@ def validate_post_cleanup(
         checks["%s_vlan_membership_resolved" % role] = not state.get("unresolved")
         checks["%s_required_production_and_management_preserved" % role] = required_qfx <= ids
         checks["%s_recovery_vlan_absent" % role] = int(recovery_vlan_id) not in ids
+        checks["%s_recovery_vlan_definition_preserved" % role] = (
+            state.get("definitions", {}).get(recovery_vlan_name) == int(recovery_vlan_id)
+        )
         checks["%s_topology_validation_pass" % role] = state.get("topology_result") == "PASS"
     return {
         "checks": checks,
