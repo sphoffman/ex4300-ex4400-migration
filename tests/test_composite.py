@@ -160,3 +160,32 @@ def test_same_mac_on_different_old_ports_becomes_composite_review():
     assert result["result"] == "REVIEW_REQUIRED"
     assert any(item["code"] == "MAC_MULTI_PORT" for item in result["findings"])
     assert composite["evidence"]["endpoint_statistics"]["conflicting_macs"] == 1
+
+
+def test_composite_carries_link_down_state_as_info_not_review():
+    snapshot = _snapshot("11111111", "2026-09-09T01:00:00Z", "02:00:00:00:00:01", "ge-0/0/2")
+    snapshot["interfaces"][0]["admin_status"] = "up"
+    snapshot["interfaces"][1]["admin_status"] = "up"
+    snapshot["interfaces"][1]["oper_status"] = "down"
+    snapshot["interfaces"][1]["untagged_vlan"] = None
+
+    composite = build_composite_evidence([_candidate(snapshot)], _policy(), "p" * 64)
+    summary = {
+        row["interface"]: row
+        for row in composite["evidence"]["port_state_summary"]["ports"]
+    }
+    assert summary["ge-0/0/3"]["latest_state"] == "LINK_DOWN"
+    finding = next(item for item in composite["findings"] if item["code"] == "PORT_STATE_LINK_DOWN")
+    assert finding["severity"] == "INFO"
+
+    result = analyze(
+        composite["snapshot"],
+        composite["envelope"],
+        _policy(),
+        "p" * 64,
+        "approval",
+        "0.8.2",
+        composite["history"],
+    )
+    result = _apply_composite_metadata(result, composite)
+    assert not any(item["severity"] == "REVIEW" and item["code"] == "PORT_STATE_LINK_DOWN" for item in result["findings"])
