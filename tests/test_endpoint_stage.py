@@ -61,11 +61,9 @@ def _mac(mac, vlan_name, vlan_id, interface):
 
 def test_unambiguous_endpoint_correlation_and_silent_hold():
     text = "".join([
-        _mac("02:00:00:00:00:01", "v100", 100, "ge-0/0/10"),
-        # Same historical endpoint can appear in another VLAN as long as it is
-        # learned on the same physical port.
+        _mac("02:00:00:00:00:01", "default", 3998, "ge-0/0/10"),
         _mac("02:00:00:00:00:02", "voip", 1111, "ge-0/0/10"),
-        _mac("02:00:00:00:00:03", "v200", 200, "ge-0/0/11"),
+        _mac("02:00:00:00:00:03", "default", 3998, "ge-0/0/11"),
     ])
     value = correlate_endpoint_intent(
         _plan(),
@@ -74,19 +72,17 @@ def test_unambiguous_endpoint_correlation_and_silent_hold():
         management_vlan_id=163,
         voice_vlan_id=1111,
         temporary_recovery_vlan_id=3999,
-        prestage_access_vlan_name="TEMP-ACCESS",
         prestage_access_vlan_id=3998,
+        uplink_interfaces=["ge-0/0/0", "ge-0/0/1"],
     )
     assert [(row["old_interface"], row["new_interface"]) for row in value["activated"]] == [
         ("ge-0/0/2", "ge-0/0/10"),
         ("ge-0/0/3", "ge-0/0/11"),
     ]
     assert value["activated"][0]["statements"] == [
-        "delete interfaces ge-0/0/10 unit 0 family ethernet-switching vlan members TEMP-ACCESS",
         'set interfaces ge-0/0/10 description "Desk A"',
         "set interfaces ge-0/0/10 unit 0 family ethernet-switching vlan members v100",
     ]
-    assert value["activated"][0]["prestage_access_vlan_name"] == "TEMP-ACCESS"
     assert value["holds"] == [
         {
             "old_interface": "ge-0/0/4",
@@ -98,18 +94,35 @@ def test_unambiguous_endpoint_correlation_and_silent_hold():
 
 
 def test_recovery_port_is_never_auto_correlated():
-    text = _mac("02:00:00:00:00:01", "v100", 100, "ge-0/0/47")
+    text = _mac("02:00:00:00:00:01", "default", 3998, "ge-0/0/47")
     value = correlate_endpoint_intent(
-        _plan(), text, "ge-0/0/47", 163, 1111, 3999
+        _plan(), text, "ge-0/0/47", 163, 1111, 3999, prestage_access_vlan_id=3998
     )
     desk_a = next(row for row in value["holds"] if row["old_interface"] == "ge-0/0/2")
     assert desk_a["reason"] == "NO_APPROVED_MAC_OBSERVED_POST_MOVE"
 
 
+def test_ge_zero_and_one_are_eligible_with_et_uplinks_but_not_ge_uplinks():
+    text = _mac("02:00:00:00:00:01", "default", 3998, "ge-0/0/0")
+    production = correlate_endpoint_intent(
+        _plan(), text, "ge-0/0/47", 163, 1111, 3999,
+        prestage_access_vlan_id=3998,
+        uplink_interfaces=["et-0/1/0", "et-0/1/1"],
+    )
+    assert production["activated"][0]["new_interface"] == "ge-0/0/0"
+
+    lab = correlate_endpoint_intent(
+        _plan(), text, "ge-0/0/47", 163, 1111, 3999,
+        prestage_access_vlan_id=3998,
+        uplink_interfaces=["ge-0/0/0", "ge-0/0/1"],
+    )
+    assert not lab["activated"]
+
+
 def test_multiple_old_intents_cannot_claim_same_new_port():
     plan = _plan()
     plan["port_intents"][1]["endpoint_macs"] = ["02:00:00:00:00:01"]
-    text = _mac("02:00:00:00:00:01", "v100", 100, "ge-0/0/10")
+    text = _mac("02:00:00:00:00:01", "default", 3998, "ge-0/0/10")
     value = correlate_endpoint_intent(plan, text, "ge-0/0/47", 163, 1111, 3999)
     assert not value["activated"]
     reasons = {
@@ -167,13 +180,12 @@ def test_transport_override_is_lab_only():
         validate_postcutover_access(profile)
 
 
-def test_bulk_candidate_validation_requires_sets_and_deletes():
+def test_bulk_candidate_validation_requires_every_planned_statement():
     activated = [
         {
             "old_interface": "ge-0/0/2",
             "new_interface": "ge-0/0/10",
             "statements": [
-                "delete interfaces ge-0/0/10 unit 0 family ethernet-switching vlan members TEMP-ACCESS",
                 'set interfaces ge-0/0/10 description "Desk A"',
                 "set interfaces ge-0/0/10 unit 0 family ethernet-switching vlan members v100",
             ],
@@ -182,7 +194,6 @@ def test_bulk_candidate_validation_requires_sets_and_deletes():
             "old_interface": "ge-0/0/3",
             "new_interface": "ge-0/0/11",
             "statements": [
-                "delete interfaces ge-0/0/11 unit 0 family ethernet-switching vlan members TEMP-ACCESS",
                 "set interfaces ge-0/0/11 unit 0 family ethernet-switching vlan members v200",
             ],
         },
@@ -195,14 +206,6 @@ def test_bulk_candidate_validation_requires_sets_and_deletes():
     ok, rows = _planned_config_rows(complete, activated)
     assert ok is True
     assert all(row["configuration_present"] for row in rows)
-
-    lingering_temp = complete + "\nset interfaces ge-0/0/11 unit 0 family ethernet-switching vlan members TEMP-ACCESS\n"
-    ok, rows = _planned_config_rows(lingering_temp, activated)
-    assert ok is False
-    failed = next(row for row in rows if row["new_interface"] == "ge-0/0/11")
-    assert failed["missing_statements"] == [
-        "delete interfaces ge-0/0/11 unit 0 family ethernet-switching vlan members TEMP-ACCESS"
-    ]
 
     incomplete = complete.replace(
         "set interfaces ge-0/0/11 unit 0 family ethernet-switching vlan members v200",
