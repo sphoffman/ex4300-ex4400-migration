@@ -383,8 +383,28 @@ the default holding VLAN.
 The global voice policy is already present from pre-stage and is not re-created per
 port.
 
+Endpoint activation is resumable. On each run, the workflow scans integrity-valid
+committed-and-confirmed endpoint transactions whose correlation artifacts are bound
+to the **current approved migration plan**. Historical transactions from other plans
+remain immutable history but are not used as completion state. Each current-plan
+historical mapping is then reconciled against the replacement's current committed
+configuration before it is skipped. If the intended description or data-VLAN
+statement is no longer present, that historical completion is reopened for normal
+correlation rather than being trusted blindly.
+
+The same read-only observation records `show interfaces terse` and reports eligible
+edge ports that are operationally `up/up` but currently have no dynamic MAC. These
+silent-up ports are diagnostic evidence only; they are never guessed into an endpoint
+mapping. A rerun can therefore activate endpoints that were silent during an earlier
+pass once approved MAC evidence appears.
+
 Silent, ambiguous, conflicting, duplicate, infrastructure, recovery, or otherwise
-unsafe mappings are held for operator resolution rather than guessed.
+unsafe mappings are held for operator resolution rather than guessed. A completed new
+port cannot be claimed by another unresolved old-port intent.
+
+Use `--plan-only` to create/display the correlation artifact without changing the
+replacement. If all approved endpoint intents are already completed, the command
+returns successfully with no writes.
 
 The write path uses the same guarded candidate/commit-confirmed model as pre-stage:
 identity revalidation, candidate lock, candidate read-back/completeness proof,
@@ -397,18 +417,27 @@ confirmation.
 py -m ex_migration_provisioner.cli cabling-report <migration-id>
 ```
 
-The report is purely offline and selects the newest integrity-valid endpoint
-transaction that is both **committed-and-confirmed** and validation `PASS`. An
-explicit transaction can be selected with `--endpoint-transaction-id`.
+The report is purely offline. It aggregates **all** integrity-valid endpoint
+transactions that are committed-and-confirmed, validation `PASS`, and bound through
+their correlation artifacts to the **current approved migration plan**. Historical
+transactions from other approved plans are ignored for the current report.
 
-The report intentionally lists only activated endpoint moves where:
+Mappings are cumulative across endpoint-activation passes. Repeated identical
+old-interface to new-interface mappings are deduplicated. Conflicting committed
+history fails closed: one old interface cannot map to multiple new interfaces, and one
+new interface cannot be claimed by multiple old interfaces.
+
+The report intentionally lists only completed endpoint moves where:
 
 ```text
 old_interface != new_interface
 ```
 
 Those are the cables that require relabeling. Same-position moves are counted but
-suppressed from the facilities rows.
+suppressed from the facilities rows. Holds are also cumulative: an interface held on
+an earlier pass but successfully activated later is no longer reported as unresolved.
+Only holds whose old-interface intent never became completed in the aggregated
+current-plan history remain in the final hold count.
 
 Immutable output is written under:
 
@@ -420,12 +449,12 @@ with:
 
 - `report.md` — concise facilities-facing report;
 - `report.csv` — spreadsheet/import-friendly rows;
-- `report.json` — digest-bound machine-readable lineage;
+- `report.json` — digest-bound machine-readable lineage, including every contributing
+  endpoint transaction/correlation;
 - `integrity.json` — artifact hashes.
 
 Rows contain old/new interface, description, VLAN, MAC evidence, and relabel reason.
-Operator-held endpoint intents are counted but are not represented as completed
-physical moves.
+The report never connects to or writes the EX4400 or QFX pair.
 
 ## Recovery window and cleanup
 
