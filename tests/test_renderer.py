@@ -44,7 +44,7 @@ def package_for_render():
     )
 
 
-def test_pre_stage_render_is_deterministic_and_contains_only_approved_vlan_definitions():
+def test_pre_stage_render_is_deterministic_and_uses_default_holding_vlan():
     package = package_for_render()
     template = (ROOT / "templates/ex4400/ex4400.set.j2").read_text()
     contract = json.loads((ROOT / "templates/ex4400/contract-v1.json").read_text())
@@ -54,17 +54,10 @@ def test_pre_stage_render_is_deterministic_and_contains_only_approved_vlan_defin
     assert rendered_a == rendered_b
     assert validation_a == validation_b
     assert validation_a["result"] == "PASS"
-    assert "set interfaces interface-range edge_ports member ge-0/0/2" in rendered_lines
-    assert "set interfaces interface-range edge_ports member ge-0/0/46" in rendered_lines
-    assert "set interfaces interface-range edge_ports member ge-0/0/0" not in rendered_lines
-    assert "set interfaces interface-range edge_ports member ge-0/0/1" not in rendered_lines
-    assert "set interfaces interface-range edge_ports member ge-0/0/47" not in rendered_lines
+    assert 'set interfaces interface-range edge_ports member "ge-[0-9]/0/[2-47]"' in rendered_lines
     assert "set interfaces ge-0/0/0 gigether-options 802.3ad ae0" in rendered_lines
     assert "set interfaces ge-0/0/1 gigether-options 802.3ad ae0" in rendered_lines
-    assert "set interfaces ge-0/0/2 unit 0 family ethernet-switching vlan members TEMP-ACCESS" in rendered_lines
-    assert "set interfaces ge-0/0/46 unit 0 family ethernet-switching vlan members TEMP-ACCESS" in rendered_lines
-    assert "set interfaces ge-0/0/47 unit 0 family ethernet-switching vlan members TEMP-ACCESS" not in rendered_lines
-    assert rendered_a.count("family ethernet-switching vlan members TEMP-ACCESS") == 45
+    assert "family ethernet-switching vlan members TEMP-ACCESS" not in rendered_a
     assert "set interfaces ge-0/0/47 unit 0 family ethernet-switching vlan members TEMP-RECOVERY" in rendered_lines
     assert "set interfaces irb unit 163 family inet address 10.100.163.30/24" in rendered_lines
     assert "set protocols layer2-control nonstop-bridging" in rendered_lines
@@ -74,35 +67,35 @@ def test_pre_stage_render_is_deterministic_and_contains_only_approved_vlan_defin
     assert "set vlans v200 vlan-id 200" in rendered_lines
     assert "set vlans UNUSED-TEST vlan-id 300" in rendered_lines
     assert "set vlans voip vlan-id 1111" in rendered_lines
-    assert "set vlans TEMP-ACCESS vlan-id 3998" in rendered_lines
+    assert "set vlans default vlan-id 3998" in rendered_lines
+    assert "set vlans default description TEMP-ACCESS" in rendered_lines
+    assert "set vlans TEMP-ACCESS vlan-id 3998" not in rendered_lines
     assert "set vlans TEMP-RECOVERY vlan-id 3999" in rendered_lines
     assert rendered_a.count("set vlans voip vlan-id 1111") == 1
     assert rendered_a.count("set vlans v163 vlan-id 163") == 1
-    assert "set vlans TEMP-ACCESS l3-interface" not in rendered_a
+    assert "set vlans default l3-interface" not in rendered_a
     assert "fxp0" not in rendered_a
     assert "encrypted-password" not in rendered_a
 
 
-def test_production_et_uplinks_leave_ge_zero_and_one_as_edge_ports():
+def test_production_template_can_include_ge_zero_and_one_when_uplinks_are_et():
     package = package_for_render()
     package["provisioning_mode"] = "local-fxp0-mac"
     package["variables"]["uplink_interfaces"] = ["et-0/1/0", "et-0/1/1"]
-    package["variables"]["prestage_access_interfaces"] = [
-        "ge-0/0/%d" % port for port in range(0, 47)
-    ]
-    template = (ROOT / "templates/ex4400/ex4400.set.j2").read_text()
+    template = (ROOT / "templates/ex4400/ex4400.set.j2").read_text().replace(
+        'member "ge-[0-9]/0/[2-47]"',
+        'member "ge-[0-9]/0/[0-47]"',
+    )
     contract = json.loads((ROOT / "templates/ex4400/contract-v1.json").read_text())
     rendered, validation = render_pre_stage(template, contract, package, RENDERER_VERSION)
     rendered_lines = set(rendered.splitlines())
     assert validation["result"] == "PASS"
+    assert 'set interfaces interface-range edge_ports member "ge-[0-9]/0/[0-47]"' in rendered_lines
     assert "set interfaces et-0/1/0 ether-options 802.3ad ae0" in rendered_lines
     assert "set interfaces et-0/1/1 ether-options 802.3ad ae0" in rendered_lines
-    assert "set interfaces ge-0/0/0 unit 0 family ethernet-switching vlan members TEMP-ACCESS" in rendered_lines
-    assert "set interfaces ge-0/0/1 unit 0 family ethernet-switching vlan members TEMP-ACCESS" in rendered_lines
-    assert "set interfaces interface-range edge_ports member ge-0/0/0" in rendered_lines
-    assert "set interfaces interface-range edge_ports member ge-0/0/1" in rendered_lines
     assert "set interfaces ge-0/0/0 gigether-options 802.3ad ae0" not in rendered_lines
     assert "set interfaces ge-0/0/1 gigether-options 802.3ad ae0" not in rendered_lines
+    assert "family ethernet-switching vlan members TEMP-ACCESS" not in rendered
 
 
 def test_non_in_place_render_keeps_nonstop_bridging_active():
@@ -126,27 +119,25 @@ def test_pre_stage_static_validation_rejects_endpoint_vlan_assignment():
         validate_pre_stage_render(tampered, package)
 
 
-def test_pre_stage_static_validation_rejects_missing_temp_access_assignment():
+def test_pre_stage_static_validation_rejects_missing_default_holding_vlan():
     package = package_for_render()
     template = (ROOT / "templates/ex4400/ex4400.set.j2").read_text()
     contract = json.loads((ROOT / "templates/ex4400/contract-v1.json").read_text())
     rendered, _validation = render_pre_stage(template, contract, package, RENDERER_VERSION)
-    tampered = rendered.replace(
-        "set interfaces ge-0/0/12 unit 0 family ethernet-switching vlan members TEMP-ACCESS\n",
-        "",
+    tampered = rendered.replace("set vlans default vlan-id 3998\n", "")
+    with pytest.raises(RenderError):
+        validate_pre_stage_render(tampered, package)
+
+
+def test_pre_stage_static_validation_rejects_ge_uplink_matching_edge_regex():
+    package = package_for_render()
+    template = (ROOT / "templates/ex4400/ex4400.set.j2").read_text().replace(
+        'member "ge-[0-9]/0/[2-47]"',
+        'member "ge-[0-9]/0/[0-47]"',
     )
-    with pytest.raises(RenderError):
-        validate_pre_stage_render(tampered, package)
-
-
-def test_pre_stage_static_validation_rejects_uplink_in_edge_range():
-    package = package_for_render()
-    template = (ROOT / "templates/ex4400/ex4400.set.j2").read_text()
     contract = json.loads((ROOT / "templates/ex4400/contract-v1.json").read_text())
-    rendered, _validation = render_pre_stage(template, contract, package, RENDERER_VERSION)
-    tampered = rendered + "set interfaces interface-range edge_ports member ge-0/0/0\n"
     with pytest.raises(RenderError):
-        validate_pre_stage_render(tampered, package)
+        render_pre_stage(template, contract, package, RENDERER_VERSION)
 
 
 def test_pre_stage_static_validation_rejects_wrong_recovery_port():
