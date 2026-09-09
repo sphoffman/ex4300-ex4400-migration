@@ -3,6 +3,7 @@ import pytest
 from ex_migration_provisioner.core import ProvisioningError
 from ex_migration_provisioner.old_recovery import (
     build_recovery_transaction,
+    build_recovery_verification,
     recovery_statement,
     recovery_statements,
 )
@@ -29,8 +30,11 @@ def test_recovery_gateway_must_be_on_bootstrap_subnet():
         recovery_statements("vme", "10.0.0.15/24", "192.0.2.1")
 
 
-def test_recovery_transaction_preserves_inband_master_table_and_binds_bootstrap_identity():
-    plan = {"plan_id": "plan123"}
+def test_recovery_transaction_models_pre_cutover_physical_isolation():
+    plan = {
+        "plan_id": "plan123",
+        "template_variables": {"old_hostname": "home1-ex4300-vc-fd-sw1203"},
+    }
     tx = build_recovery_transaction(
         "sw1203",
         plan,
@@ -42,26 +46,47 @@ def test_recovery_transaction_preserves_inband_master_table_and_binds_bootstrap_
         "vme",
         "10.0.0.15/24",
         "10.0.0.2",
-        "10.0.0.15",
         "SHA256:old",
         "[edit interfaces vme]\n+ unit 0 family inet address 10.0.0.15/24;\n",
         "2026-09-09T12:00:00Z",
         10,
-        "DIRECT_RECOVERY_ADDRESS",
         bootstrap_identity_id="identity123",
         bootstrap_identity_digest="3" * 64,
         bootstrap_profile_digest="4" * 64,
+        master_defaults_before=[
+            "set routing-options static route 0.0.0.0/0 next-hop 10.100.163.1"
+        ],
     )
-    assert tx["schema_version"] == "1.1"
+    assert tx["schema_version"] == "1.3"
     assert tx["recovery"]["interface"] == "vme"
     assert tx["recovery"]["routing_instance"] == "mgmt_junos"
     assert tx["recovery"]["address"] == "10.0.0.15/24"
     assert tx["recovery"]["gateway"] == "10.0.0.2"
-    assert tx["source_access"]["logical_address"] == "10.100.163.30"
+    assert tx["recovery"]["logical_address"] == "10.0.0.15"
+    assert tx["source_identity"]["configured_hostname"] == "home1-ex4300-vc-fd-sw1203"
     assert tx["inputs"]["bootstrap_identity_id"] == "identity123"
-    assert tx["safety"]["existing_inband_management_preserved"] is True
-    assert tx["safety"]["master_routing_table_default_unchanged"] is True
-    assert tx["safety"]["dedicated_management_instance_required"] is True
-    assert tx["safety"]["bootstrap_oob_address_released_by_replacement_acknowledged"] is True
-    assert tx["safety"]["secondary_recovery_connection_required"] is True
+    assert tx["safety"]["replacement_may_still_own_bootstrap_ip_before_cutover"] is True
+    assert tx["safety"]["duplicate_bootstrap_ip_requires_physical_l2_isolation_until_cable_move"] is True
+    assert tx["safety"]["post_cable_recovery_verification_required"] is True
+    assert tx["validation"]["recovery_path_verified"] is False
     assert tx["commit"]["status"] == "APPROVED_PENDING_COMMIT"
+
+
+def test_recovery_verification_binds_committed_transaction():
+    tx = {
+        "migration_id": "sw1203",
+        "transaction_id": "tx123",
+    }
+    verification = build_recovery_verification(
+        tx,
+        "a" * 64,
+        "home1-ex4300-vc-fd-sw1203",
+        "SHA256:old",
+        "b" * 64,
+        "2026-09-09T13:00:00Z",
+    )
+    assert verification["migration_id"] == "sw1203"
+    assert verification["inputs"]["recovery_transaction_id"] == "tx123"
+    assert verification["inputs"]["recovery_transaction_digest"] == "a" * 64
+    assert verification["result"] == "PASS"
+    assert "RECOVERY_SSH_HOST_KEY_MATCH" in verification["checks"]
