@@ -27,6 +27,10 @@ _VC_MEMBER = re.compile(
     r"(Prsnt|NotPrsnt|Unprvsnd)\s+(\S+)\s+(\S+)(?:\s+|$)",
     re.IGNORECASE,
 )
+_MGMT_DEFAULT = re.compile(
+    r"^set routing-instances mgmt_junos routing-options static route "
+    r"(?:0\.0\.0\.0/0|default) next-hop (\S+)$"
+)
 
 
 def _allowed_target_model(model, allow_vjunos_switch=False):
@@ -91,6 +95,22 @@ def parse_virtual_chassis_status(text):
             "model": match.group(4),
         })
     return sorted(members, key=lambda item: item["member_id"])
+
+
+def parse_mgmt_junos_default_gateway(text):
+    """Return the single configured mgmt_junos IPv4 default-route next hop."""
+    gateways = []
+    for raw in str(text or "").splitlines():
+        match = _MGMT_DEFAULT.match(raw.strip())
+        if match:
+            gateways.append(match.group(1))
+    gateways = sorted(set(gateways))
+    _require(
+        len(gateways) == 1,
+        "mgmt_junos must contain exactly one configured IPv4 default next-hop; observed %s"
+        % (", ".join(gateways) if gateways else "none"),
+    )
+    return gateways[0]
 
 
 def observe_ex4400_identity(
@@ -180,27 +200,32 @@ def build_bootstrap_identity(
         bootstrap.get("schema_version") == "1.0",
         "unsupported bootstrap profile schema",
     )
+    environment = str(bootstrap.get("environment") or "")
     _require(
-        bootstrap.get("environment") == "lab",
-        (
-            "bootstrap identity enrollment is currently restricted to lab profiles; "
-            "production requires independently pre-bound serial and SSH host-key identity"
-        ),
+        environment in ("lab", "production"),
+        "bootstrap profile environment must be lab or production",
     )
 
     connection = observed.get("connection", {})
-    logical_address = str(connection.get("address") or "")
-    transport_address = str(connection.get("transport_address") or logical_address)
-    allow_vjunos_switch = bool(
-        logical_address
-        and transport_address
-        and transport_address != logical_address
+    address = str(connection.get("address") or "")
+    _require(address, "observed EX4400 OOB connection address is missing")
+    allow_vjunos_switch = environment == "lab"
+
+    oob = observed.get("oob_management", {})
+    _require(
+        str(oob.get("routing_instance") or "") == "mgmt_junos",
+        "observed OOB management must use mgmt_junos",
+    )
+    _require(str(oob.get("address") or ""), "observed OOB management address is missing")
+    _require(
+        str(oob.get("default_gateway") or ""),
+        "observed mgmt_junos default gateway is missing",
     )
 
     device = observed.get("device", {})
     _require(
         _allowed_target_model(device.get("model"), allow_vjunos_switch),
-        "observed target model is not valid for this bootstrap transport",
+        "observed target model is not valid for this bootstrap environment",
     )
 
     vc = bootstrap.get("virtual_chassis", {})
@@ -229,17 +254,13 @@ def build_bootstrap_identity(
         "every observed virtual-chassis member must match the allowed target platform",
     )
 
-    # vJunos-switch is a single virtual switch built from an EX9214 reference
-    # platform. The EX9214 alias is allowed only when a separate lab transport
-    # endpoint was explicitly pinned; direct/bootstrap-address enrollment never
-    # accepts EX9214 as a substitute for real EX4400 hardware.
     if any(
         _VJUNOS_SWITCH_MODEL.match(str(item.get("model", "")))
         for item in members
     ):
         _require(
-            allow_vjunos_switch,
-            "vJunos EX9214 identity requires an explicit lab transport override",
+            environment == "lab",
+            "vJunos EX9214 identity is permitted only by a lab bootstrap profile",
         )
         _require(
             expected_count == 1,
@@ -277,8 +298,11 @@ def build_bootstrap_identity(
         "observed": observed,
     }
     identity_id = sha256_bytes(canonical_bytes(key))[:16]
+    production_eligible = bool(
+        environment == "production" and bootstrap.get("production_eligible") is True
+    )
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "identity_id": identity_id,
         "migration_id": migration_id,
         "approved_at": approved_at,
@@ -293,10 +317,12 @@ def build_bootstrap_identity(
             "approved": True,
         },
         "eligibility": {
-            "status": "LAB_ONLY",
-            "production_eligible": False,
+            "status": "PRODUCTION_ELIGIBLE" if production_eligible else "LAB_ONLY",
+            "production_eligible": production_eligible,
             "reason": (
-                "bootstrap identity was interactively enrolled under a lab-only profile"
+                "bootstrap identity was operator-bound under a production-eligible profile"
+                if production_eligible
+                else "bootstrap identity was operator-bound under a non-production profile"
             ),
         },
     }
@@ -309,7 +335,7 @@ def validate_bound_identity(
     expected_hostname=None,
 ):
     _require(
-        identity.get("schema_version") == "1.0",
+        identity.get("schema_version") in ("1.0", "1.1"),
         "unsupported bootstrap identity schema",
     )
     _require(
@@ -327,7 +353,7 @@ def validate_bound_identity(
     current_connection = current.get("connection", {})
     _require(
         current_connection.get("address") == bound_connection.get("address"),
-        "EX4400 bootstrap address changed",
+        "EX4400 OOB address changed",
     )
     _require(
         int(current_connection.get("port", -1))
