@@ -4,7 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from ex_migration_analyzer.core import read_json, sha256_file, utc_now
+from ex_migration_analyzer.core import read_json, utc_now
 
 from . import cli_base as base
 from .endpoint_stage import (
@@ -14,6 +14,8 @@ from .endpoint_stage import (
 )
 from .endpoint_stage_cli import (
     _bind_lab_identity_transport,
+    _interfaces_config_set,
+    _reconcile_completed_state,
     _recovery_interface,
     _validate_postcutover_identity,
 )
@@ -93,7 +95,7 @@ def run(argv):
         selected_plan["plan"],
         selected_plan["plan_digest"],
     )
-    completed = committed_endpoint_state(
+    historical_completed = committed_endpoint_state(
         migration_root,
         selected_plan["plan_digest"],
     )
@@ -131,12 +133,16 @@ def run(argv):
             current_fingerprint,
             allow_vjunos_switch=access["allow_vjunos_switch"],
         )
-        expected_hostname = str(package.get("variables", {}).get("target_hostname") or "")
+        expected_hostname = str(
+            selected_plan["plan"].get("template_variables", {}).get("new_hostname") or ""
+        )
         _validate_postcutover_identity(
             current,
             selected_identity["identity"],
             expected_hostname,
         )
+        committed_config = _interfaces_config_set(dev, "committed")
+        completed = _reconcile_completed_state(committed_config, historical_completed)
         terse_text = dev.cli("show interfaces terse", warning=False) or ""
         mac_text = dev.cli("show ethernet-switching table extensive", warning=False) or ""
     except base.ProvisioningError:
@@ -162,6 +168,7 @@ def run(argv):
         completed=completed,
         observed_at=observed_at,
     )
+    comparison["historical_completions_reopened"] = completed.get("stale", [])
     destination, action = write_port_state_comparison(
         migration_root,
         comparison,
@@ -182,7 +189,8 @@ def run(argv):
     print("    UP_SILENT:  %d" % pre_counts.get("UP_SILENT", 0))
     print("    LINK_DOWN:  %d" % pre_counts.get("LINK_DOWN", 0))
     print("    ADMIN_DOWN: %d" % pre_counts.get("ADMIN_DOWN", 0))
-    print("  Confirmed endpoint mappings: %d" % stats["confirmed_mappings"])
+    print("  Confirmed endpoint mappings present in current config: %d" % stats["confirmed_mappings"])
+    print("  Historical completions reopened: %d" % len(completed.get("stale", [])))
     print("  Same-position advisory candidates: %d" % stats["same_position_advisories"])
     print("  Same-position state matches: %d" % stats["same_position_state_matches"])
     print("  Same-position state mismatches: %d" % stats["same_position_state_mismatches"])
