@@ -65,6 +65,14 @@ def _parser():
     parser.add_argument("--identity-id")
     parser.add_argument("--package-id")
     parser.add_argument("--qfx-transaction-id")
+    parser.add_argument(
+        "--username",
+        help="shared EX/QFX username; per-device username options override it",
+    )
+    parser.add_argument(
+        "--password-env",
+        help="environment variable containing the shared EX/QFX password; per-device options override it",
+    )
     parser.add_argument("--ex-username")
     parser.add_argument("--ex-password-env")
     parser.add_argument("--qfx-username")
@@ -89,6 +97,30 @@ def _credentials(username, password_env, label):
         SimpleNamespace(username=username, password_env=password_env),
         label,
     )
+
+
+def _device_credentials(args):
+    per_device_override = any((
+        args.ex_username,
+        args.ex_password_env,
+        args.qfx_username,
+        args.qfx_password_env,
+    ))
+    if not per_device_override:
+        username, password = _credentials(args.username, args.password_env, "EX/QFX")
+        return username, password, username, password
+
+    ex_user, ex_password = _credentials(
+        args.ex_username or args.username,
+        args.ex_password_env or args.password_env,
+        "EX4400",
+    )
+    qfx_user, qfx_password = _credentials(
+        args.qfx_username or args.username,
+        args.qfx_password_env or args.password_env,
+        "QFX",
+    )
+    return ex_user, ex_password, qfx_user, qfx_password
 
 
 def _normalize_diff(value):
@@ -127,6 +159,7 @@ def _print_plan(value):
     hardening = value["access_hardening"]
     used = [row["interface"] for row in hardening.get("used", [])]
     unused = [row["interface"] for row in hardening.get("unused", [])]
+    not_exposed = [row["interface"] for row in hardening.get("not_exposed", [])]
     stale = hardening.get("stale_vlans", {})
     print("\nMigration cleanup and access hardening plan")
     print("  Migration: %s" % value["migration_id"])
@@ -138,6 +171,9 @@ def _print_plan(value):
     print("  Configured unused edge ports to disable: %d" % len(unused))
     if unused:
         print("    %s" % ", ".join(unused))
+    if not_exposed:
+        print("  Lab template-range ports not exposed by vJunos: %d" % len(not_exposed))
+        print("    %s" % ", ".join(not_exposed))
     print("  Inactive VLAN for disabled ports: default (%s)" % value["recovery"]["prestage_default_vlan_id"])
     print("  EX uplink final VLANs: %s" % ", ".join(value["production_vlan_names"]))
     print("  EX voice policy: preserve broad edge_ports policy")
@@ -299,6 +335,9 @@ def run(argv):
     profile = validate_postcutover_access(profile)
     management_ip = planned_management_ip(selected_plan["plan"])
     access = resolve_postcutover_access(profile, management_ip)
+    allow_unobserved_template_ports = (
+        policy["environment"] == "lab" and bool(access.get("allow_vjunos_switch"))
+    )
 
     variables = package.get("variables", {})
     recovery_interface = str(variables.get("recovery_interface") or "")
@@ -326,8 +365,7 @@ def run(argv):
         selected_plan["plan_digest"],
     )
 
-    ex_user, ex_password = _credentials(args.ex_username, args.ex_password_env, "EX4400")
-    qfx_user, qfx_password = _credentials(args.qfx_username, args.qfx_password_env, "QFX")
+    ex_user, ex_password, qfx_user, qfx_password = _device_credentials(args)
 
     from jnpr.junos import Device
     from jnpr.junos.utils.config import Config
@@ -408,7 +446,9 @@ def run(argv):
             live_completed["by_old"],
             port_states,
             recovery_interface,
+            allow_unobserved_template_ports=allow_unobserved_template_ports,
         )
+        classification["lab_unobserved_template_ports_allowed"] = allow_unobserved_template_ports
         config_precheck = validate_pre_hardening_config(
             ex_config,
             classification,
@@ -464,6 +504,7 @@ def run(argv):
 
         used_interfaces = [row["interface"] for row in classification["used"]]
         unused_interfaces = [row["interface"] for row in classification["unused"]]
+        not_exposed_interfaces = [row["interface"] for row in classification["not_exposed"]]
         deleted_vlan_names = [row["name"] for row in stale_vlans["delete"]]
         hardening = hardening_statements(
             ex_config,
@@ -528,6 +569,39 @@ def run(argv):
         locked_completed = _reconcile_completed_state(locked_interfaces, historical_completed)
         if set(locked_completed["by_old"]) != set(live_completed["by_old"]):
             raise base.ProvisioningError("EX endpoint completion state changed after cleanup locks were acquired")
+
+        locked_terse = ex_dev.cli("show interfaces terse", warning=False) or ""
+        locked_mac = ex_dev.cli("show ethernet-switching table extensive", warning=False) or ""
+        locked_states = current_port_states(
+            locked_terse,
+            locked_mac,
+            eligible_edges,
+            observed_at=utc_now(),
+        )
+        locked_classification = classify_final_ports(
+            selected_plan["plan"],
+            locked_completed["by_old"],
+            locked_states,
+            recovery_interface,
+            allow_unobserved_template_ports=allow_unobserved_template_ports,
+        )
+        if locked_classification["result"] != "PASS":
+            raise base.ProvisioningError("EX access-port safety state changed after cleanup locks were acquired")
+        locked_used = {row["interface"] for row in locked_classification["used"]}
+        locked_unused = {row["interface"] for row in locked_classification["unused"]}
+        locked_not_exposed = {row["interface"] for row in locked_classification["not_exposed"]}
+        if locked_used != set(used_interfaces) or locked_unused != set(unused_interfaces) or locked_not_exposed != set(not_exposed_interfaces):
+            raise base.ProvisioningError("EX access-port classification changed after cleanup locks were acquired")
+
+        locked_stale_vlans = stale_vlan_cleanup(
+            ex_config,
+            locked_mac,
+            configured_vlans,
+            final_vlan_ids,
+            observed_at=utc_now(),
+        )
+        if {row["name"] for row in locked_stale_vlans["delete"]} != set(deleted_vlan_names):
+            raise base.ProvisioningError("EX stale-VLAN safety evidence changed after cleanup locks were acquired")
 
         for role in ("qfx-a", "qfx-b", "ex4400"):
             payload = "\n".join(role_statements[role]) + "\n"
@@ -655,6 +729,8 @@ def run(argv):
         print("  Transaction: %s" % transaction["transaction_id"])
         print("  Used EX4400 edge ports kept enabled: %d" % len(used_interfaces))
         print("  Unused EX4400 edge ports disabled: %d" % len(unused_interfaces))
+        if not_exposed_interfaces:
+            print("  Lab template-range ports not exposed by vJunos: %d" % len(not_exposed_interfaces))
         print("  Broad edge_ports voice policy preserved: PASS")
         print("  Final ae0 VLAN membership exact: PASS")
         print("  Proven-unused EX data VLANs removed: %d" % len(deleted_vlan_names))
