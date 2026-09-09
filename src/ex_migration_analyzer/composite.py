@@ -203,6 +203,88 @@ def _interface_change_findings(candidates):
     return changed, findings
 
 
+def _port_state_summary(candidates):
+    """Return compact per-port discovery state without making it configuration authority.
+
+    Real discovery candidates have collection paths, so reuse the same raw-sample
+    reconstruction used by the post-cutover diagnostic.  Lightweight unit-test
+    candidates may omit paths; in that case summarize only each snapshot's latest
+    normalized interface state so composite tests remain independent of filesystem
+    fixtures.
+    """
+    from ex_migration_provisioner.port_state import build_port_state_evidence, classify_port_state
+
+    if all(candidate.get("path") for candidate in candidates):
+        evidence = build_port_state_evidence(candidates)
+        return {
+            "schema_version": "1.0",
+            "source": "RECONSTRUCTED_SAMPLE_ARTIFACTS",
+            "total_sample_runs": evidence.get("total_sample_runs", 0),
+            "ports": [
+                {
+                    "interface": row["interface"],
+                    "samples": row["samples"],
+                    "counts": row["counts"],
+                    "stable_state": row["stable_state"],
+                    "latest_state": row["latest_state"],
+                    "latest_admin_status": row["latest_admin_status"],
+                    "latest_oper_status": row["latest_oper_status"],
+                    "first_observed_at": row["first_observed_at"],
+                    "latest_observed_at": row["latest_observed_at"],
+                }
+                for row in evidence.get("ports", [])
+            ],
+        }
+
+    samples = defaultdict(list)
+    for candidate in candidates:
+        snapshot = candidate["snapshot"]
+        dynamic_ports = {
+            str(row.get("physical_interface"))
+            for row in snapshot.get("mac_observations", [])
+            if row.get("physical_interface")
+        }
+        for item in snapshot.get("interfaces", []):
+            interface = str(item.get("physical_name") or "")
+            if not interface or item.get("effective_mode") != "access" or item.get("ae_parent"):
+                continue
+            state = classify_port_state(
+                item.get("admin_status"),
+                item.get("oper_status"),
+                interface in dynamic_ports,
+            )
+            samples[interface].append({
+                "state": state,
+                "admin_status": item.get("admin_status"),
+                "oper_status": item.get("oper_status"),
+                "observed_at": snapshot.get("completed_at"),
+            })
+    ports = []
+    states = ("ACTIVE_MAC", "UP_SILENT", "LINK_DOWN", "ADMIN_DOWN", "NOT_OBSERVED")
+    for interface in sorted(samples):
+        rows = samples[interface]
+        counts = {state: sum(1 for row in rows if row["state"] == state) for state in states}
+        non_missing = {row["state"] for row in rows if row["state"] != "NOT_OBSERVED"}
+        latest = rows[-1]
+        ports.append({
+            "interface": interface,
+            "samples": len(rows),
+            "counts": counts,
+            "stable_state": next(iter(non_missing)) if len(non_missing) == 1 else "VARIABLE",
+            "latest_state": latest["state"],
+            "latest_admin_status": latest["admin_status"],
+            "latest_oper_status": latest["oper_status"],
+            "first_observed_at": rows[0]["observed_at"],
+            "latest_observed_at": latest["observed_at"],
+        })
+    return {
+        "schema_version": "1.0",
+        "source": "SNAPSHOT_LATEST_FALLBACK",
+        "total_sample_runs": sum(len(rows) for rows in samples.values()),
+        "ports": ports,
+    }
+
+
 def build_composite_evidence(candidates, policy, policy_digest):
     eligible = [candidate for candidate in candidates if not candidate.get("blockers")]
     if not eligible:
@@ -278,6 +360,31 @@ def build_composite_evidence(candidates, policy, policy_digest):
             version_variants,
         ))
 
+    port_state_summary = _port_state_summary(eligible)
+    for row in port_state_summary.get("ports", []):
+        state = row.get("latest_state")
+        if state not in ("UP_SILENT", "LINK_DOWN", "ADMIN_DOWN"):
+            continue
+        count = int((row.get("counts") or {}).get(state, 0))
+        total = int(row.get("samples", 0))
+        descriptions = {
+            "UP_SILENT": "access port was operationally up with no dynamic MAC in the latest approved discovery sample",
+            "LINK_DOWN": "access port link was down in the latest approved discovery sample",
+            "ADMIN_DOWN": "access port was administratively down in the latest approved discovery sample",
+        }
+        findings.append(_finding(
+            "INFO",
+            "PORT_STATE_%s" % state,
+            row["interface"],
+            "%s (%d/%d reconstructed samples in this state)" % (descriptions[state], count, total),
+            [{
+                "stable_state": row.get("stable_state"),
+                "counts": row.get("counts"),
+                "first_observed_at": row.get("first_observed_at"),
+                "latest_observed_at": row.get("latest_observed_at"),
+            }],
+        ))
+
     endpoint_catalog, composite_observations = _endpoint_catalog(eligible)
     mac_ports = defaultdict(set)
     for row in endpoint_catalog:
@@ -308,6 +415,7 @@ def build_composite_evidence(candidates, policy, policy_digest):
         "current_configuration_source_snapshot_id": latest["snapshot"]["snapshot_id"],
         "configuration_consistency": consistency,
         "configuration_findings": findings,
+        "port_state_summary": port_state_summary,
         "hardware_observations": {
             "model_variants": model_variants,
             "serial_variants": serial_variants,
