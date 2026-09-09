@@ -58,11 +58,15 @@ def qfx_cleanup_statements(ae_interface, recovery_vlan_name):
     ]
 
 
-def restore_statements(statements):
+def inverse_statements(statements):
     result = []
-    for statement in statements:
-        _require(statement.startswith("delete "), "cleanup statement is not a delete statement")
-        result.append("set " + statement[len("delete "):])
+    for statement in reversed(list(statements)):
+        if statement.startswith("delete "):
+            result.append("set " + statement[len("delete "):])
+        elif statement.startswith("set "):
+            result.append("delete " + statement[len("set "):])
+        else:
+            raise ProvisioningError("cleanup statement is neither set nor delete")
     return result
 
 
@@ -134,6 +138,7 @@ def validate_pre_cleanup(
     management_vlan_id,
     recovery_vlan_id,
     required_production_vlan_ids,
+    access_hardening,
 ):
     endpoint = required_endpoint_interfaces(plan)
     missing_completed = sorted(
@@ -143,6 +148,7 @@ def validate_pre_cleanup(
     checks = {
         "no_operator_hold_intents": not endpoint["holds"],
         "all_required_endpoint_intents_live": not missing_completed,
+        "access_hardening_classification_pass": access_hardening.get("result") == "PASS",
         "ex_recovery_port_membership_present": bool(ex_state.get("recovery_port_membership_present")),
         "ex_recovery_vlan_definition_present": bool(ex_state.get("recovery_vlan_definition_present")),
         "ex_holding_default_vlan_present": bool(ex_state.get("holding_default_vlan_present")),
@@ -161,6 +167,7 @@ def validate_pre_cleanup(
         "checks": checks,
         "missing_completed_endpoint_intents": missing_completed,
         "operator_hold_intents": endpoint["holds"],
+        "access_hardening_blockers": list(access_hardening.get("blockers", [])),
         "result": "PASS" if all(checks.values()) else "FAIL",
     }
 
@@ -173,6 +180,7 @@ def validate_post_cleanup(
     management_vlan_id,
     recovery_vlan_id,
     required_production_vlan_ids,
+    access_hardening_validation,
 ):
     endpoint = required_endpoint_interfaces(plan)
     missing_completed = sorted(
@@ -182,6 +190,7 @@ def validate_post_cleanup(
     checks = {
         "no_operator_hold_intents": not endpoint["holds"],
         "all_required_endpoint_intents_still_live": not missing_completed,
+        "access_hardening_validation_pass": access_hardening_validation.get("result") == "PASS",
         "ex_recovery_port_membership_absent": not ex_state.get("recovery_port_membership_present"),
         "ex_recovery_vlan_definition_absent": not ex_state.get("recovery_vlan_definition_present"),
         "ex_holding_default_vlan_preserved": bool(ex_state.get("holding_default_vlan_present")),
@@ -199,6 +208,7 @@ def validate_post_cleanup(
         "checks": checks,
         "missing_completed_endpoint_intents": missing_completed,
         "operator_hold_intents": endpoint["holds"],
+        "access_hardening_validation": access_hardening_validation,
         "result": "PASS" if all(checks.values()) else "FAIL",
     }
 
@@ -222,10 +232,16 @@ def build_cleanup_plan(
     prestage_vlan_id,
     qfx_ae_by_role,
     precheck,
+    access_hardening,
+    access_hardening_statements,
+    production_vlan_names,
     created_at=None,
 ):
     _require(precheck.get("result") == "PASS", "TEMP-RECOVERY cleanup prechecks did not pass")
-    ex_statements = ex_cleanup_statements(recovery_interface, recovery_vlan_name)
+    ex_statements = list(access_hardening_statements) + ex_cleanup_statements(
+        recovery_interface,
+        recovery_vlan_name,
+    )
     qfx_devices = []
     for role in sorted(qfx_ae_by_role):
         statements = qfx_cleanup_statements(qfx_ae_by_role[role], recovery_vlan_name)
@@ -233,7 +249,7 @@ def build_cleanup_plan(
             "role": role,
             "ae_interface": qfx_ae_by_role[role],
             "statements": statements,
-            "restore_statements": restore_statements(statements),
+            "restore_statements": inverse_statements(statements),
         })
     inputs = {
         "approved_plan_digest": approved_plan_digest,
@@ -253,6 +269,8 @@ def build_cleanup_plan(
         "recovery_interface": recovery_interface,
         "recovery_vlan_name": recovery_vlan_name,
         "recovery_vlan_id": int(recovery_vlan_id),
+        "production_vlan_names": sorted(set(production_vlan_names)),
+        "access_hardening": access_hardening,
         "ex_statements": ex_statements,
         "qfx_devices": qfx_devices,
     }
@@ -269,9 +287,11 @@ def build_cleanup_plan(
             "vlan_id": int(recovery_vlan_id),
             "prestage_default_vlan_id": int(prestage_vlan_id),
         },
+        "access_hardening": access_hardening,
+        "production_vlan_names": sorted(set(production_vlan_names)),
         "ex4400": {
             "statements": ex_statements,
-            "restore_statements": restore_statements(ex_statements),
+            "restore_statements": inverse_statements(ex_statements),
         },
         "qfx_devices": qfx_devices,
         "precheck": precheck,
@@ -281,6 +301,9 @@ def build_cleanup_plan(
             "old_ex_vme_recovery_configuration_preserved": True,
             "qfx_global_recovery_vlan_definition_preserved": True,
             "endpoint_configuration_must_remain_present": True,
+            "configured_unused_ex_ports_disabled": True,
+            "inactive_default_vlan_removed_from_uplink_trunk": True,
+            "voice_policy_narrowed_to_confirmed_used_ports": True,
             "commit_confirmed_required_on_all_written_devices": True,
         },
     }
