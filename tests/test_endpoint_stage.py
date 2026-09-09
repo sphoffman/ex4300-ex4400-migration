@@ -1,7 +1,11 @@
+import hashlib
+import json
+
 import pytest
 
 from ex_migration_provisioner.core import ProvisioningError
 from ex_migration_provisioner.endpoint_stage import (
+    committed_endpoint_state,
     correlate_endpoint_intent,
     detect_silent_up_ports,
     resolve_postcutover_access,
@@ -59,6 +63,63 @@ def _mac(mac, vlan_name, vlan_id, interface):
         "Layer 2 flags: 0x1",
         "",
     ])
+
+
+def _write_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _write_endpoint_history(migration_root, transaction_id, correlation_id, plan_digest, old_interface, new_interface):
+    correlation_dir = migration_root / "endpoint-correlations" / correlation_id
+    correlation = {
+        "migration_id": migration_root.name,
+        "inputs": {"approved_plan_digest": plan_digest},
+    }
+    _write_json(correlation_dir / "correlation.json", correlation)
+    correlation_digest = hashlib.sha256((correlation_dir / "correlation.json").read_bytes()).hexdigest()
+    _write_json(correlation_dir / "integrity.json", {"correlation.json": correlation_digest})
+
+    tx_dir = migration_root / "endpoint-transactions" / transaction_id
+    tx = {
+        "transaction_id": transaction_id,
+        "migration_id": migration_root.name,
+        "correlation_id": correlation_id,
+        "activated": [{
+            "old_interface": old_interface,
+            "new_interface": new_interface,
+            "statements": [
+                "set interfaces %s unit 0 family ethernet-switching vlan members v100" % new_interface
+            ],
+        }],
+        "commit": {"status": "COMMITTED_AND_CONFIRMED", "confirmed": True},
+        "validation": {"result": "PASS"},
+    }
+    _write_json(tx_dir / "transaction.json", tx)
+    (tx_dir / "candidate.diff").write_text("diff\n", encoding="utf-8")
+    _write_json(tx_dir / "integrity.json", {
+        "transaction.json": hashlib.sha256((tx_dir / "transaction.json").read_bytes()).hexdigest(),
+        "candidate.diff": hashlib.sha256((tx_dir / "candidate.diff").read_bytes()).hexdigest(),
+    })
+
+
+def test_committed_endpoint_state_skips_transactions_from_other_plans(tmp_path):
+    migration_root = tmp_path / "migrations" / "sw1203"
+    current_digest = "a" * 64
+    stale_digest = "b" * 64
+    _write_endpoint_history(
+        migration_root, "current-tx", "current-corr", current_digest,
+        "ge-0/0/2", "ge-0/0/10",
+    )
+    _write_endpoint_history(
+        migration_root, "stale-tx", "stale-corr", stale_digest,
+        "ge-0/0/3", "ge-0/0/11",
+    )
+
+    state = committed_endpoint_state(migration_root, current_digest)
+    assert state["transaction_ids"] == ["current-tx"]
+    assert list(state["by_old"]) == ["ge-0/0/2"]
+    assert state["by_new"] == {"ge-0/0/10": "ge-0/0/2"}
 
 
 def test_unambiguous_endpoint_correlation_and_silent_hold():
