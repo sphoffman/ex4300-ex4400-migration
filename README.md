@@ -31,7 +31,9 @@ IDENTIFY REPLACEMENT EX4400
         ->
 PRE-STAGE EX4400
         ->
-ESTABLISH TEMP-RECOVERY L2 PATH
+RELEASE REPLACEMENT BOOTSTRAP OOB ADDRESS
+        ->
+TRANSFER BOOTSTRAP OOB TO OLD EX4300 VC
         ->
 STAGE + PROVE OLD EX4300 VC RECOVERY
         ->
@@ -193,40 +195,64 @@ This is the first EX4400 write-capable phase. It:
 
 ### 8. Stage and prove old EX4300 VC recovery management
 
-For an EX4300 Virtual Chassis, the physical management ports are `me0`; the VC-wide
-floating logical management interface is `vme`. The recovery workflow therefore adds
-a temporary, distinct recovery address to `vme.0`. It does not remove or change the
-existing in-band production management address.
+For an EX4300 Virtual Chassis, the VC-wide logical management interface is `vme`.
+The recovery workflow transfers the **same OOB identity used to bootstrap the
+replacement EX4400** to the old switch after replacement pre-stage is complete.
 
-The temporary recovery IP/prefix is intentionally explicit because no authoritative
-production recovery-address pool is currently defined in site policy.
+The recovery address is not operator-supplied. The command:
 
-Example production form:
+- selects the approved bootstrap identity bound to this migration;
+- verifies that the current bootstrap profile still matches the identity's pinned
+  profile digest;
+- derives the OOB IP from the approved identity;
+- derives the prefix length and gateway from that exact bootstrap profile;
+- requires the operator to acknowledge that the replacement EX4400 has released
+  the OOB address before the old switch can take ownership.
+
+For the current lab bootstrap profile, that means the logical recovery identity is
+`10.0.0.15/24` with gateway `10.0.0.2`.
+
+Production form:
 
 ```bash
-py -m ex_migration_provisioner.cli stage-old-recovery <migration-id> \
-  --recovery-address <temporary-ip/prefix>
+py -m ex_migration_provisioner.cli stage-old-recovery <migration-id>
 ```
 
-The TEMP-RECOVERY L2 path must be physically available before running this step—for
-example by connecting an old-VC management port into the pre-staged EX4400 recovery
-port and making VLAN 3999 reachable from the automation host.
+The recovery candidate is deliberately isolated from the master routing table. It
+contains the equivalent of:
+
+```text
+set system management-instance
+set interfaces vme unit 0 family inet address <approved-bootstrap-ip/prefix>
+set routing-instances mgmt_junos routing-options static route 0.0.0.0/0 next-hop <approved-bootstrap-gateway>
+```
+
+The command never adds or changes a master `routing-options` default route. If an
+existing `mgmt_junos` default route conflicts with the approved bootstrap gateway,
+the transaction fails closed rather than replacing or combining it.
 
 The guarded transaction:
 
 1. resolves the approved old hostname and current production management IP from the
    approved plan;
-2. connects through the current old-switch management path;
-3. requires the configured hostname to match the approved source identity;
-4. preserves existing in-band management;
-5. adds only the approved temporary `vme.0` recovery address;
-6. locks the candidate, requires it to be clean, commit-checks, and shows the exact
+2. resolves and integrity-validates the approved replacement bootstrap identity and
+   its exact bootstrap profile;
+3. requires explicit acknowledgement that the replacement has released the OOB
+   address;
+4. connects through the current old-switch in-band management path;
+5. requires the configured hostname to match the approved source identity;
+6. records the existing master routing-table default configuration and preserves it;
+7. enables the dedicated `mgmt_junos` management instance, configures `vme.0`, and
+   adds the OOB default route only inside `mgmt_junos`;
+8. locks the candidate, requires it to be clean, commit-checks, and shows the exact
    diff/digest;
-7. asks one operator approval;
-8. commit-confirms the change;
-9. opens a second NETCONF connection through the temporary recovery address;
-10. requires the recovery path to present the same SSH host key and hostname;
-11. confirms the commit only after that second-path proof succeeds.
+9. asks one operator approval;
+10. commit-confirms the change;
+11. validates the committed recovery statements and proves the master default-route
+    configuration did not change;
+12. opens a second NETCONF connection through the transferred OOB address;
+13. requires the recovery path to present the same SSH host key and hostname;
+14. confirms the commit only after that second-path proof succeeds.
 
 If second-path validation fails, the command explicitly rolls back or leaves the
 commit-confirmed timer as the final safety boundary.
@@ -363,8 +389,8 @@ physical moves.
 During the recovery window:
 
 - the replacement EX4400 owns the production management IP;
-- the old EX4300 VC remains independently reachable through its temporary `vme.0`
-  recovery address;
+- the old EX4300 VC remains independently reachable through its transferred bootstrap
+  OOB address on `vme.0` in `mgmt_junos`;
 - TEMP-RECOVERY VLAN 3999 remains present until cleanup is explicitly authorized.
 
 Automation for removing the temporary old-switch recovery address and removing the
