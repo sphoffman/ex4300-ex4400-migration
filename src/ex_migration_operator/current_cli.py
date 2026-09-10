@@ -7,6 +7,7 @@ from pathlib import Path
 from ex_migration_provisioner import cli_base as provisioner_base
 
 from . import cli as legacy
+from . import core as operator_core
 from .core import OperatorError, migration_root
 from .endpoint_exceptions import accept_latest_unresolved, endpoint_progress
 
@@ -16,7 +17,6 @@ def workflow_status(root):
     root = Path(root)
     state = legacy.workflow_status(root)
 
-    # Until QFX staging is complete the legacy state machine is authoritative.
     if state.get("qfx_stage") != "COMPLETE":
         return state
 
@@ -49,13 +49,13 @@ def workflow_status(root):
 
     plan_digest = selected_plan["plan_digest"]
     comparisons = [
-        value for _path, value in legacy._valid_jsons(
+        value for _path, value in operator_core._valid_jsons(
             root, "port-state-comparisons/*/comparison.json"
         )
         if value.get("approved_plan_digest") == plan_digest
     ]
     reports = [
-        value for _path, value in legacy._valid_jsons(
+        value for _path, value in operator_core._valid_jsons(
             root, "facilities-reports/*/report.json"
         )
         if value.get("source_approved_plan_digest") == plan_digest
@@ -67,7 +67,7 @@ def workflow_status(root):
         state["next_action"] = "validate"
         return state
 
-    if legacy._successful_cleanup(root, plan_digest):
+    if operator_core._successful_cleanup(root, plan_digest):
         state["cleanup"] = "COMPLETE"
         state["next_action"] = "complete"
     else:
@@ -103,9 +103,6 @@ def _offer_exception_acceptance(root):
             print("\nAll previously accepted endpoint exceptions are now resolved by committed mappings.")
         return 0
 
-    # Do not repeatedly ask after the operator has already accepted exactly these
-    # unresolved intents. They remain active but are still eligible for later
-    # explicit activate reconciliation.
     if progress["accepted_count"]:
         print(
             "\n%d unresolved endpoint intent(s) remain covered by accepted exception(s)."
@@ -143,9 +140,6 @@ def _offer_exception_acceptance(root):
 
 
 def _activate(migration_id, extra):
-    # Always invoke the mature activation path explicitly. Its own legacy state
-    # still sees accepted exceptions as incomplete, which intentionally allows
-    # post-validation/finalization retries until a real mapping is committed.
     result = legacy._activate(migration_id, extra)
     if result != 0:
         return result
