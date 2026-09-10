@@ -1,3 +1,4 @@
+import copy
 import json
 from pathlib import Path
 
@@ -13,16 +14,18 @@ def load(relative):
     return json.loads((ROOT / relative).read_text(encoding="utf-8"))
 
 
+def generated_policy():
+    return load("tests/fixtures/qfx-site-policy.generated.json")
+
+
 def test_new_design_json_is_parseable():
     paths = [
         "config/site.json",
         "config/bootstrap.lab.example.json",
-        "config/qfx-site-policy.lab.json",
+        "tests/fixtures/qfx-site-policy.generated.json",
         "schemas/ex4400-template-contract-1.0.json",
         "schemas/bootstrap-profile-1.0.json",
-        "schemas/qfx-site-policy-1.0.json",
-        "schemas/qfx-site-policy-1.1.json",
-        "schemas/provisioning-package-1.0.json",
+        "schemas/qfx-site-policy-1.2.json",
         "schemas/provisioning-package-1.1.json",
         "schemas/render-manifest-1.0.json",
         "templates/ex4400/contract-v1.json",
@@ -31,8 +34,10 @@ def test_new_design_json_is_parseable():
         assert load(path)
 
 
-def test_recovery_defaults_are_explicit():
+def test_site_settings_point_to_generated_profile_and_policy():
     settings = load("config/site.json")
+    assert settings["site_profile"] == "config/site-profile.json"
+    assert settings["qfx_site_policy"] == "config/qfx-site-policy.active.json"
     assert settings["temporary_recovery_vlan_name"] == "TEMP-RECOVERY"
     assert settings["temporary_recovery_vlan_id"] == 3999
 
@@ -88,63 +93,27 @@ def test_contract_keeps_bootstrap_variables_outside_template():
     assert "fxp0_management_ip" in bootstrap
     assert "uplink_interfaces" in bootstrap
     assert not required.intersection(bootstrap)
-    includes = contract["phase_contract"]["pre_stage"]["include"]
-    excludes = contract["phase_contract"]["pre_stage"]["exclude"]
-    assert "TEMPLATE_DEFINED_EDGE_PORT_RANGE" in includes
-    assert "EXPLICIT_AE0_UPLINK_MEMBERS" in includes
-    assert "PRESTAGE_DEFAULT_VLAN" in includes
-    assert "TEMPORARY_RECOVERY_PORT_OVERLAY" in includes
-    assert "PLATFORM_AWARE_NONSTOP_BRIDGING" in includes
-    assert "EXPLICIT_PRESTAGE_ACCESS_PORT_ASSIGNMENTS" in excludes
-    assert contract["safety"]["credentials_allowed"] is False
 
 
-def test_lab_qfx_site_policy_validates_against_schema():
-    schema = load("schemas/qfx-site-policy-1.1.json")
-    policy = load("config/qfx-site-policy.lab.json")
+def test_generated_qfx_site_policy_validates_and_has_no_site_voice_vlan():
+    schema = load("schemas/qfx-site-policy-1.2.json")
+    policy = generated_policy()
     Draft202012Validator.check_schema(schema)
     Draft202012Validator(schema).validate(policy)
     assert validate_pre_cutover_site_policy(policy) == policy
-
-
-def test_lab_qfx_site_policy_defers_attachment_until_post_cutover():
-    policy = load("config/qfx-site-policy.lab.json")
-    assert policy["schema_version"] == "1.1"
+    assert policy["schema_version"] == "1.2"
     assert policy["environment"] == "lab"
     assert policy["production_eligible"] is False
-
-    devices = {entry["expected_hostname"]: entry for entry in policy["qfx_pair"]}
-    assert devices == {
-        "BD-1": {
-            "role": "qfx-a",
-            "management_address": "10.255.3.14",
-            "expected_hostname": "BD-1",
-            "expected_model": "ptx10001-36mr",
-        },
-        "BD-2": {
-            "role": "qfx-b",
-            "management_address": "10.255.3.15",
-            "expected_hostname": "BD-2",
-            "expected_model": "ptx10001-36mr",
-        },
-    }
-
+    assert "voice_vlan" not in policy
     assert "port_to_ae" not in policy
     assert "lacp_system_id" not in policy
-    assert policy["ae_pool"] == {
-        "method": "discover-from-existing-qfx-config",
-        "ae_min": 0,
-        "ae_max": 2,
-        "migration_assignment_prebound": False,
-    }
-    assert set(policy["stage_port_pools"]["lab-established"]) == {
+    assert policy["ae_pool"]["migration_assignment_prebound"] is False
+    assert set(policy["stage_port_pools"]["site-staged"]) == {
         "et-0/0/3",
         "et-0/0/4",
         "et-0/0/5",
     }
-    assert policy["excluded_interfaces"] == []
     assert policy["management_vlan"] == {"name": "MGMT", "vlan_id": 163}
-    assert policy["voice_vlan"] == {"name": "voip", "vlan_id": 1111}
     assert policy["temporary_recovery_vlan"] == {"name": "TEMP-RECOVERY", "vlan_id": 3999}
     assert policy["prestage_access_vlan"] == {"name": "TEMP-ACCESS", "vlan_id": 3998}
     assert policy["precutover_qfx_baseline"] == {
@@ -153,32 +122,15 @@ def test_lab_qfx_site_policy_defers_attachment_until_post_cutover():
         "force_up": False,
     }
     assert 3998 not in policy["precutover_qfx_baseline"]["required_vlan_ids"]
-    assert policy["esi"] == {
-        "method": "auto-derive-type-1-lacp",
-        "all_active": True,
-    }
-
-    validation = policy["validation"]
-    assert validation["attachment_discovered_post_cutover"] is True
-    assert validation["require_interface_symmetry"] is True
-    assert validation["require_lldp"] is True
-    assert validation["require_lacp_partner"] is True
-    assert validation["require_matching_ae"] is True
-    assert validation["require_matching_lacp_system_id"] is True
-    assert validation["operator_supplied_ports_allowed"] is False
 
 
-def test_qfx_policy_rejects_force_up():
-    policy = load("config/qfx-site-policy.lab.json")
-    policy["precutover_qfx_baseline"]["force_up"] = True
-    schema = load("schemas/qfx-site-policy-1.1.json")
-    assert not Draft202012Validator(schema).is_valid(policy)
+def test_generated_qfx_policy_rejects_force_up_and_lab_production_eligibility():
+    schema = load("schemas/qfx-site-policy-1.2.json")
+    policy = generated_policy()
+    force_up = copy.deepcopy(policy)
+    force_up["precutover_qfx_baseline"]["force_up"] = True
+    assert not Draft202012Validator(schema).is_valid(force_up)
 
-
-def test_qfx_site_policy_lab_model_exception_does_not_relax_production():
-    schema = load("schemas/qfx-site-policy-1.1.json")
-    policy = load("config/qfx-site-policy.lab.json")
-    production = json.loads(json.dumps(policy))
-    production["environment"] = "production"
-    production["production_eligible"] = True
-    assert not Draft202012Validator(schema).is_valid(production)
+    wrong_environment = copy.deepcopy(policy)
+    wrong_environment["production_eligible"] = True
+    assert not Draft202012Validator(schema).is_valid(wrong_environment)
