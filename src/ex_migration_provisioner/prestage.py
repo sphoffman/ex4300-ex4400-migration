@@ -331,15 +331,19 @@ def write_pre_stage_package(migration_root, package):
 
 
 def package_candidates_compat(migration_root):
+    """Return only current-schema provisioning packages.
+
+    Historical package layouts are intentionally unsupported while this project is
+    under development; regenerate migration artifacts after schema changes.
+    """
     candidates = []
     for package_path in sorted((migration_root / "packages").glob("*/package.json")):
         directory = package_path.parent
         try:
+            base._verify_integrity(directory, ("package.json",))
             package = read_json(package_path)
-            if package.get("schema_version") == PACKAGE_SCHEMA_VERSION:
-                base._verify_integrity(directory, ("package.json",))
-            else:
-                base._verify_integrity(directory, ("package.json", "qfx-preflight.json"))
+            if package.get("schema_version") != PACKAGE_SCHEMA_VERSION:
+                continue
             if package.get("migration_id") != migration_root.name:
                 continue
             candidates.append({
@@ -365,14 +369,17 @@ def choose_package_compat(migration_root, package_id=None):
         candidates = [item for item in candidates if item["package"].get("package_id") == package_id]
     if not candidates:
         suffix = " %s" % package_id if package_id else ""
-        raise base.ProvisioningError("no integrity-valid provisioning package%s was found" % suffix)
+        raise base.ProvisioningError("no current-schema integrity-valid provisioning package%s was found" % suffix)
     return candidates[0]
 
 
 def verify_package_inputs_compat(selected, settings, migration_root, paths):
     package = selected["package"]
     if package.get("schema_version") != PACKAGE_SCHEMA_VERSION:
-        return base._verify_package_inputs_legacy(selected, settings, migration_root, paths)
+        raise base.ProvisioningError(
+            "unsupported provisioning package schema %r; regenerate migration artifacts"
+            % package.get("schema_version")
+        )
 
     inputs = package.get("inputs", {})
     current = {
