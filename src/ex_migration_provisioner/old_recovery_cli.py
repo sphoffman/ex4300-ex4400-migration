@@ -200,6 +200,17 @@ def run(argv):
     print("  Safety boundary: old/new OOB interfaces remain physically L2-isolated until the cable move.")
 
     source_transport = str(args.transport_address or management_ip)
+    if environment == "lab":
+        print("\nLAB ROLE HANDOFF")
+        print("  This lab may reuse one device for both replacement EX4400 and old EX4300 roles.")
+        print("  Change the shared lab device back to the approved old EX4300 configuration now.")
+        print("  Expected old-switch hostname: %s" % expected_hostname)
+        print("  Transport after role change: %s" % source_transport)
+        answer = input("\nContinue after the lab device is presenting the old EX4300 role? [y/N]: ").strip().lower()
+        if answer not in ("y", "yes"):
+            print("Old-switch recovery paused for lab role change; no connection or write attempted.")
+            return 1
+
     statements = recovery_statements(
         args.management_interface,
         oob["recovery_address"],
