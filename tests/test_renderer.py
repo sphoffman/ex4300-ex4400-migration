@@ -8,14 +8,14 @@ from ex_migration_analyzer.core import canonical_bytes, sha256_bytes
 from ex_migration_provisioner import RENDERER_VERSION
 from ex_migration_provisioner.prestage import build_pre_stage_package
 from ex_migration_provisioner.render import RenderError, build_render_manifest, render_pre_stage, validate_pre_stage_render
-from test_provisioner import bootstrap, digest, plan_variables
+from test_provisioner import bootstrap, digest, plan_variables, policy
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def package_for_render():
-    qfx_policy = json.loads((ROOT / "config/qfx-site-policy.lab.json").read_text())
+    qfx_policy = policy()
     plan = {
         "plan_id": "0123456789abcdef",
         "migration_id": "sw1203",
