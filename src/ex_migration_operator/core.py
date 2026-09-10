@@ -514,7 +514,7 @@ def workflow_status(root):
         status["port_state"] = "COMPLETE"
     reports = [
         value for _path, value in _valid_jsons(root, "facilities-reports/*/report.json")
-        if value.get("approved_plan_digest") == plan_digest
+        if value.get("source_approved_plan_digest") == plan_digest
     ]
     if reports:
         status["cabling_report"] = "COMPLETE"
