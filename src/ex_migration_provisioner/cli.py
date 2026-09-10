@@ -470,3 +470,7 @@ def main(argv=None):
             print("ERROR: %s" % exc, file=sys.stderr)
             return 2
     return base.main(values)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
