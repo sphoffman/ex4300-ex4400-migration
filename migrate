@@ -13,6 +13,14 @@ if [[ ${#args[@]} -ge 1 ]]; then
     site-init|site-discover|site-stage|site-status)
       module="ex_migration_site.cli"
       ;;
+    status|discover|analyze|build|prestage|cutover-ready|cutover|activate|validate|finalize|mac)
+      echo "ERROR: '${args[0]}' is a migration command, not a migration ID." >&2
+      echo "Use: ./migrate <migration-id> ${args[0]}" >&2
+      if [[ "${args[0]}" == "status" ]]; then
+        echo "For site readiness, use: ./migrate site-status" >&2
+      fi
+      exit 2
+      ;;
   esac
 fi
 
