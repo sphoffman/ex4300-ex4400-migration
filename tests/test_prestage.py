@@ -5,18 +5,14 @@ from jsonschema import Draft202012Validator
 
 from ex_migration_provisioner import RENDERER_VERSION, cli
 from ex_migration_provisioner.prestage import build_pre_stage_package
-from test_provisioner import bootstrap, digest, plan_variables
+from test_provisioner import bootstrap, digest, plan_variables, policy
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def site_policy():
-    return json.loads((ROOT / "config/qfx-site-policy.lab.json").read_text())
-
-
 def test_pre_stage_package_has_no_live_qfx_attachment_or_preflight():
-    policy = site_policy()
+    qfx_policy = policy()
     plan = {
         "plan_id": "0123456789abcdef",
         "migration_id": "sw1203",
@@ -36,7 +32,7 @@ def test_pre_stage_package_has_no_live_qfx_attachment_or_preflight():
         digest("c"),
         digest("d"),
         digest("e"),
-        policy,
+        qfx_policy,
         digest("f"),
         bootstrap(),
         digest("1"),
@@ -48,12 +44,14 @@ def test_pre_stage_package_has_no_live_qfx_attachment_or_preflight():
     assert "qfx_preflight_digest" not in package["inputs"]
     assert package["artifacts"] == []
     assert package["variables"]["qfx"] == {
-        "site_policy_id": "lab-bd-pair-v2",
+        "site_policy_id": "lab-site-inventory-test",
         "attachment_state": "UNKNOWN_UNTIL_POST_CUTOVER_DISCOVERY",
         "physical_interface": None,
         "ae_interface": None,
         "force_up": False,
     }
+    assert package["variables"]["voice_vlan"] == "voip"
+    assert package["variables"]["voice_vlan_id"] == 1111
     assert package["variables"]["uplink_interfaces"] == ["ge-0/0/0", "ge-0/0/1"]
     assert package["variables"]["prestage_access_vlan_name"] == "TEMP-ACCESS"
     assert package["variables"]["prestage_access_vlan_id"] == 3998
@@ -82,15 +80,16 @@ def test_prepare_cli_has_no_qfx_credentials_or_transport_options():
     assert "--no-host-key-check" not in option_strings
 
 
-def test_site_policy_prohibits_force_up_prebound_attachment_and_qfx_temp_access():
-    policy = site_policy()
-    assert policy["precutover_qfx_baseline"]["force_up"] is False
-    assert policy["precutover_qfx_baseline"]["lacp_mode"] == "active"
-    assert policy["ae_pool"]["migration_assignment_prebound"] is False
-    assert policy["prestage_access_vlan"] == {"name": "TEMP-ACCESS", "vlan_id": 3998}
-    assert 3998 not in policy["precutover_qfx_baseline"]["required_vlan_ids"]
-    assert "port_to_ae" not in policy
+def test_generated_site_policy_prohibits_voice_force_up_prebound_attachment_and_qfx_temp_access():
+    qfx_policy = policy()
+    assert "voice_vlan" not in qfx_policy
+    assert qfx_policy["precutover_qfx_baseline"]["force_up"] is False
+    assert qfx_policy["precutover_qfx_baseline"]["lacp_mode"] == "active"
+    assert qfx_policy["ae_pool"]["migration_assignment_prebound"] is False
+    assert qfx_policy["prestage_access_vlan"] == {"name": "TEMP-ACCESS", "vlan_id": 3998}
+    assert 3998 not in qfx_policy["precutover_qfx_baseline"]["required_vlan_ids"]
+    assert "port_to_ae" not in qfx_policy
 
-    schema = json.loads((ROOT / "schemas/qfx-site-policy-1.1.json").read_text())
+    schema = json.loads((ROOT / "schemas/qfx-site-policy-1.2.json").read_text())
     Draft202012Validator.check_schema(schema)
-    Draft202012Validator(schema).validate(policy)
+    Draft202012Validator(schema).validate(qfx_policy)
