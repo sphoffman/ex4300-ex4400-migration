@@ -6,12 +6,21 @@ cd "$ROOT"
 
 args=("$@")
 docker_env=(--env PYTHONPATH=/scripts/src)
+module="ex_migration_operator.cli"
 
-# A repeated discovery session launches one Python child per immutable collection.
-# Prompt once here, then forward the password through an ephemeral environment
-# variable so every child can reuse it without putting the secret on its command
-# line or writing it to disk.
-if [[ ${#args[@]} -ge 2 && "${args[1]}" == "discover" ]]; then
+if [[ ${#args[@]} -ge 1 ]]; then
+  case "${args[0]}" in
+    site-init|site-discover|site-stage|site-status)
+      module="ex_migration_site.cli"
+      ;;
+  esac
+fi
+
+# A repeated per-migration discovery session launches one Python child per
+# immutable collection. Prompt once here, then forward the password through an
+# ephemeral environment variable so every child can reuse it without putting the
+# secret on its command line or writing it to disk.
+if [[ "$module" == "ex_migration_operator.cli" && ${#args[@]} -ge 2 && "${args[1]}" == "discover" ]]; then
   have_username=0
   password_env_name=""
   i=2
@@ -69,4 +78,4 @@ exec docker run --rm -it \
   "${docker_env[@]}" \
   -v "$ROOT:/scripts" \
   juniper/pyez \
-  -m ex_migration_operator.cli "${args[@]}"
+  -m "$module" "${args[@]}"
