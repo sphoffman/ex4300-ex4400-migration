@@ -107,9 +107,6 @@ def _site_init(argv):
     parser.add_argument("--prestage-vlan-id", type=int)
     parser.add_argument("--prestage-vlan-name")
     parser.add_argument("--exclude", action="append", default=[])
-    parser.add_argument("--ae-min", type=int)
-    parser.add_argument("--ae-max", type=int)
-    parser.add_argument("--lacp-system-id-base")
     args = parser.parse_args(argv)
 
     settings = load_settings(args.settings)
@@ -135,13 +132,6 @@ def _site_init(argv):
     recovery_id = _prompt_int(args.recovery_vlan_id, "Temporary recovery VLAN ID", 3999)
     prestage_name = _prompt(args.prestage_vlan_name, "EX-only prestage/default VLAN name", "TEMP-ACCESS")
     prestage_id = _prompt_int(args.prestage_vlan_id, "EX-only prestage/default VLAN ID", 3998)
-    ae_min = _prompt_int(args.ae_min, "First AE number available for migration staging", 0)
-    ae_max = _prompt_int(args.ae_max, "Last AE number available for migration staging", 127)
-    lacp_base = _prompt(
-        args.lacp_system_id_base,
-        "LACP system-ID base for ae0 (last octet becomes AE number)",
-        "02:00:00:00:00:00",
-    )
 
     excluded = list(args.exclude)
     if not excluded:
@@ -158,9 +148,6 @@ def _site_init(argv):
         {"name": recovery_name, "vlan_id": recovery_id},
         {"name": prestage_name, "vlan_id": prestage_id},
         excluded,
-        ae_min,
-        ae_max,
-        lacp_base,
     )
 
     print("\nSite initialization")
@@ -169,11 +156,12 @@ def _site_init(argv):
     print("  Production eligible: %s" % ("YES" if value["production_eligible"] else "NO"))
     print("  QFX-A: %s" % qfx_a)
     print("  QFX-B: %s" % qfx_b)
-    print("  QFX baseline VLANs: %s (%s), %s (%s)" % (mgmt_name, mgmt_id, recovery_name, recovery_id))
+    print("  Required pre-cutover QFX VLANs: %s (%s), %s (%s)" % (mgmt_name, mgmt_id, recovery_name, recovery_id))
     print("  EX-only prestage VLAN: %s (%s)" % (prestage_name, prestage_id))
-    print("  LACP system-ID base: %s" % value["lacp_system_id_base"])
     print("  Voice VLAN: DISCOVERED PER MIGRATION FROM EX4300")
-    print("  QFX model/hostname/attachment ports: DISCOVERED, NOT OPERATOR ENTERED")
+    print("  QFX hostname/model: DISCOVERED")
+    print("  QFX ET->AE/LACP/ESI/trunk structure: MUST ALREADY BE PREPROVISIONED")
+    print("  This tool may add only missing MGMT/TEMP-RECOVERY membership during site-stage.")
     print("  Explicitly excluded ET interfaces: %s" % (", ".join(excluded) if excluded else "none"))
 
     if input("\nCreate this site profile? [y/N]: ").strip().lower() not in ("y", "yes"):
@@ -213,14 +201,20 @@ def _site_discover(argv):
     print("\nQFX site discovery")
     for item in discovery["qfx_pair"]:
         print("  %s: %s | %s | %s" % (item["role"], item["hostname"], item["model"], item["management_address"]))
-    print("\nProposed/pre-existing EX attachment staging inventory")
+    print("\nPreprovisioned EX attachment inventory")
     if discovery["attachment_inventory"]:
         for item in discovery["attachment_inventory"]:
-            print("  %-14s -> %-6s  %s" % (item["physical_interface"], item["ae_interface"], item["mapping_source"]))
+            current = item["current_vlan_ids"]
+            print("  %-14s -> %-6s  VLANs qfx-a=%s qfx-b=%s" % (
+                item["physical_interface"],
+                item["ae_interface"],
+                current["qfx-a"],
+                current["qfx-b"],
+            ))
     else:
         print("  none")
     if discovery["blocked_interfaces"]:
-        print("\nConfigured/reserved/incompatible ET interfaces (will NOT be changed)")
+        print("\nET interfaces not eligible for EX migration use")
         for item in discovery["blocked_interfaces"]:
             print("  %-14s %s" % (item["physical_interface"], item["reason"]))
     asymmetric = discovery["asymmetric_interfaces"]
@@ -230,15 +224,16 @@ def _site_discover(argv):
         print("  qfx-b only: %s" % (", ".join(asymmetric["qfx-b-only"]) or "none"))
 
     if not discovery["attachment_inventory"]:
-        raise SiteError("site discovery found no compatible ET attachment interfaces to stage")
+        raise SiteError("site discovery found no valid preprovisioned ET-to-AE attachment interfaces")
     print("\nNo QFX configuration has been changed.")
-    if input("Approve this discovered QFX identity and staging plan? [y/N]: ").strip().lower() not in ("y", "yes"):
+    print("site-stage will only add missing management/TEMP-RECOVERY VLAN membership; it cannot create or repair AE/LACP/ESI structure.")
+    if input("Approve this discovered QFX identity and preprovisioned AE inventory? [y/N]: ").strip().lower() not in ("y", "yes"):
         print("Site discovery was not approved; no site artifact created.")
         return 1
     discovery["approval"] = {
         "approved": True,
         "approved_at": utc_now(),
-        "scope": "observed-qfx-identity-and-ex-attachment-staging-plan",
+        "scope": "observed-qfx-identity-and-preprovisioned-ae-inventory",
     }
     directory, value, action = write_site_discovery(settings, profile, discovery)
     print("\nSite discovery: %s (%s)" % (value["discovery_id"], action))
@@ -252,7 +247,7 @@ def _rollback_pair(configs, committed_roles):
     for role in reversed(committed_roles):
         try:
             configs[role].rollback(rb_id=1)
-            if configs[role].commit(comment="Rollback failed EX migration site baseline staging", timeout=120) is not True:
+            if configs[role].commit(comment="Rollback failed EX migration QFX baseline VLAN staging", timeout=120) is not True:
                 errors.append("%s rollback commit did not return success" % role)
         except Exception as exc:
             errors.append("%s: %s" % (role, exc))
@@ -309,16 +304,17 @@ def _site_stage(argv):
                 raise SiteError("%s already has uncommitted candidate changes" % role)
             cu.load(payload, format="set", merge=True)
             if cu.commit_check() is not True:
-                raise SiteError("%s site baseline commit-check did not return PASS" % role)
+                raise SiteError("%s site baseline VLAN commit-check did not return PASS" % role)
             diffs[role] = str(cu.diff() or "")
 
         if diffs["qfx-a"] or diffs["qfx-b"]:
-            print("\nQFX site baseline candidate diffs")
+            print("\nQFX pre-cutover baseline VLAN candidate diffs")
             for role in ("qfx-a", "qfx-b"):
                 print("\n--- %s ---" % role)
                 print(diffs[role].rstrip() or "(no candidate diff)")
-            print("\nIntent: every approved ET attachment maps to its AE and carries ONLY management and TEMP-RECOVERY. No voice or endpoint data VLAN is added here.")
-            if input("\nApprove exactly these site baseline candidates for commit confirmed on both QFXs? [y/N]: ").strip().lower() not in ("y", "yes"):
+            print("\nIntent: add only missing management and TEMP-RECOVERY VLAN membership to already-preprovisioned migration AEs.")
+            print("AE membership, LACP, system IDs, ESI, and trunk structure are outside this tool's write scope.")
+            if input("\nApprove exactly these VLAN-membership candidates for commit confirmed on both QFXs? [y/N]: ").strip().lower() not in ("y", "yes"):
                 for role in reversed(locked):
                     configs[role].rollback()
                 print("Site baseline candidate was not approved; no commit performed.")
@@ -326,7 +322,7 @@ def _site_stage(argv):
             for role in ("qfx-a", "qfx-b"):
                 if configs[role].commit(
                     confirm=args.confirm_minutes,
-                    comment="EX migration site baseline %s" % discovery["discovery_id"],
+                    comment="EX migration pre-cutover QFX VLAN baseline %s" % discovery["discovery_id"],
                     timeout=120,
                 ) is not True:
                     raise SiteError("%s commit confirmed did not return success" % role)
@@ -338,12 +334,12 @@ def _site_stage(argv):
             checks, passed = validate_staged_device(devices[role], profile, discovery)
             validation[role] = {"passed": passed, "checks": checks}
             if not passed:
-                raise SiteError("%s failed post-stage baseline validation" % role)
+                raise SiteError("%s failed post-stage QFX baseline validation" % role)
 
         if commit_confirmed:
             for role in ("qfx-a", "qfx-b"):
                 if configs[role].commit(
-                    comment="Confirm EX migration site baseline %s" % discovery["discovery_id"],
+                    comment="Confirm EX migration pre-cutover QFX VLAN baseline %s" % discovery["discovery_id"],
                     timeout=120,
                 ) is not True:
                     raise SiteError("%s final site baseline confirmation failed" % role)
@@ -353,11 +349,11 @@ def _site_stage(argv):
         directory, inventory, action = write_site_inventory(settings, profile, inventory)
         policy = build_active_policy(profile, inventory, directory / "inventory.json")
         policy_path = write_active_policy(settings, policy)
-        print("\nQFX site baseline staging: PASS")
+        print("\nQFX pre-cutover baseline: PASS")
         print("  Site inventory: %s (%s)" % (inventory["inventory_id"], action))
-        print("  Staged EX attachment AEs: %d" % len(inventory["attachments"]))
-        print("  Baseline VLAN IDs: %s" % ", ".join(str(value) for value in inventory["baseline_vlan_ids"]))
-        print("  Voice VLANs on staged AEs: NONE")
+        print("  Verified preprovisioned EX attachment AEs: %d" % len(inventory["attachments"]))
+        print("  Required VLAN IDs on every migration AE: %s" % ", ".join(str(value) for value in inventory["baseline_vlan_ids"]))
+        print("  Voice/data VLANs on migration AEs: NONE at site baseline")
         print("  Inventory: %s" % (directory / "inventory.json"))
         print("  Generated active policy: %s" % policy_path)
         print("Next action: begin an EX4300 migration, for example ./migrate sw1203 discover --address <old-switch>")
@@ -406,14 +402,14 @@ def _site_status(argv):
     print("  Environment: %s" % profile["environment"].upper())
     print("  Production eligible: %s" % ("YES" if profile["production_eligible"] else "NO"))
     print("  Site profile: COMPLETE")
-    print("  QFX discovery: %s" % ("APPROVED" if discoveries else "PENDING"))
-    print("  QFX baseline staging: %s" % ("COMPLETE" if inventories else "PENDING"))
+    print("  Preprovisioned QFX AE discovery: %s" % ("APPROVED" if discoveries else "PENDING"))
+    print("  QFX MGMT/TEMP-RECOVERY baseline: %s" % ("COMPLETE" if inventories else "PENDING"))
     print("  Active generated policy: %s" % ("COMPLETE" if active.is_file() else "PENDING"))
     if inventories:
         inventory = inventories[0][0]
-        print("  Staged EX attachment AEs: %d" % len(inventory["attachments"]))
+        print("  Verified EX attachment AEs: %d" % len(inventory["attachments"]))
         print("  Baseline VLAN IDs: %s" % ", ".join(str(value) for value in inventory["baseline_vlan_ids"]))
-        print("  Voice VLAN baseline: NONE (per-migration discovery)")
+        print("  Voice/data VLAN baseline: NONE (per-migration)")
     if not discoveries:
         print("\nNext action: ./migrate site-discover")
     elif not inventories or not active.is_file():
