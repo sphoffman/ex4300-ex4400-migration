@@ -4,10 +4,69 @@ set -euo pipefail
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 cd "$ROOT"
 
+args=("$@")
+docker_env=(--env PYTHONPATH=/scripts/src)
+
+# A repeated discovery session launches one Python child per immutable collection.
+# Prompt once here, then forward the password through an ephemeral environment
+# variable so every child can reuse it without putting the secret on its command
+# line or writing it to disk.
+if [[ ${#args[@]} -ge 2 && "${args[1]}" == "discover" ]]; then
+  have_username=0
+  password_env_name=""
+  i=2
+  while (( i < ${#args[@]} )); do
+    case "${args[$i]}" in
+      --username)
+        have_username=1
+        ((i += 2))
+        continue
+        ;;
+      --username=*)
+        have_username=1
+        ;;
+      --password-env)
+        if (( i + 1 < ${#args[@]} )); then
+          password_env_name="${args[$((i + 1))]}"
+          ((i += 2))
+          continue
+        fi
+        ;;
+      --password-env=*)
+        password_env_name="${args[$i]#--password-env=}"
+        ;;
+    esac
+    ((i += 1))
+  done
+
+  if (( have_username == 0 )); then
+    read -r -p "Username: " discovery_username
+    if [[ -z "$discovery_username" ]]; then
+      echo "ERROR: username must not be empty" >&2
+      exit 2
+    fi
+    args+=(--username "$discovery_username")
+  fi
+
+  if [[ -z "$password_env_name" ]]; then
+    read -r -s -p "Password: " discovery_password
+    printf '\n'
+    export EX_MIGRATION_DISCOVERY_PASSWORD="$discovery_password"
+    unset discovery_password
+    password_env_name="EX_MIGRATION_DISCOVERY_PASSWORD"
+    args+=(--password-env "$password_env_name")
+  fi
+
+  # With --env NAME (no '=value'), Docker copies NAME from this process's
+  # environment. For an operator-supplied --password-env this also makes the
+  # host variable available inside the PyEZ container.
+  docker_env+=(--env "$password_env_name")
+fi
+
 exec docker run --rm -it \
   --entrypoint python \
   --workdir /scripts \
-  --env PYTHONPATH=/scripts/src \
+  "${docker_env[@]}" \
   -v "$ROOT:/scripts" \
   juniper/pyez \
-  -m ex_migration_operator.cli "$@"
+  -m ex_migration_operator.cli "${args[@]}"
