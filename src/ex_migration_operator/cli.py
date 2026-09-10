@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import getpass
+import os
 import subprocess
 import sys
 import time
@@ -46,6 +48,37 @@ def _run_module(module, args):
 
 def _settings(path):
     return provisioner_base.load_settings(Path(path))
+
+
+def _site_environment(settings):
+    policy_path = Path(
+        settings.get("qfx_site_policy", "config/qfx-site-policy.lab.json")
+    )
+    if not policy_path.is_file():
+        raise OperatorError("QFX site policy is missing: %s" % policy_path)
+    policy = read_json(policy_path)
+    environment = str(policy.get("environment") or "")
+    if environment not in ("lab", "production"):
+        raise OperatorError("QFX site policy environment must be lab or production")
+    return environment
+
+
+def _prestage_credentials(args):
+    username = args.username or input("Migration device username: ").strip()
+    if not username:
+        raise OperatorError("migration device username must not be empty")
+
+    if args.password_env:
+        if os.environ.get(args.password_env) is None:
+            raise OperatorError(
+                "environment variable %s is not set" % args.password_env
+            )
+        return username, args.password_env, None
+
+    password_env = "EX_MIGRATION_PRESTAGE_PASSWORD"
+    password = getpass.getpass("Migration device password: ")
+    os.environ[password_env] = password
+    return username, password_env, password_env
 
 
 def _status_text(value):
@@ -150,11 +183,19 @@ def _prestage(migration_id, extra):
     parser.add_argument("--settings", default="config/site.json")
     parser.add_argument("--oob-address")
     parser.add_argument("--old-transport-address")
+    parser.add_argument("--username")
+    parser.add_argument("--password-env")
     parser.add_argument("--no-host-key-check", action="store_true")
     args = parser.parse_args(extra)
     settings = _settings(args.settings)
     root = migration_root(settings, migration_id)
+    environment = _site_environment(settings)
     state = workflow_status(root)
+
+    if args.old_transport_address and environment != "lab":
+        raise OperatorError(
+            "--old-transport-address is permitted only by a lab site policy"
+        )
 
     if state["package"] != "COMPLETE":
         _run_module(
@@ -167,39 +208,74 @@ def _prestage(migration_id, extra):
             "ex_migration_provisioner.cli",
             ["render", migration_id, "--settings", args.settings],
         )
+
     state = workflow_status(root)
-    if state["identity"] != "COMPLETE":
-        oob = args.oob_address or input(
-            "Replacement EX4400 OOB address/prefix (for example 10.0.0.15/24): "
-        ).strip()
-        if not oob:
-            raise OperatorError("replacement OOB address/prefix is required")
-        _run_module(
-            "ex_migration_provisioner.cli",
-            [
-                "identify",
+    needs_credentials = any(
+        state[name] != "COMPLETE"
+        for name in ("identity", "ex4400_prestage", "old_recovery")
+    )
+    if not needs_credentials:
+        return 0
+
+    username, password_env, temporary_password_env = _prestage_credentials(args)
+    credential_args = ["--username", username, "--password-env", password_env]
+
+    try:
+        state = workflow_status(root)
+        if state["identity"] != "COMPLETE":
+            oob = args.oob_address or input(
+                "Replacement EX4400 OOB address/prefix (for example 10.0.0.15/24): "
+            ).strip()
+            if not oob:
+                raise OperatorError("replacement OOB address/prefix is required")
+            _run_module(
+                "ex_migration_provisioner.cli",
+                [
+                    "identify",
+                    migration_id,
+                    "--settings",
+                    args.settings,
+                    "--oob-address",
+                    oob,
+                ] + credential_args,
+            )
+
+        state = workflow_status(root)
+        if state["ex4400_prestage"] != "COMPLETE":
+            _run_module(
+                "ex_migration_provisioner.cli",
+                ["run", migration_id, "--settings", args.settings] + credential_args,
+            )
+
+        state = workflow_status(root)
+        if state["old_recovery"] != "COMPLETE":
+            values = [
+                "stage-old-recovery",
                 migration_id,
                 "--settings",
                 args.settings,
-                "--oob-address",
-                oob,
-            ],
-        )
-    state = workflow_status(root)
-    if state["ex4400_prestage"] != "COMPLETE":
-        _run_module(
-            "ex_migration_provisioner.cli",
-            ["run", migration_id, "--settings", args.settings],
-        )
-    state = workflow_status(root)
-    if state["old_recovery"] != "COMPLETE":
-        values = ["stage-old-recovery", migration_id, "--settings", args.settings]
-        if args.old_transport_address:
-            values += ["--transport-address", args.old_transport_address]
-        if args.no_host_key_check:
-            values.append("--no-host-key-check")
-        _run_module("ex_migration_provisioner.cli", values)
-    return 0
+            ] + credential_args
+
+            old_transport = args.old_transport_address
+            if not old_transport and environment == "lab":
+                old_transport = source_address_from_evidence(root)
+                if not old_transport:
+                    raise OperatorError(
+                        "lab old-switch recovery could not resolve the original discovery connection address"
+                    )
+                print(
+                    "Lab old-switch transport: %s (reused from discovery evidence)"
+                    % old_transport
+                )
+            if old_transport:
+                values += ["--transport-address", old_transport]
+            if args.no_host_key_check:
+                values.append("--no-host-key-check")
+            _run_module("ex_migration_provisioner.cli", values)
+        return 0
+    finally:
+        if temporary_password_env:
+            os.environ.pop(temporary_password_env, None)
 
 
 def _cutover_ready(migration_id, extra):
