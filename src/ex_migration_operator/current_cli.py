@@ -98,17 +98,17 @@ def _print_unresolved(progress):
 def _offer_exception_acceptance(root):
     selected_plan = provisioner_base.choose_approved_plan(root)
     progress = endpoint_progress(root, selected_plan)
-    if not progress["unresolved"]:
-        if progress["accepted_count"]:
-            print("\nAll previously accepted endpoint exceptions are now resolved by committed mappings.")
-        return 0
 
     if progress["accepted_count"]:
         print(
-            "\n%d unresolved endpoint intent(s) remain covered by accepted exception(s)."
+            "\n%d endpoint intent(s) remain unresolved but are covered by accepted exception(s)."
             % progress["accepted_count"]
         )
-        print("Run './migrate %s activate' later to retry reconciliation." % root.name)
+        print("They are not marked migrated and remain eligible for later reconciliation.")
+        print("Run './migrate %s activate' later to retry them." % root.name)
+        return 0
+
+    if not progress["unresolved"]:
         return 0
 
     _print_unresolved(progress)
