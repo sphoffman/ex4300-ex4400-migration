@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.2",
+  "schema_version": "1.3",
   "snapshot_root": "snapshots",
   "analysis_policy": "policies/production-old-v1.json",
   "display_timezone": "EST5EDT,M3.2.0,M11.1.0",
@@ -10,7 +10,8 @@
   "require_host_key_verification": true,
   "ex4400_template": "templates/ex4400/ex4400.set.j2",
   "ex4400_template_contract": "templates/ex4400/contract-v1.json",
-  "qfx_site_policy": "config/qfx-site-policy.lab.json",
+  "site_profile": "config/site-profile.json",
+  "qfx_site_policy": "config/qfx-site-policy.active.json",
   "bootstrap_profile": "config/bootstrap.lab.example.json",
   "temporary_recovery_vlan_name": "TEMP-RECOVERY",
   "temporary_recovery_vlan_id": 3999
