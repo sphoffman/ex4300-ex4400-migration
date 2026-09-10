@@ -8,12 +8,21 @@ args=("$@")
 docker_env=(--env PYTHONPATH=/scripts/src)
 module="ex_migration_operator.cli"
 
+# Initial old-switch discovery intentionally has no migration ID. The discovery
+# collector derives it from the observed hostname and reports the ID to use for
+# all subsequent operator commands.
+initial_discovery=0
 if [[ ${#args[@]} -ge 1 ]]; then
   case "${args[0]}" in
     site-init|site-discover|site-stage|site-status)
       module="ex_migration_site.cli"
       ;;
-    status|discover|analyze|build|prestage|cutover-ready|cutover|activate|validate|finalize|mac)
+    discover)
+      module="ex_migration_discovery.cli"
+      initial_discovery=1
+      args=("collect" "${args[@]:1}")
+      ;;
+    status|analyze|build|prestage|cutover-ready|cutover|activate|validate|finalize|mac)
       echo "ERROR: '${args[0]}' is a migration command, not a migration ID." >&2
       echo "Use: ./migrate <migration-id> ${args[0]}" >&2
       if [[ "${args[0]}" == "status" ]]; then
@@ -24,14 +33,24 @@ if [[ ${#args[@]} -ge 1 ]]; then
   esac
 fi
 
-# A repeated per-migration discovery session launches one Python child per
-# immutable collection. Prompt once here, then forward the password through an
-# ephemeral environment variable so every child can reuse it without putting the
-# secret on its command line or writing it to disk.
-if [[ "$module" == "ex_migration_operator.cli" && ${#args[@]} -ge 2 && "${args[1]}" == "discover" ]]; then
+# Discovery credentials are session-only. For an initial discovery this avoids
+# making the operator invent a migration ID first. For repeated per-migration
+# discovery, the same mechanism lets independent collections reuse credentials
+# within the invocation without writing the password to disk or argv.
+discovery_session=0
+option_start=0
+if (( initial_discovery == 1 )); then
+  discovery_session=1
+  option_start=1
+elif [[ "$module" == "ex_migration_operator.cli" && ${#args[@]} -ge 2 && "${args[1]}" == "discover" ]]; then
+  discovery_session=1
+  option_start=2
+fi
+
+if (( discovery_session == 1 )); then
   have_username=0
   password_env_name=""
-  i=2
+  i=$option_start
   while (( i < ${#args[@]} )); do
     case "${args[$i]}" in
       --username)
