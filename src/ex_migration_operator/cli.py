@@ -336,6 +336,8 @@ def _activate(migration_id, extra):
     parser = argparse.ArgumentParser(prog="migrate %s activate" % migration_id)
     parser.add_argument("--settings", default="config/site.json")
     parser.add_argument("--environment", default="config/environment.lab.json")
+    parser.add_argument("--username")
+    parser.add_argument("--password-env")
     parser.add_argument("--no-host-key-check", action="store_true")
     args = parser.parse_args(extra)
     settings = _settings(args.settings)
@@ -344,30 +346,49 @@ def _activate(migration_id, extra):
     if state["physical_cutover"] == "PENDING":
         raise OperatorError("physical cutover has not been acknowledged")
 
-    if state["qfx_attachment"] != "COMPLETE":
-        values = ["discover-attachment", migration_id, "--settings", args.settings]
-        if args.no_host_key_check:
-            values.append("--no-host-key-check")
-        _run_module("ex_migration_provisioner.cli", values)
-    state = workflow_status(root)
-    if state["qfx_stage"] != "COMPLETE":
-        values = [migration_id, "--settings", args.settings]
-        if args.no_host_key_check:
-            values.append("--no-host-key-check")
-        _run_module("ex_migration_provisioner.qfx_stage_cli", values)
+    username, password_env, temporary_password_env = _prestage_credentials(args)
+    credential_args = ["--username", username, "--password-env", password_env]
 
-    _run_module(
-        "ex_migration_provisioner.cli",
-        [
-            "activate-endpoints",
-            migration_id,
-            "--settings",
-            args.settings,
-            "--environment",
-            args.environment,
-        ],
-    )
-    return 0
+    try:
+        if state["qfx_attachment"] != "COMPLETE":
+            values = [
+                "discover-attachment",
+                migration_id,
+                "--settings",
+                args.settings,
+            ] + credential_args
+            if args.no_host_key_check:
+                values.append("--no-host-key-check")
+            _run_module("ex_migration_provisioner.cli", values)
+
+        state = workflow_status(root)
+        if state["qfx_stage"] != "COMPLETE":
+            values = [
+                migration_id,
+                "--settings",
+                args.settings,
+            ] + credential_args
+            if args.no_host_key_check:
+                values.append("--no-host-key-check")
+            _run_module("ex_migration_provisioner.qfx_stage_cli", values)
+
+        state = workflow_status(root)
+        if state["endpoints"] != "COMPLETE":
+            _run_module(
+                "ex_migration_provisioner.cli",
+                [
+                    "activate-endpoints",
+                    migration_id,
+                    "--settings",
+                    args.settings,
+                    "--environment",
+                    args.environment,
+                ] + credential_args,
+            )
+        return 0
+    finally:
+        if temporary_password_env:
+            os.environ.pop(temporary_password_env, None)
 
 
 def _validate(migration_id, extra):
