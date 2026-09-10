@@ -7,6 +7,7 @@ from ex_migration_provisioner.attachment import (
     build_attachment_artifact,
     discover_qfx_attachment,
 )
+from test_provisioner import policy
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -111,10 +112,6 @@ class FakeQFX:
                 state,
             )
         raise AssertionError("unexpected command: %s" % command)
-
-
-def policy():
-    return json.loads((ROOT / "config/qfx-site-policy.lab.json").read_text())
 
 
 def devices(a=None, b=None):
@@ -255,7 +252,7 @@ def test_attachment_artifact_is_schema_valid_and_authorizes_no_writes():
         "sw1203",
         "0123456789abcdef",
         "a" * 64,
-        "lab-bd-pair-v2",
+        "lab-site-inventory-test",
         "b" * 64,
         discovery,
         "2026-09-08T18:01:00Z",
