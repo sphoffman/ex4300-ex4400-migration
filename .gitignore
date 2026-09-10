@@ -3,4 +3,6 @@ __pycache__/
 .pytest_cache/
 snapshots/
 config/site.local.json
+config/site-profile.json
+config/qfx-site-policy.active.json
 
