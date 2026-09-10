@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import hashlib
 import ipaddress
-import os
 import re
 from pathlib import Path
 
@@ -67,6 +65,15 @@ def load_profile(settings):
     return value, path
 
 
+def _validate_vlan(value, label):
+    _require(isinstance(value, dict), "%s must be an object" % label)
+    _require(isinstance(value.get("name"), str) and value["name"], "%s name is required" % label)
+    _require(
+        isinstance(value.get("vlan_id"), int) and 1 <= value["vlan_id"] <= 4094,
+        "%s ID is invalid" % label,
+    )
+
+
 def validate_profile(profile):
     required = {
         "schema_version",
@@ -79,16 +86,15 @@ def validate_profile(profile):
         "prestage_access_vlan",
         "excluded_interfaces",
         "attachment_interfaces",
-        "ae_pool",
-        "esi",
         "validation",
     }
     _require(isinstance(profile, dict), "site profile must be an object")
     _require(required <= set(profile), "site profile is missing required fields")
-    _require(profile.get("schema_version") == "1.0", "unsupported site-profile schema")
+    _require(profile.get("schema_version") == "1.1", "unsupported site-profile schema")
     _require(profile.get("environment") in ("lab", "production"), "site environment must be lab or production")
     if profile["environment"] == "lab":
         _require(profile.get("production_eligible") is False, "lab site profile cannot be production eligible")
+
     pair = profile["qfx_pair"]
     _require(isinstance(pair, list) and len(pair) == 2, "site profile must contain exactly two QFX management endpoints")
     _require({item.get("role") for item in pair} == {"qfx-a", "qfx-b"}, "QFX roles must be qfx-a and qfx-b")
@@ -103,47 +109,54 @@ def validate_profile(profile):
         addresses.append(address)
     _require(len(set(addresses)) == 2, "QFX management addresses must be unique")
 
-    vlan_ids = []
-    vlan_names = []
-    for key, label in (
-        ("management_vlan", "management VLAN"),
-        ("temporary_recovery_vlan", "temporary recovery VLAN"),
-        ("prestage_access_vlan", "pre-stage access VLAN"),
-    ):
-        value = profile[key]
-        _require(isinstance(value, dict), "%s must be an object" % label)
-        _require(isinstance(value.get("name"), str) and value["name"], "%s name is required" % label)
-        _require(isinstance(value.get("vlan_id"), int) and 1 <= value["vlan_id"] <= 4094, "%s ID is invalid" % label)
-        vlan_ids.append(value["vlan_id"])
-        vlan_names.append(value["name"])
-    _require(len(set(vlan_ids)) == 3, "site VLAN IDs must be distinct")
-    _require(len(set(vlan_names)) == 3, "site VLAN names must be distinct")
+    _validate_vlan(profile["management_vlan"], "management VLAN")
+    _validate_vlan(profile["temporary_recovery_vlan"], "temporary recovery VLAN")
+    _validate_vlan(profile["prestage_access_vlan"], "pre-stage access VLAN")
+    vlan_ids = {
+        profile["management_vlan"]["vlan_id"],
+        profile["temporary_recovery_vlan"]["vlan_id"],
+        profile["prestage_access_vlan"]["vlan_id"],
+    }
+    vlan_names = {
+        profile["management_vlan"]["name"],
+        profile["temporary_recovery_vlan"]["name"],
+        profile["prestage_access_vlan"]["name"],
+    }
+    _require(len(vlan_ids) == 3, "site VLAN IDs must be distinct")
+    _require(len(vlan_names) == 3, "site VLAN names must be distinct")
 
     selector = profile["attachment_interfaces"]
-    _require(selector.get("media_prefix") == "et-", "current site staging supports ET attachment interfaces only")
+    _require(selector.get("media_prefix") == "et-", "current site validation supports ET attachment interfaces only")
     _require(selector.get("require_symmetry") is True, "QFX attachment interface symmetry must be required")
+    _require(selector.get("existing_ae_required") is True, "QFX ET-to-AE mapping must be preprovisioned outside this migration tool")
 
-    ae_pool = profile["ae_pool"]
-    ae_min = ae_pool.get("ae_min")
-    ae_max = ae_pool.get("ae_max")
-    _require(isinstance(ae_min, int) and isinstance(ae_max, int) and 0 <= ae_min <= ae_max <= 127, "QFX AE range must be between ae0 and ae127")
-
-    esi = profile["esi"]
-    _require(esi.get("method") == "auto-derive-type-1-lacp", "unsupported ESI method")
-    _require(esi.get("all_active") is True, "QFX ESI must be all-active")
     validation = profile["validation"]
     for flag in (
         "require_interface_symmetry",
         "require_matching_ae",
         "require_matching_lacp_system_id",
+        "require_lacp_active",
+        "require_esi_auto_derive",
+        "require_esi_all_active",
+        "require_trunk_mode",
+        "forbid_lacp_force_up",
     ):
         _require(validation.get(flag) is True, "site validation flag %s must be true" % flag)
     return profile
 
 
-def build_profile(site_id, environment, qfx_a, qfx_b, management_vlan, recovery_vlan, prestage_vlan, excluded_interfaces, ae_min, ae_max):
+def build_profile(
+    site_id,
+    environment,
+    qfx_a,
+    qfx_b,
+    management_vlan,
+    recovery_vlan,
+    prestage_vlan,
+    excluded_interfaces,
+):
     value = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "site_id": site_id,
         "environment": environment,
         "production_eligible": environment == "production",
@@ -158,18 +171,17 @@ def build_profile(site_id, environment, qfx_a, qfx_b, management_vlan, recovery_
         "attachment_interfaces": {
             "media_prefix": "et-",
             "require_symmetry": True,
-            "stage_all_compatible": True,
+            "existing_ae_required": True,
         },
-        "ae_pool": {
-            "ae_min": int(ae_min),
-            "ae_max": int(ae_max),
-            "assignment": "preserve-symmetric-existing-else-lowest-free",
-        },
-        "esi": {"method": "auto-derive-type-1-lacp", "all_active": True},
         "validation": {
             "require_interface_symmetry": True,
             "require_matching_ae": True,
             "require_matching_lacp_system_id": True,
+            "require_lacp_active": True,
+            "require_esi_auto_derive": True,
+            "require_esi_all_active": True,
+            "require_trunk_mode": True,
+            "forbid_lacp_force_up": True,
             "operator_supplied_ports_allowed": False,
         },
     }
@@ -199,6 +211,13 @@ def _ae_map(config_text):
     for match in _AE_PARENT.finditer(config_text or ""):
         result[match.group("physical")] = match.group("ae")
     return result
+
+
+def _ae_members(ae_map):
+    result = {}
+    for physical, ae in ae_map.items():
+        result.setdefault(ae, []).append(physical)
+    return {ae: sorted(values) for ae, values in result.items()}
 
 
 def _et_interfaces(terse_text):
@@ -246,16 +265,36 @@ def _lacp_system_id(config_text, ae):
     return values[0] if len(values) == 1 else None
 
 
-def _site_lacp_system_id(site_id, ae):
-    number = int(str(ae)[2:])
-    digest = hashlib.sha256(site_id.encode("utf-8")).digest()
-    return "02:%02x:%02x:%02x:%02x:%02x" % (
-        digest[0],
-        digest[1],
-        digest[2],
-        (number >> 8) & 0xff,
-        number & 0xff,
-    )
+def _has_line(config_text, pattern):
+    return re.search(pattern, config_text or "") is not None
+
+
+def _ae_contract(config_text, ae):
+    escaped = re.escape(ae)
+    system_id = _lacp_system_id(config_text, ae)
+    return {
+        "lacp_active": _has_line(
+            config_text,
+            r"(?m)^set interfaces %s aggregated-ether-options lacp active\s*$" % escaped,
+        ),
+        "lacp_force_up_absent": not _has_line(
+            config_text,
+            r"(?m)^set interfaces %s aggregated-ether-options lacp force-up\s*$" % escaped,
+        ),
+        "lacp_system_id_present": bool(system_id),
+        "esi_auto_derive_type_1_lacp": _has_line(
+            config_text,
+            r"(?m)^set interfaces %s esi auto-derive type-1-lacp\s*$" % escaped,
+        ),
+        "esi_all_active": _has_line(
+            config_text,
+            r"(?m)^set interfaces %s esi all-active\s*$" % escaped,
+        ),
+        "interface_mode_trunk": _has_line(
+            config_text,
+            r"(?m)^set interfaces %s unit 0 family ethernet-switching interface-mode trunk\s*$" % escaped,
+        ),
+    }
 
 
 def observe_qfx(dev, role, address, host_key):
@@ -293,10 +332,6 @@ def build_site_discovery(profile, observations, observed_at=None):
     common = sorted((set(a["interfaces"]) & set(b["interfaces"])) - excluded)
     only_a = sorted(set(a["interfaces"]) - set(b["interfaces"]))
     only_b = sorted(set(b["interfaces"]) - set(a["interfaces"]))
-    ae_min = profile["ae_pool"]["ae_min"]
-    ae_max = profile["ae_pool"]["ae_max"]
-    used = set(a["ae_map"].values()) | set(b["ae_map"].values())
-    free = ["ae%d" % number for number in range(ae_min, ae_max + 1) if "ae%d" % number not in used]
 
     management_id = profile["management_vlan"]["vlan_id"]
     recovery_id = profile["temporary_recovery_vlan"]["vlan_id"]
@@ -307,37 +342,88 @@ def build_site_discovery(profile, observations, observed_at=None):
         _require(len(definitions_a.get(vlan_id, set())) == 1, "qfx-a does not define exactly one %s VLAN ID %s" % (label, vlan_id))
         _require(len(definitions_b.get(vlan_id, set())) == 1, "qfx-b does not define exactly one %s VLAN ID %s" % (label, vlan_id))
 
+    members_a = _ae_members(a["ae_map"])
+    members_b = _ae_members(b["ae_map"])
     attachments = []
     blocked = []
+
     for physical in common:
         ae_a = a["ae_map"].get(physical)
         ae_b = b["ae_map"].get(physical)
-        config_a = a["interface_config"].get(physical, [])
-        config_b = b["interface_config"].get(physical, [])
-        if ae_a or ae_b:
-            if not ae_a or ae_a != ae_b:
-                blocked.append({"physical_interface": physical, "reason": "ASYMMETRIC_EXISTING_AE", "qfx_a_ae": ae_a, "qfx_b_ae": ae_b})
-                continue
-            number = int(ae_a[2:])
-            if not ae_min <= number <= ae_max:
-                blocked.append({"physical_interface": physical, "reason": "EXISTING_AE_OUTSIDE_POOL", "ae_interface": ae_a})
-                continue
-            vlan_a = _vlan_ids(a["interface_config_text"], ae_a, definitions_a)
-            vlan_b = _vlan_ids(b["interface_config_text"], ae_b, definitions_b)
-            if vlan_a not in ([], required_baseline) or vlan_b not in ([], required_baseline):
-                blocked.append({"physical_interface": physical, "reason": "EXISTING_AE_HAS_NON_BASELINE_VLANS", "ae_interface": ae_a, "qfx_a_vlans": vlan_a, "qfx_b_vlans": vlan_b})
-                continue
-            attachments.append({"physical_interface": physical, "ae_interface": ae_a, "mapping_source": "EXISTING_SYMMETRIC", "current_vlan_ids": {"qfx-a": vlan_a, "qfx-b": vlan_b}})
+        if not ae_a and not ae_b:
+            blocked.append({
+                "physical_interface": physical,
+                "reason": "NOT_PREPROVISIONED_TO_AE",
+            })
+            continue
+        if not ae_a or ae_a != ae_b:
+            blocked.append({
+                "physical_interface": physical,
+                "reason": "ASYMMETRIC_EXISTING_AE",
+                "qfx_a_ae": ae_a,
+                "qfx_b_ae": ae_b,
+            })
             continue
 
-        if config_a or config_b:
-            blocked.append({"physical_interface": physical, "reason": "UNMAPPED_INTERFACE_HAS_CONFIGURATION"})
+        ae = ae_a
+        if len(members_a.get(ae, [])) != 1 or len(members_b.get(ae, [])) != 1:
+            blocked.append({
+                "physical_interface": physical,
+                "reason": "AE_HAS_MULTIPLE_ET_MEMBERS",
+                "ae_interface": ae,
+                "qfx_a_members": members_a.get(ae, []),
+                "qfx_b_members": members_b.get(ae, []),
+            })
             continue
-        if not free:
-            blocked.append({"physical_interface": physical, "reason": "NO_FREE_AE"})
+
+        contract_a = _ae_contract(a["interface_config_text"], ae)
+        contract_b = _ae_contract(b["interface_config_text"], ae)
+        system_a = _lacp_system_id(a["interface_config_text"], ae)
+        system_b = _lacp_system_id(b["interface_config_text"], ae)
+        structural_ok = (
+            all(contract_a.values())
+            and all(contract_b.values())
+            and bool(system_a)
+            and system_a == system_b
+        )
+        if not structural_ok:
+            blocked.append({
+                "physical_interface": physical,
+                "reason": "PREPROVISIONED_AE_CONTRACT_FAILED",
+                "ae_interface": ae,
+                "qfx_a_checks": contract_a,
+                "qfx_b_checks": contract_b,
+                "qfx_a_lacp_system_id": system_a,
+                "qfx_b_lacp_system_id": system_b,
+            })
             continue
-        ae = free.pop(0)
-        attachments.append({"physical_interface": physical, "ae_interface": ae, "mapping_source": "PROPOSED_NEW", "current_vlan_ids": {"qfx-a": [], "qfx-b": []}})
+
+        vlan_a = _vlan_ids(a["interface_config_text"], ae, definitions_a)
+        vlan_b = _vlan_ids(b["interface_config_text"], ae, definitions_b)
+        if vlan_a is None or vlan_b is None:
+            blocked.append({
+                "physical_interface": physical,
+                "reason": "UNRESOLVED_AE_VLAN_MEMBERSHIP",
+                "ae_interface": ae,
+            })
+            continue
+        if not set(vlan_a).issubset(required_baseline) or not set(vlan_b).issubset(required_baseline):
+            blocked.append({
+                "physical_interface": physical,
+                "reason": "EXISTING_AE_HAS_NON_BASELINE_VLANS",
+                "ae_interface": ae,
+                "qfx_a_vlans": vlan_a,
+                "qfx_b_vlans": vlan_b,
+            })
+            continue
+
+        attachments.append({
+            "physical_interface": physical,
+            "ae_interface": ae,
+            "mapping_source": "PREPROVISIONED_SYMMETRIC",
+            "lacp_system_id": system_a,
+            "current_vlan_ids": {"qfx-a": vlan_a, "qfx-b": vlan_b},
+        })
 
     key = {
         "site_id": profile["site_id"],
@@ -351,7 +437,7 @@ def build_site_discovery(profile, observations, observed_at=None):
     }
     discovery_id = sha256_bytes(canonical_bytes(key))[:16]
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "discovery_id": discovery_id,
         "site_id": profile["site_id"],
         "observed_at": observed_at or utc_now(),
@@ -380,7 +466,11 @@ def write_site_discovery(settings, profile, discovery):
 
 def approve_site_discovery(directory, discovery):
     value = dict(discovery)
-    value["approval"] = {"approved": True, "approved_at": utc_now(), "scope": "qfx-identity-and-staging-plan"}
+    value["approval"] = {
+        "approved": True,
+        "approved_at": utc_now(),
+        "scope": "qfx-identity-and-preprovisioned-ae-inventory",
+    }
     path = directory / "discovery.json"
     atomic_json(path, value)
     atomic_json(directory / "integrity.json", {"discovery.json": sha256_file(path)})
@@ -401,24 +491,23 @@ def site_discovery_candidates(settings, profile):
             result.append(value)
         except Exception:
             continue
-    return sorted(result, key=lambda item: (item.get("approval", {}).get("approved_at", ""), item.get("discovery_id", "")), reverse=True)
+    return sorted(
+        result,
+        key=lambda item: (
+            item.get("approval", {}).get("approved_at", ""),
+            item.get("discovery_id", ""),
+        ),
+        reverse=True,
+    )
 
 
 def stage_statements(profile, discovery):
+    """Return VLAN-only baseline repairs for externally preprovisioned AEs."""
     statements = []
     mgmt = profile["management_vlan"]["name"]
     recovery = profile["temporary_recovery_vlan"]["name"]
-    for item in discovery["attachment_inventory"]:
-        physical = item["physical_interface"]
-        ae = item["ae_interface"]
-        system_id = _site_lacp_system_id(profile["site_id"], ae)
+    for ae in sorted({item["ae_interface"] for item in discovery["attachment_inventory"]}):
         statements.extend([
-            "set interfaces %s ether-options 802.3ad %s" % (physical, ae),
-            "set interfaces %s aggregated-ether-options lacp active" % ae,
-            "set interfaces %s aggregated-ether-options lacp system-id %s" % (ae, system_id),
-            "set interfaces %s esi auto-derive type-1-lacp" % ae,
-            "set interfaces %s esi all-active" % ae,
-            "set interfaces %s unit 0 family ethernet-switching interface-mode trunk" % ae,
             "set interfaces %s unit 0 family ethernet-switching vlan members %s" % (ae, mgmt),
             "set interfaces %s unit 0 family ethernet-switching vlan members %s" % (ae, recovery),
         ])
@@ -441,7 +530,7 @@ def validate_staged_device(dev, profile, discovery):
         ae = item["ae_interface"]
         observed_vlans = _vlan_ids(config, ae, definitions)
         observed_system = _lacp_system_id(config, ae)
-        expected_system = _site_lacp_system_id(profile["site_id"], ae)
+        contract = _ae_contract(config, ae)
         checks.append({
             "physical_interface": physical,
             "ae_interface": ae,
@@ -449,30 +538,35 @@ def validate_staged_device(dev, profile, discovery):
             "baseline_vlan_ids": observed_vlans,
             "baseline_exact": observed_vlans == required,
             "lacp_system_id": observed_system,
-            "lacp_system_id_matches": observed_system == expected_system,
-            "esi_auto": bool(re.search(r"(?m)^set interfaces %s esi auto-derive type-1-lacp\s*$" % re.escape(ae), config)),
-            "esi_all_active": bool(re.search(r"(?m)^set interfaces %s esi all-active\s*$" % re.escape(ae), config)),
+            "lacp_system_id_matches_discovery": observed_system == item.get("lacp_system_id"),
+            "lacp_active": contract["lacp_active"],
+            "lacp_force_up_absent": contract["lacp_force_up_absent"],
+            "esi_auto": contract["esi_auto_derive_type_1_lacp"],
+            "esi_all_active": contract["esi_all_active"],
+            "interface_mode_trunk": contract["interface_mode_trunk"],
         })
     passed = all(
         item["mapping_matches"]
         and item["baseline_exact"]
-        and item["lacp_system_id_matches"]
+        and item["lacp_system_id_matches_discovery"]
+        and item["lacp_active"]
+        and item["lacp_force_up_absent"]
         and item["esi_auto"]
         and item["esi_all_active"]
+        and item["interface_mode_trunk"]
         for item in checks
     )
     return checks, passed
 
 
 def build_site_inventory(profile, discovery, qfx_observations, validation_by_role, created_at=None):
-    _require(all(item["passed"] for item in validation_by_role.values()), "QFX baseline staging validation failed")
+    _require(all(item["passed"] for item in validation_by_role.values()), "QFX baseline VLAN validation failed")
     attachments = []
     for item in discovery["attachment_inventory"]:
-        ae = item["ae_interface"]
         attachments.append({
             "physical_interface": item["physical_interface"],
-            "ae_interface": ae,
-            "lacp_system_id": _site_lacp_system_id(profile["site_id"], ae),
+            "ae_interface": item["ae_interface"],
+            "lacp_system_id": item["lacp_system_id"],
             "baseline_vlan_ids": sorted([
                 profile["management_vlan"]["vlan_id"],
                 profile["temporary_recovery_vlan"]["vlan_id"],
@@ -491,7 +585,7 @@ def build_site_inventory(profile, discovery, qfx_observations, validation_by_rol
     }
     inventory_id = sha256_bytes(canonical_bytes(key))[:16]
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "inventory_id": inventory_id,
         "site_id": profile["site_id"],
         "created_at": created_at or utc_now(),
@@ -539,12 +633,12 @@ def build_active_policy(profile, inventory, inventory_path):
         "environment": profile["environment"],
         "production_eligible": profile["production_eligible"],
         "qfx_pair": pair,
-        "stage_port_pools": {"site-staged": ports},
+        "stage_port_pools": {"site-verified": ports},
         "excluded_interfaces": list(profile["excluded_interfaces"]),
         "ae_pool": {
             "method": "discover-from-existing-qfx-config",
-            "ae_min": min(ae_numbers) if ae_numbers else profile["ae_pool"]["ae_min"],
-            "ae_max": max(ae_numbers) if ae_numbers else profile["ae_pool"]["ae_max"],
+            "ae_min": min(ae_numbers),
+            "ae_max": max(ae_numbers),
             "migration_assignment_prebound": False,
         },
         "management_vlan": dict(profile["management_vlan"]),
@@ -555,7 +649,7 @@ def build_active_policy(profile, inventory, inventory_path):
             "lacp_mode": "active",
             "force_up": False,
         },
-        "esi": dict(profile["esi"]),
+        "esi": {"method": "auto-derive-type-1-lacp", "all_active": True},
         "validation": {
             "attachment_discovered_post_cutover": True,
             "require_interface_symmetry": True,
@@ -592,4 +686,8 @@ def site_inventory_candidates(settings, profile):
                 result.append((value, path))
         except Exception:
             continue
-    return sorted(result, key=lambda item: (item[0].get("created_at", ""), item[0].get("inventory_id", "")), reverse=True)
+    return sorted(
+        result,
+        key=lambda item: (item[0].get("created_at", ""), item[0].get("inventory_id", "")),
+        reverse=True,
+    )
