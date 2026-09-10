@@ -3,7 +3,6 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
-from ex_migration_analyzer.core import canonical_bytes, sha256_bytes
 from ex_migration_provisioner.qfx_stage import (
     build_qfx_vlan_plan,
     derive_required_qfx_vlans,
@@ -19,13 +18,19 @@ def digest(char):
 
 
 def policy():
-    return json.loads((ROOT / "config/qfx-site-policy.lab.json").read_text())
+    return json.loads(
+        (ROOT / "tests/fixtures/qfx-site-policy.generated.json").read_text()
+    )
 
 
 def migration_plan():
     return {
         "plan_id": "0123456789abcdef",
         "migration_id": "sw1203",
+        "template_variables": {
+            "voice_vlan_name": "voip",
+            "voice_vlan_id": 1111,
+        },
         "vlan_intents": [
             {"name": "v100", "vlan_id": 100, "observed": True},
             {"name": "v163", "vlan_id": 163, "observed": False},
@@ -90,7 +95,10 @@ def attachment(plan_digest, policy_digest):
         "observed_at": "2026-09-08T18:00:00Z",
         "approved_at": "2026-09-08T18:01:00Z",
         "plan": {"plan_id": "0123456789abcdef", "plan_digest": plan_digest},
-        "site_policy": {"site_policy_id": "lab-bd-pair-v2", "site_policy_digest": policy_digest},
+        "site_policy": {
+            "site_policy_id": "lab-site-inventory-test",
+            "site_policy_digest": policy_digest,
+        },
         "expected_ex_hostname": TARGET,
         "devices": devices,
         "pair_checks": {"ok": True},
@@ -144,7 +152,11 @@ class FakeQFX:
             "set routing-instances MAC-VRF-1 vlans voip vlan-id 1111",
         ]
         if self.missing_vlan is not None:
-            rows = [row for row in rows if not row.endswith(" vlan-id %s" % self.missing_vlan)]
+            rows = [
+                row
+                for row in rows
+                if not row.endswith(" vlan-id %s" % self.missing_vlan)
+            ]
         if not vlan_only:
             rows.insert(0, "set routing-instances MAC-VRF-1 interface ae2.0")
         return "\n".join(rows) + "\n"
@@ -164,10 +176,11 @@ def host_keys():
     }
 
 
-def test_qfx_vlan_derivation_uses_endpoint_intent_plus_voice_not_unused_vlan():
+def test_qfx_vlan_derivation_uses_endpoint_intent_plus_this_ex_voice_not_unused_vlan():
     value = derive_required_qfx_vlans(migration_plan(), policy())
     assert value["endpoint_data_vlan_ids"] == [100, 200]
     assert value["voice_vlan_id"] == 1111
+    assert value["voice_vlan_name"] == "voip"
     assert value["required_vlan_ids"] == [100, 200, 1111]
     assert value["configured_but_not_required_vlan_ids"] == [300]
 
@@ -190,7 +203,9 @@ def test_qfx_vlan_plan_resolves_existing_mac_vrf_vlans_and_adds_membership_only(
     )
     assert value["result"] == "PASS"
     assert value["derivation"]["required_vlan_ids"] == [100, 200, 1111]
-    assert all(item["routing_instance"] == "MAC-VRF-1" for item in value["devices"])
+    assert all(
+        item["routing_instance"] == "MAC-VRF-1" for item in value["devices"]
+    )
     assert value["devices"][0]["statements"] == [
         "set interfaces ae2 unit 0 family ethernet-switching vlan members v100",
         "set interfaces ae2 unit 0 family ethernet-switching vlan members v200",
@@ -210,7 +225,9 @@ def test_qfx_vlan_plan_fails_if_required_vlan_is_missing_from_one_mac_vrf():
     plan_digest = digest("a")
     policy_digest = digest("b")
     broken = devices()
-    broken["qfx-b"] = FakeQFX("BD-2", "SHA256:" + "B" * 43, missing_vlan=200)
+    broken["qfx-b"] = FakeQFX(
+        "BD-2", "SHA256:" + "B" * 43, missing_vlan=200
+    )
     value = build_qfx_vlan_plan(
         "sw1203",
         plan,
@@ -224,5 +241,10 @@ def test_qfx_vlan_plan_fails_if_required_vlan_is_missing_from_one_mac_vrf():
         created_at="2026-09-08T19:00:00Z",
     )
     assert value["result"] == "FAIL"
-    assert value["devices"][1]["checks"]["all_required_vlans_defined_in_owning_mac_vrf"] is False
+    assert (
+        value["devices"][1]["checks"][
+            "all_required_vlans_defined_in_owning_mac_vrf"
+        ]
+        is False
+    )
     assert value["devices"][1]["resolution_failures"][0]["vlan_id"] == 200
