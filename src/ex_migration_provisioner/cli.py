@@ -18,26 +18,27 @@ from .prestage import (
 )
 
 
-# Keep legacy package support for immutable historical 1.0 artifacts, while all
-# new pre-cutover packages use schema 1.1 and contain no live QFX preflight.
-if not hasattr(base, "_verify_package_inputs_legacy"):
-    base._verify_package_inputs_legacy = base._verify_package_inputs
+# The project is still under active development. All migration artifacts are
+# expected to use the current schemas; older package layouts are intentionally
+# rejected and should be regenerated.
 base.package_candidates = package_candidates_compat
 base.choose_package = choose_package_compat
 base._verify_package_inputs = verify_package_inputs_compat
 
 
 def _bound_transport(identity):
-    """Return the approved connection endpoint, with legacy transport fallback."""
+    """Return the single current-schema OOB connection endpoint."""
     connection = identity.get("observed", {}).get("connection", {})
     address = str(connection.get("address") or "")
-    transport_address = str(connection.get("transport_address") or address)
     port = int(connection.get("port", 830))
     if not address:
         raise base.ProvisioningError("approved bootstrap identity has no OOB management address")
-    if not transport_address:
-        raise base.ProvisioningError("approved bootstrap identity has no reachable connection address")
-    return address, transport_address, port
+    alternate = str(connection.get("transport_address") or "").strip()
+    if alternate and alternate != address:
+        raise base.ProvisioningError(
+            "approved bootstrap identity uses an unsupported legacy transport address; regenerate migration artifacts"
+        )
+    return address, address, port
 
 
 def _planned_old_hostname(migration_root):
@@ -386,59 +387,11 @@ def _run(argv):
     args, logical_address, transport_address, bound_port = _run_selector(argv)
     if int(args.port) != int(bound_port):
         raise base.ProvisioningError("--port does not match the connection port pinned by identify")
-
-    # New 1.1 identities use one OOB connection address. Keep the redirect only
-    # for immutable legacy 1.0 lab identities that pinned a separate transport.
-    if transport_address == logical_address:
-        return base.main(["run"] + argv)
-
-    print("\nLegacy pinned lab transport")
-    print("  Logical address: %s" % logical_address)
-    print("  Transport endpoint: %s:%s" % (transport_address, bound_port))
-    print("  Source: historical approved bootstrap identity")
-
-    import jnpr.junos
-
-    original_device = jnpr.junos.Device
-    original_fingerprint = base.ssh_host_key_fingerprint
-    original_observe = base.observe_ex4400_identity
-
-    def redirected_device(*device_args, **device_kwargs):
-        values = list(device_args)
-        kwargs = dict(device_kwargs)
-        if "host" in kwargs and str(kwargs["host"]) == logical_address:
-            kwargs["host"] = transport_address
-        elif values and str(values[0]) == logical_address:
-            values[0] = transport_address
-        return original_device(*values, **kwargs)
-
-    def redirected_fingerprint(host, port=830, timeout=10):
-        target = host
-        if str(host) == logical_address and int(port) == int(bound_port):
-            target = transport_address
-        return original_fingerprint(target, port, timeout)
-
-    def observed_with_transport(dev, address, port, host_key_sha256):
-        observed = original_observe(
-            dev,
-            address,
-            port,
-            host_key_sha256,
-            allow_vjunos_switch=True,
+    if transport_address != logical_address:
+        raise base.ProvisioningError(
+            "separate legacy transport endpoints are unsupported; regenerate migration artifacts"
         )
-        if str(address) == logical_address and int(port) == int(bound_port):
-            observed["connection"]["transport_address"] = transport_address
-        return observed
-
-    jnpr.junos.Device = redirected_device
-    base.ssh_host_key_fingerprint = redirected_fingerprint
-    base.observe_ex4400_identity = observed_with_transport
-    try:
-        return base.main(["run"] + argv)
-    finally:
-        jnpr.junos.Device = original_device
-        base.ssh_host_key_fingerprint = original_fingerprint
-        base.observe_ex4400_identity = original_observe
+    return base.main(["run"] + argv)
 
 
 def main(argv=None):
@@ -517,7 +470,3 @@ def main(argv=None):
             print("ERROR: %s" % exc, file=sys.stderr)
             return 2
     return base.main(values)
-
-
-if __name__ == "__main__":
-    sys.exit(main())
