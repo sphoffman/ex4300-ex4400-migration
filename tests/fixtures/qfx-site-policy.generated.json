@@ -1,0 +1,70 @@
+{
+  "schema_version": "1.2",
+  "site_policy_id": "lab-site-inventory-test",
+  "site_id": "lab-site",
+  "environment": "lab",
+  "production_eligible": false,
+  "qfx_pair": [
+    {
+      "role": "qfx-a",
+      "management_address": "10.255.3.14",
+      "expected_hostname": "BD-1",
+      "expected_model": "ptx10001-36mr"
+    },
+    {
+      "role": "qfx-b",
+      "management_address": "10.255.3.15",
+      "expected_hostname": "BD-2",
+      "expected_model": "ptx10001-36mr"
+    }
+  ],
+  "stage_port_pools": {
+    "site-staged": [
+      "et-0/0/3",
+      "et-0/0/4",
+      "et-0/0/5"
+    ]
+  },
+  "excluded_interfaces": [],
+  "ae_pool": {
+    "method": "discover-from-existing-qfx-config",
+    "ae_min": 0,
+    "ae_max": 2,
+    "migration_assignment_prebound": false
+  },
+  "management_vlan": {
+    "name": "MGMT",
+    "vlan_id": 163
+  },
+  "temporary_recovery_vlan": {
+    "name": "TEMP-RECOVERY",
+    "vlan_id": 3999
+  },
+  "prestage_access_vlan": {
+    "name": "TEMP-ACCESS",
+    "vlan_id": 3998
+  },
+  "precutover_qfx_baseline": {
+    "required_vlan_ids": [163, 3999],
+    "lacp_mode": "active",
+    "force_up": false
+  },
+  "esi": {
+    "method": "auto-derive-type-1-lacp",
+    "all_active": true
+  },
+  "validation": {
+    "attachment_discovered_post_cutover": true,
+    "require_interface_symmetry": true,
+    "require_lldp": true,
+    "require_lacp_partner": true,
+    "require_matching_ae": true,
+    "require_matching_lacp_system_id": true,
+    "operator_supplied_ports_allowed": false
+  },
+  "source_site_inventory": {
+    "inventory_id": "0123456789abcdef",
+    "inventory_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "path": "snapshots/site/lab-site/inventories/0123456789abcdef/inventory.json"
+  }
+}
