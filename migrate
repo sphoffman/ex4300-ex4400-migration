@@ -4,4 +4,10 @@ set -euo pipefail
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 cd "$ROOT"
 
-exec py -m ex_migration_operator.cli "$@"
+exec docker run --rm -it \
+  --entrypoint python \
+  --workdir /scripts \
+  --env PYTHONPATH=/scripts/src \
+  -v "$ROOT:/scripts" \
+  juniper/pyez \
+  -m ex_migration_operator.cli "$@"
