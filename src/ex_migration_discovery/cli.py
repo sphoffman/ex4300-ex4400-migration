@@ -120,5 +120,19 @@ def main():
   else: print(f"SUCCESS  {host}  {result}")
  print(f"\n{len(results)-len(failures)} succeeded, {len(failures)} failed")
  if failures: raise SystemExit(1)
+ if len(results)==1 and results[0][1] is not None:
+  path=Path(results[0][1]); parts=path.parts
+  migration_id=None
+  try:
+   index=parts.index("migrations")
+   migration_id=parts[index+1]
+  except (ValueError,IndexError):
+   pass
+  if migration_id:
+   if a.migration_id:
+    print(f"\nMigration ID confirmed: {migration_id}")
+   else:
+    print(f"\nDiscovered migration ID: {migration_id}")
+   print(f"Continue with: ./migrate {migration_id}")
 
 if __name__=="__main__": main()
