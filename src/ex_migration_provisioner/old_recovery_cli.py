@@ -81,7 +81,7 @@ def _identity_oob_inputs(settings, migration_root, bootstrap_override, identity_
     except ValueError as exc:
         raise base.ProvisioningError("approved identity has invalid OOB management data: %s" % exc)
     if recovery.version != 4 or gateway.version != 4:
-        raise base.ProvisioningError("approved identity OOB recovery addressing must be IPv4")
+        raise base.ProvisioningError("approved OOB recovery addressing must be IPv4")
 
     connection_ip = str(
         identity.get("observed", {}).get("connection", {}).get("address") or ""
@@ -136,7 +136,7 @@ def _validate_existing_mgmt_default(config_text, gateway):
 
 def _validate_recovery_config(dev, statements, master_defaults_before, interface, expected_address):
     text = _configuration_set(dev)
-    configured = {line.strip() for line in str(text).splitlines() if line.strip()}
+    configured = {line.strip() for line in str(text or "").splitlines() if line.strip()}
     missing = [statement for statement in statements if statement not in configured]
     if missing:
         raise base.ProvisioningError(
@@ -216,10 +216,6 @@ def run(argv):
         oob["recovery_address"],
         oob["gateway"],
     )
-    payload = "delete interfaces %s\n%s\n" % (
-        args.management_interface,
-        "\n".join(statements),
-    )
     username, password = base._credentials(args, "Old EX4300")
     source_fingerprint = base.ssh_host_key_fingerprint(source_transport, args.port)
 
@@ -253,8 +249,19 @@ def run(argv):
         master_defaults_before = _master_default_lines(pre_config)
         _validate_existing_mgmt_default(pre_config, oob["gateway"])
 
+        interface_prefix = "set interfaces %s " % args.management_interface
+        interface_exists = any(line.startswith(interface_prefix) for line in pre_lines)
+        payload_lines = []
+        if interface_exists:
+            payload_lines.append("delete interfaces %s" % args.management_interface)
+        payload_lines.extend(statements)
+        payload = "\n".join(payload_lines) + "\n"
+
         print("\nRequired recovery state")
-        print("  [authoritative reset] delete interfaces %s" % args.management_interface)
+        if interface_exists:
+            print("  [authoritative reset] delete interfaces %s" % args.management_interface)
+        else:
+            print("  [authoritative reset] interfaces %s absent; no delete required" % args.management_interface)
         for statement in statements:
             if statement.startswith("set interfaces %s " % args.management_interface):
                 state = "authoritative set"
