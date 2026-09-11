@@ -115,11 +115,14 @@ def _normalize_diff(value):
 def _inverse_statements(plan_device):
     result = []
     for statement in plan_device.get("statements", []):
-        if not statement.startswith("set "):
+        if statement.startswith("set "):
+            result.append("delete " + statement[4:])
+        elif statement.startswith("delete "):
+            result.append("set " + statement[7:])
+        else:
             raise base.ProvisioningError(
-                "cannot derive compensating rollback for non-set QFX statement"
+                "cannot derive compensating rollback for unsupported QFX statement"
             )
-        result.append("delete " + statement[4:])
     return result
 
 
@@ -246,6 +249,10 @@ def run(argv):
                 gather_facts=True,
             )
             dev.open(auto_probe=10, hostkey_verify=not args.no_host_key_check)
+            # PyEZ defaults ordinary RPCs to 30 seconds. QFX/virtual PTX
+            # configuration and rollback RPCs can legitimately exceed that even
+            # when explicit commit() calls use a longer timeout.
+            dev.timeout = 120
             devices[role] = dev
             opened.append(dev)
 
