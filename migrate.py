@@ -45,7 +45,8 @@ MIGRATION_COMMANDS = {
     "finalize",
     "mac",
 }
-SITE_COMMANDS = {"site-init", "site-discover", "site-stage", "site-status"}
+SITE_COMMANDS = {"site-discover", "site-stage", "site-status"}
+OPERATOR_MODULE = "ex_migration_operator.policy_cli"
 
 
 def _has_option(args, name):
@@ -95,12 +96,14 @@ def _discovery_credentials(args, option_start):
 
 def _route(argv):
     args = list(argv)
-    module_name = "ex_migration_operator.current_cli"
+    module_name = OPERATOR_MODULE
     initial_discovery = False
 
     if args:
         first = args[0]
-        if first in SITE_COMMANDS:
+        if first == "site-init":
+            module_name = OPERATOR_MODULE
+        elif first in SITE_COMMANDS:
             module_name = "ex_migration_site.cli"
         elif first == "discover":
             module_name = "ex_migration_operator.initial_discovery"
@@ -114,7 +117,7 @@ def _route(argv):
             return None, None, 2
 
     # Match the shell wrapper's bare-resume site readiness gate.
-    if module_name == "ex_migration_operator.current_cli" and len(args) == 1:
+    if module_name == OPERATOR_MODULE and len(args) == 1 and args[0] != "site-init":
         if not (ROOT / "config" / "qfx-site-policy.active.json").is_file():
             print("Migration %r is waiting on site readiness." % args[0])
             print("Complete the site prerequisite before continuing this migration.")
@@ -128,7 +131,7 @@ def _route(argv):
         discovery_session = True
         option_start = 0
     elif (
-        module_name == "ex_migration_operator.current_cli"
+        module_name == OPERATOR_MODULE
         and len(args) >= 2
         and args[1] == "discover"
     ):
