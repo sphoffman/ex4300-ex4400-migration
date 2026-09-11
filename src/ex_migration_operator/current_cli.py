@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import sys
 from pathlib import Path
 
@@ -150,6 +151,48 @@ def _activate(migration_id, extra):
     return _offer_exception_acceptance(root)
 
 
+def _validated_oob_address(value):
+    value = str(value or "").strip()
+    if not value:
+        raise OperatorError("replacement OOB address/prefix is required")
+    if "/" not in value:
+        raise OperatorError(
+            "replacement OOB address must include an explicit CIDR prefix "
+            "(for example 10.255.3.16/24); refusing to assume /32"
+        )
+    try:
+        parsed = ipaddress.ip_interface(value)
+    except ValueError:
+        raise OperatorError(
+            "replacement OOB address/prefix is not valid IPv4 CIDR: %s" % value
+        )
+    if parsed.version != 4:
+        raise OperatorError("replacement OOB address must be IPv4 CIDR")
+    return value
+
+
+def _prestage_with_validated_oob(migration_id, extra):
+    values = list(extra)
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--settings", default="config/site.json")
+    parser.add_argument("--oob-address")
+    args, _unknown = parser.parse_known_args(values)
+    root = migration_root(legacy._settings(args.settings), migration_id)
+    state = workflow_status(root)
+    if state.get("identity") == "COMPLETE":
+        return legacy._dispatch(migration_id, "prestage", values)
+
+    oob = args.oob_address
+    if oob is None:
+        oob = input(
+            "Replacement EX4400 OOB address/prefix (for example 10.0.0.15/24): "
+        ).strip()
+        values += ["--oob-address", _validated_oob_address(oob)]
+    else:
+        _validated_oob_address(oob)
+    return legacy._dispatch(migration_id, "prestage", values)
+
+
 def _dispatch(migration_id, command, extra):
     if command == "status":
         settings_parser = argparse.ArgumentParser(add_help=False)
@@ -162,6 +205,8 @@ def _dispatch(migration_id, command, extra):
         return 0
     if command == "activate":
         return _activate(migration_id, extra)
+    if command == "prestage":
+        return _prestage_with_validated_oob(migration_id, extra)
     return legacy._dispatch(migration_id, command, extra)
 
 
