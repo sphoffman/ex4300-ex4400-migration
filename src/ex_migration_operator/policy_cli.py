@@ -98,6 +98,15 @@ def _record_site_runtime_policy(settings_path, recovery_required):
     local_path = settings_path.with_name("site.local.json")
     local = read_json(local_path) if local_path.is_file() else {}
     local["old_switch_recovery_required"] = bool(recovery_required)
+
+    # The generated site profile/policy is authoritative for site VLAN choices.
+    # Mirror those selected values into the local runtime settings so later
+    # provisioning alignment checks compare against this site's actual values,
+    # not repository defaults from config/site.json.
+    local["default_management_vlan_id"] = int(profile["management_vlan"]["vlan_id"])
+    local["temporary_recovery_vlan_name"] = str(profile["temporary_recovery_vlan"]["name"])
+    local["temporary_recovery_vlan_id"] = int(profile["temporary_recovery_vlan"]["vlan_id"])
+
     if environment == "lab":
         local["analysis_policy"] = "policies/lab-smoke-v1.json"
         local["default_collection_duration_seconds"] = 60
@@ -105,7 +114,7 @@ def _record_site_runtime_policy(settings_path, recovery_required):
     else:
         local["analysis_policy"] = "policies/production-old-v1.json"
         local["default_collection_duration_seconds"] = 1800
-        local["default_collection_interval_seconds"] = 60
+        local["default_collection_interval_seconds"] = 180
     atomic_json(local_path, local)
     return local_path, environment, local["analysis_policy"]
 
