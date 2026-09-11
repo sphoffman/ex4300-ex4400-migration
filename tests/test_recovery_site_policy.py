@@ -19,7 +19,14 @@ def _mock_profile(monkeypatch, environment="lab"):
     monkeypatch.setattr(
         policy_cli,
         "load_profile",
-        lambda _settings: ({"environment": environment}, Path("config/site-profile.json")),
+        lambda _settings: (
+            {
+                "environment": environment,
+                "management_vlan": {"name": "v163", "vlan_id": 163},
+                "temporary_recovery_vlan": {"name": "Temp-Management", "vlan_id": 3999},
+            },
+            Path("config/site-profile.json"),
+        ),
     )
 
 
@@ -86,6 +93,10 @@ def test_site_init_recovery_disabled_uses_fixed_temp_access_and_lab_policy(tmp_p
     assert local["old_switch_recovery_required"] is False
     assert local["analysis_policy"] == "policies/lab-smoke-v1.json"
     assert local["default_collection_duration_seconds"] == 60
+    assert local["default_collection_interval_seconds"] == 60
+    assert local["default_management_vlan_id"] == 163
+    assert local["temporary_recovery_vlan_name"] == "Temp-Management"
+    assert local["temporary_recovery_vlan_id"] == 3999
 
 
 def test_site_init_production_binds_production_analysis_policy(tmp_path, monkeypatch):
@@ -100,6 +111,10 @@ def test_site_init_production_binds_production_analysis_policy(tmp_path, monkeyp
     assert local["old_switch_recovery_required"] is True
     assert local["analysis_policy"] == "policies/production-old-v1.json"
     assert local["default_collection_duration_seconds"] == 1800
+    assert local["default_collection_interval_seconds"] == 180
+    assert local["default_management_vlan_id"] == 163
+    assert local["temporary_recovery_vlan_name"] == "Temp-Management"
+    assert local["temporary_recovery_vlan_id"] == 3999
 
 
 def test_site_init_recovery_enabled_keeps_temp_access_interactive(tmp_path, monkeypatch):
