@@ -47,7 +47,7 @@ def test_policy_status_marks_recovery_satisfied_without_transaction(tmp_path, mo
     assert state["old_recovery_not_required"] is True
 
 
-def test_site_init_defaults_production_and_standard_holding_vlan(tmp_path, monkeypatch):
+def test_site_init_recovery_disabled_uses_fixed_temp_access(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     Path("config").mkdir()
     atomic_json(Path("config/site.json"), {"schema_version": "1.3"})
@@ -63,13 +63,12 @@ def test_site_init_defaults_production_and_standard_holding_vlan(tmp_path, monke
     assert policy_cli._site_init([]) == 0
     assert captured == [[
         "site-init",
-        "--environment", "production",
-        "--prestage-vlan-name", "Temp-Management",
+        "--prestage-vlan-name", "TEMP-ACCESS",
         "--prestage-vlan-id", "3998",
     ]]
 
 
-def test_site_init_explicit_overrides_win(tmp_path, monkeypatch):
+def test_site_init_recovery_enabled_keeps_temp_access_interactive(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     Path("config").mkdir()
     atomic_json(Path("config/site.json"), {"schema_version": "1.3"})
@@ -82,10 +81,48 @@ def test_site_init_explicit_overrides_win(tmp_path, monkeypatch):
         lambda argv: captured.append(list(argv)) or 0,
     )
 
+    assert policy_cli._site_init([]) == 0
+    assert captured == [["site-init"]]
+
+
+def test_site_init_explicit_temp_access_overrides_win_when_recovery_disabled(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    Path("config").mkdir()
+    atomic_json(Path("config/site.json"), {"schema_version": "1.3"})
+    captured = []
+
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+    monkeypatch.setattr(
+        policy_cli.site_cli,
+        "main",
+        lambda argv: captured.append(list(argv)) or 0,
+    )
+
     args = [
-        "--environment", "lab",
         "--prestage-vlan-name", "CUSTOM-HOLDING",
         "--prestage-vlan-id", "3000",
     ]
     assert policy_cli._site_init(args) == 0
     assert captured == [["site-init"] + args]
+
+
+def test_site_init_prompt_defaults_and_labels():
+    captured = []
+    original = policy_cli._ORIGINAL_SITE_PROMPT
+    try:
+        policy_cli._ORIGINAL_SITE_PROMPT = (
+            lambda value, label, default=None: captured.append((value, label, default)) or str(default)
+        )
+        assert policy_cli._site_init_prompt(None, "Environment (lab/production)", "lab") == "production"
+        assert policy_cli._site_init_prompt(None, "Temporary recovery VLAN name", "TEMP-RECOVERY") == "Temp-Management"
+        assert policy_cli._site_init_prompt(None, "Temporary recovery VLAN ID", 3999) == "3999"
+        assert policy_cli._site_init_prompt(None, "EX-only prestage/default VLAN name", "TEMP-ACCESS") == "TEMP-ACCESS"
+    finally:
+        policy_cli._ORIGINAL_SITE_PROMPT = original
+
+    assert captured == [
+        (None, "Environment (lab/production)", "production"),
+        (None, "Temporary Management VLAN name", "Temp-Management"),
+        (None, "Temporary Management VLAN ID", 3999),
+        (None, "EX-only prestage/default VLAN name", "TEMP-ACCESS"),
+    ]
