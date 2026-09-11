@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from ex_migration_analyzer.core import atomic_json, read_json
+from ex_migration_provisioner import cli_base as provisioner_base
 from ex_migration_site import cli as site_cli
 
 from . import cli as legacy
@@ -32,10 +33,7 @@ def _settings_path(args):
 
 
 def _old_switch_recovery_required(settings_path):
-    path = Path(settings_path)
-    if not path.is_file():
-        return True
-    settings = read_json(path)
+    settings = provisioner_base.load_settings(Path(settings_path))
     # Backward compatibility: settings created before this policy existed retain
     # the original required-recovery behavior.
     return settings.get("old_switch_recovery_required", True) is not False
@@ -90,10 +88,11 @@ def _site_init(args):
     if result != 0:
         return result
 
-    path = Path(_settings_path(args))
-    settings = read_json(path)
-    settings["old_switch_recovery_required"] = recovery_required
-    atomic_json(path, settings)
+    settings_path = Path(_settings_path(args))
+    local_path = settings_path.with_name("site.local.json")
+    local = read_json(local_path) if local_path.is_file() else {}
+    local["old_switch_recovery_required"] = recovery_required
+    atomic_json(local_path, local)
 
     print("")
     if recovery_required:
@@ -102,7 +101,7 @@ def _site_init(args):
     else:
         print("Old-EX recovery policy: NOT REQUIRED")
         print("  Prestage will skip old-EX vme.0 recovery because retired switches are removed/powered down.")
-    print("  Recorded in: %s" % path)
+    print("  Recorded in: %s" % local_path)
     return 0
 
 
