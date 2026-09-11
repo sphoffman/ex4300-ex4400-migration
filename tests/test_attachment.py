@@ -28,6 +28,7 @@ class FakeQFX:
         baseline=(163, 3999),
         vlan_scope="top-level",
         conflicting_vlan_name=False,
+        lldp_parent=None,
     ):
         self.facts = {"hostname": hostname, "model": "PTX10001-36MR"}
         self.physical = physical
@@ -40,17 +41,17 @@ class FakeQFX:
         self.baseline = baseline
         self.vlan_scope = vlan_scope
         self.conflicting_vlan_name = conflicting_vlan_name
+        self.lldp_parent = lldp_parent or ae
         self.commands = []
 
     def cli(self, command, warning=False):
         self.commands.append(command)
-        if command == "show lldp neighbors detail":
+        if command == "show lldp neighbors":
             return "\n".join([
-                "LLDP Neighbor Information:",
-                "Local Interface    : %s" % self.physical,
-                "Parent Interface   : -",
-                "Port ID            : ae0",
-                "System name        : %s" % self.target,
+                "Local Interface    Parent Interface    Chassis Id                               Port info          System Name",
+                "%s           %s                 2c:6b:f5:94:59:c0                        ge-0/0/0            %s"
+                % (self.physical, self.lldp_parent, self.target),
+                "et-0/0/1           -                   f2:6a:08:5e:23:92                        eth1                host4",
                 "",
             ])
         if command == "show configuration interfaces %s | display set" % self.physical:
@@ -129,8 +130,9 @@ def host_keys():
 
 
 def test_attachment_discovery_learns_matching_existing_ae_from_lldp_ports():
+    pair = devices()
     result = discover_qfx_attachment(
-        policy(), TARGET, devices(), host_keys(), observed_at="2026-09-08T18:00:00Z"
+        policy(), TARGET, pair, host_keys(), observed_at="2026-09-08T18:00:00Z"
     )
     assert result["result"] == "PASS"
     assert all(result["pair_checks"].values())
@@ -143,6 +145,21 @@ def test_attachment_discovery_learns_matching_existing_ae_from_lldp_ports():
         [163, 3999],
         [163, 3999],
     ]
+    for device in pair.values():
+        assert "show lldp neighbors" in device.commands
+        assert "show lldp neighbors detail" not in device.commands
+
+
+def test_attachment_discovery_requires_lldp_parent_to_match_configured_ae():
+    result = discover_qfx_attachment(
+        policy(),
+        TARGET,
+        devices(a=FakeQFX("BD-1", lldp_parent="ae1")),
+        host_keys(),
+        observed_at="2026-09-08T18:00:00Z",
+    )
+    assert result["result"] == "FAIL"
+    assert result["devices"][0]["checks"]["lldp_parent_matches_configured_ae"] is False
 
 
 def test_attachment_discovery_accepts_operational_lacp_without_explicit_active():
