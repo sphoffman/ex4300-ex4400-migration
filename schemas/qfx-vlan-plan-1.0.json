@@ -90,7 +90,7 @@
       "type": "object",
       "required": [
         "read_only_observation", "qfx_writes_authorized", "ex4400_writes_authorized",
-        "operator_supplied_ports_used", "creates_vlan_definitions", "adds_ae_vlan_membership_only"
+        "operator_supplied_ports_used", "creates_vlan_definitions"
       ],
       "properties": {
         "read_only_observation": {"const": true},
@@ -98,8 +98,13 @@
         "ex4400_writes_authorized": {"const": false},
         "operator_supplied_ports_used": {"const": false},
         "creates_vlan_definitions": {"const": false},
-        "adds_ae_vlan_membership_only": {"const": true}
+        "adds_ae_vlan_membership_only": {"const": true},
+        "changes_ae_vlan_membership_only": {"const": true}
       },
+      "anyOf": [
+        {"required": ["adds_ae_vlan_membership_only"]},
+        {"required": ["changes_ae_vlan_membership_only"]}
+      ],
       "additionalProperties": false
     }
   },
