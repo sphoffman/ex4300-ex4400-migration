@@ -45,3 +45,47 @@ def test_policy_status_marks_recovery_satisfied_without_transaction(tmp_path, mo
     state = policy_cli._policy_workflow_status(tmp_path / "snapshots/migrations/test")
     assert state["old_recovery"] == "COMPLETE"
     assert state["old_recovery_not_required"] is True
+
+
+def test_site_init_defaults_production_and_standard_holding_vlan(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    Path("config").mkdir()
+    atomic_json(Path("config/site.json"), {"schema_version": "1.3"})
+    captured = []
+
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+    monkeypatch.setattr(
+        policy_cli.site_cli,
+        "main",
+        lambda argv: captured.append(list(argv)) or 0,
+    )
+
+    assert policy_cli._site_init([]) == 0
+    assert captured == [[
+        "site-init",
+        "--environment", "production",
+        "--prestage-vlan-name", "Temp-Management",
+        "--prestage-vlan-id", "3998",
+    ]]
+
+
+def test_site_init_explicit_overrides_win(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    Path("config").mkdir()
+    atomic_json(Path("config/site.json"), {"schema_version": "1.3"})
+    captured = []
+
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+    monkeypatch.setattr(
+        policy_cli.site_cli,
+        "main",
+        lambda argv: captured.append(list(argv)) or 0,
+    )
+
+    args = [
+        "--environment", "lab",
+        "--prestage-vlan-name", "CUSTOM-HOLDING",
+        "--prestage-vlan-id", "3000",
+    ]
+    assert policy_cli._site_init(args) == 0
+    assert captured == [["site-init"] + args]
