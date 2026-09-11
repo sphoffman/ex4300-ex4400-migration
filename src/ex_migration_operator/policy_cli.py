@@ -4,7 +4,6 @@ import sys
 from pathlib import Path
 
 from ex_migration_analyzer.core import atomic_json, read_json
-from ex_migration_provisioner import cli_base as provisioner_base
 from ex_migration_site import cli as site_cli
 
 from . import cli as legacy
@@ -32,19 +31,14 @@ def _settings_path(args):
     return _option_value(args, "--settings", "config/site.json")
 
 
-def _site_profile_path(settings_path):
-    settings = provisioner_base.load_settings(Path(settings_path))
-    return Path(settings.get("site_profile", "config/site-profile.json"))
-
-
 def _old_switch_recovery_required(settings_path):
-    path = _site_profile_path(settings_path)
+    path = Path(settings_path)
     if not path.is_file():
         return True
-    profile = read_json(path)
-    # Backward compatibility: profiles created before this policy existed retain
+    settings = read_json(path)
+    # Backward compatibility: settings created before this policy existed retain
     # the original required-recovery behavior.
-    return profile.get("old_switch_recovery_required", True) is not False
+    return settings.get("old_switch_recovery_required", True) is not False
 
 
 def _policy_workflow_status(root):
@@ -96,11 +90,10 @@ def _site_init(args):
     if result != 0:
         return result
 
-    settings_path = _settings_path(args)
-    path = _site_profile_path(settings_path)
-    profile = read_json(path)
-    profile["old_switch_recovery_required"] = recovery_required
-    atomic_json(path, profile)
+    path = Path(_settings_path(args))
+    settings = read_json(path)
+    settings["old_switch_recovery_required"] = recovery_required
+    atomic_json(path, settings)
 
     print("")
     if recovery_required:
