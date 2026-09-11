@@ -6,7 +6,8 @@ cd "$ROOT"
 
 args=("$@")
 docker_env=(--env PYTHONPATH=/scripts/src)
-module="ex_migration_operator.current_cli"
+operator_module="ex_migration_operator.policy_cli"
+module="$operator_module"
 
 # Initial old-switch discovery intentionally has no migration ID. The wrapper
 # derives it from the observed hostname, then asserts that same ID for any
@@ -14,7 +15,10 @@ module="ex_migration_operator.current_cli"
 initial_discovery=0
 if [[ ${#args[@]} -ge 1 ]]; then
   case "${args[0]}" in
-    site-init|site-discover|site-stage|site-status)
+    site-init)
+      module="$operator_module"
+      ;;
+    site-discover|site-stage|site-status)
       module="ex_migration_site.cli"
       ;;
     discover)
@@ -37,7 +41,7 @@ fi
 # site policy until site discovery/baseline validation has generated the active
 # policy. Route the operator to site-status first so the missing prerequisite is
 # obvious and actionable rather than failing later inside prestage.
-if [[ "$module" == "ex_migration_operator.current_cli" && ${#args[@]} -eq 1 ]]; then
+if [[ "$module" == "$operator_module" && ${#args[@]} -eq 1 && "${args[0]}" != "site-init" ]]; then
   if [[ ! -f config/qfx-site-policy.active.json ]]; then
     echo "Migration '${args[0]}' is waiting on site readiness."
     echo "Complete the site prerequisite before continuing this migration."
@@ -54,7 +58,7 @@ option_start=0
 if (( initial_discovery == 1 )); then
   discovery_session=1
   option_start=0
-elif [[ "$module" == "ex_migration_operator.current_cli" && ${#args[@]} -ge 2 && "${args[1]}" == "discover" ]]; then
+elif [[ "$module" == "$operator_module" && ${#args[@]} -ge 2 && "${args[1]}" == "discover" ]]; then
   discovery_session=1
   option_start=2
 fi
