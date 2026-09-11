@@ -226,7 +226,19 @@ def _resume(migration_id):
     answer = input("Run next action '%s' now? [Y/n]: " % action).strip().lower()
     if answer not in ("", "y", "yes"):
         return 0
-    return _dispatch(migration_id, action, [])
+
+    result = _dispatch(migration_id, action, [])
+    if result != 0:
+        return result
+
+    # Build and prestage are one operator preparation phase. Preserve both
+    # approval scopes, but do not force a second shell invocation between them.
+    if action == "build":
+        state = workflow_status(root)
+        if state.get("next_action") == "prestage":
+            print("\nMigration intent approved; continuing directly into pre-stage preparation.")
+            return _dispatch(migration_id, "prestage", [])
+    return result
 
 
 def main(argv=None):
