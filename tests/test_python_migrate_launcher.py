@@ -40,7 +40,7 @@ def test_python_launcher_routes_per_migration_commands():
     launcher = _launcher()
     module, args, error = launcher._route(["sw1203", "status"])
     assert error is None
-    assert module == "ex_migration_operator.current_cli"
+    assert module == "ex_migration_operator.policy_cli"
     assert args == ["sw1203", "status"]
 
 
