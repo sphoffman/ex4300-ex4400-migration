@@ -28,10 +28,6 @@ def _option_value(args, name, default=None):
     return default
 
 
-def _has_option(args, name):
-    return any(value == name or value.startswith(name + "=") for value in args)
-
-
 def _settings_path(args):
     return _option_value(args, "--settings", "config/site.json")
 
@@ -75,6 +71,22 @@ def _install_policy_hooks(settings_path):
     legacy._status_text = _policy_status_text
 
 
+def _site_init_prompt(value, label, default=None):
+    """Apply operator-facing defaults without suppressing site-init prompts."""
+    if label == "Environment (lab/production)":
+        default = "production"
+    elif label == "Temporary recovery VLAN name":
+        label = "Temporary Management VLAN name"
+        default = "Temp-Management"
+    elif label == "Temporary recovery VLAN ID":
+        label = "Temporary Management VLAN ID"
+        default = 3999
+    return _ORIGINAL_SITE_PROMPT(value, label, default)
+
+
+_ORIGINAL_SITE_PROMPT = site_cli._prompt
+
+
 def _site_init(args):
     # Keep normal argparse help side-effect free and unchanged.
     if any(value in ("-h", "--help") for value in args):
@@ -88,23 +100,14 @@ def _site_init(args):
         return 2
     recovery_required = answer not in ("n", "no")
 
-    site_args = list(args)
-    # Production is the normal deployment target. Lab operation remains an
-    # explicit override instead of the default path.
-    if not _has_option(site_args, "--environment"):
-        site_args.extend(["--environment", "production"])
-
-    # VLAN 3998 is the EX-only temporary/default holding VLAN used before
-    # per-port endpoint activation. Junos keeps the actual VLAN name "default";
-    # this value is rendered as its description/semantic label. Standardize it
-    # so operators are not prompted for the same site-independent values on
-    # every site-init. Both remain explicitly overridable when required.
-    if not _has_option(site_args, "--prestage-vlan-name"):
-        site_args.extend(["--prestage-vlan-name", "Temp-Management"])
-    if not _has_option(site_args, "--prestage-vlan-id"):
-        site_args.extend(["--prestage-vlan-id", "3998"])
-
-    result = site_cli.main(["site-init"] + site_args)
+    # Keep site-init interactive. Change only the operator-facing defaults and
+    # terminology; explicit CLI values still bypass prompting as usual.
+    original_prompt = site_cli._prompt
+    site_cli._prompt = _site_init_prompt
+    try:
+        result = site_cli.main(["site-init"] + list(args))
+    finally:
+        site_cli._prompt = original_prompt
     if result != 0:
         return result
 
