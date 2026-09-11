@@ -15,7 +15,7 @@ module="$operator_module"
 initial_discovery=0
 if [[ ${#args[@]} -ge 1 ]]; then
   case "${args[0]}" in
-    site-init)
+    site-init|site-prep)
       module="$operator_module"
       ;;
     site-discover|site-stage|site-status)
@@ -41,7 +41,7 @@ fi
 # site policy until site discovery/baseline validation has generated the active
 # policy. Route the operator to site-status first so the missing prerequisite is
 # obvious and actionable rather than failing later inside prestage.
-if [[ "$module" == "$operator_module" && ${#args[@]} -eq 1 && "${args[0]}" != "site-init" ]]; then
+if [[ "$module" == "$operator_module" && ${#args[@]} -eq 1 && "${args[0]}" != "site-init" && "${args[0]}" != "site-prep" ]]; then
   if [[ ! -f config/qfx-site-policy.active.json ]]; then
     echo "Migration '${args[0]}' is waiting on site readiness."
     echo "Complete the site prerequisite before continuing this migration."
