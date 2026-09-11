@@ -115,6 +115,19 @@ def _target_lldp_neighbors(text, expected_hostname):
     return results
 
 
+def _planned_statements_satisfied(expected_statements, statement_set):
+    for statement in expected_statements:
+        if statement.startswith("set "):
+            if statement not in statement_set:
+                return False
+        elif statement.startswith("delete "):
+            if ("set " + statement[7:]) in statement_set:
+                return False
+        else:
+            return False
+    return True
+
+
 def validate_post_commit_device(dev, plan_device, expected_ex_hostname):
     physical = plan_device["physical_interface"]
     ae = plan_device["ae_interface"]
@@ -149,8 +162,8 @@ def validate_post_commit_device(dev, plan_device, expected_ex_hostname):
         "physical_interface_still_maps_to_bound_ae": (
             expected_parent in physical_config or alternate_parent in physical_config
         ),
-        "all_planned_vlan_memberships_present": all(
-            statement in statement_set for statement in expected_statements
+        "all_planned_vlan_changes_present": _planned_statements_satisfied(
+            expected_statements, statement_set
         ),
         "lacp_force_up_absent": (
             "set interfaces %s aggregated-ether-options lacp force-up" % ae
