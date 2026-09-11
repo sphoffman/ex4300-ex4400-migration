@@ -15,6 +15,7 @@ from . import current_cli
 _POLICY_SETTINGS = "config/site.json"
 _ORIGINAL_WORKFLOW_STATUS = legacy.workflow_status
 _ORIGINAL_STATUS_TEXT = legacy._status_text
+_ORIGINAL_SITE_PROMPT = site_cli._prompt
 
 
 def _option_value(args, name, default=None):
@@ -26,6 +27,10 @@ def _option_value(args, name, default=None):
         if value.startswith(name + "="):
             return value.split("=", 1)[1]
     return default
+
+
+def _has_option(args, name):
+    return any(value == name or value.startswith(name + "=") for value in args)
 
 
 def _settings_path(args):
@@ -43,9 +48,6 @@ def _policy_workflow_status(root):
     if _old_switch_recovery_required(_POLICY_SETTINGS):
         return _ORIGINAL_WORKFLOW_STATUS(root)
 
-    # workflow_status() resolves this helper through the operator_core module at
-    # runtime. Temporarily satisfy only this one site-policy-controlled
-    # prerequisite so the normal state machine computes every later phase.
     original = operator_core._successful_old_recovery
     operator_core._successful_old_recovery = lambda _root, _digest: True
     try:
@@ -72,7 +74,7 @@ def _install_policy_hooks(settings_path):
 
 
 def _site_init_prompt(value, label, default=None):
-    """Apply operator-facing defaults without suppressing site-init prompts."""
+    """Apply operator-facing defaults without suppressing normal prompts."""
     if label == "Environment (lab/production)":
         default = "production"
     elif label == "Temporary recovery VLAN name":
@@ -84,11 +86,7 @@ def _site_init_prompt(value, label, default=None):
     return _ORIGINAL_SITE_PROMPT(value, label, default)
 
 
-_ORIGINAL_SITE_PROMPT = site_cli._prompt
-
-
 def _site_init(args):
-    # Keep normal argparse help side-effect free and unchanged.
     if any(value in ("-h", "--help") for value in args):
         return site_cli.main(["site-init"] + list(args))
 
@@ -100,12 +98,20 @@ def _site_init(args):
         return 2
     recovery_required = answer not in ("n", "no")
 
-    # Keep site-init interactive. Change only the operator-facing defaults and
-    # terminology; explicit CLI values still bypass prompting as usual.
+    site_args = list(args)
+    # The EX-only prestage/default VLAN remains a fixed holding construct when
+    # old-switch recovery is disabled, so do not ask the operator for it in that
+    # path. Explicit CLI overrides still win.
+    if not recovery_required:
+        if not _has_option(site_args, "--prestage-vlan-name"):
+            site_args.extend(["--prestage-vlan-name", "TEMP-ACCESS"])
+        if not _has_option(site_args, "--prestage-vlan-id"):
+            site_args.extend(["--prestage-vlan-id", "3998"])
+
     original_prompt = site_cli._prompt
     site_cli._prompt = _site_init_prompt
     try:
-        result = site_cli.main(["site-init"] + list(args))
+        result = site_cli.main(["site-init"] + site_args)
     finally:
         site_cli._prompt = original_prompt
     if result != 0:
@@ -124,6 +130,7 @@ def _site_init(args):
     else:
         print("Old-EX recovery policy: NOT REQUIRED")
         print("  Prestage will skip old-EX vme.0 recovery because retired switches are removed/powered down.")
+        print("  EX-only holding VLAN defaults: TEMP-ACCESS (3998)")
     print("  Recorded in: %s" % local_path)
     return 0
 
