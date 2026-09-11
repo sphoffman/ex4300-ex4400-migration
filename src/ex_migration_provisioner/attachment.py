@@ -10,7 +10,6 @@ from ex_migration_analyzer.core import (
     sha256_file,
     utc_now,
 )
-from ex_migration_discovery.parsers import parse_lldp_neighbors_text
 
 from .core import ProvisioningError
 from .prestage import validate_pre_cutover_site_policy
@@ -127,11 +126,40 @@ def _lacp_operational(text, physical):
     )
 
 
+def _lldp_summary_neighbors(text):
+    """Parse compact ``show lldp neighbors`` rows.
+
+    The summary is intentionally used instead of ``show lldp neighbors detail``.
+    On large Junos systems the detailed command can be expensive enough to hit
+    the default NETCONF RPC timeout, while the summary already contains the
+    local interface, parent AE, remote port and system name needed to locate the
+    attachment. Configuration and LACP are still queried separately to prove
+    the attachment contract rather than trusting the summary alone.
+    """
+    result = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("Local Interface"):
+            continue
+        fields = line.split(None, 4)
+        if len(fields) != 5:
+            continue
+        local, parent, chassis_id, remote_port, system_name = fields
+        result.append({
+            "local_interface": local,
+            "parent_interface": parent,
+            "chassis_id": chassis_id,
+            "remote_port_id": remote_port,
+            "remote_system_name": system_name.strip(),
+        })
+    return result
+
+
 def _target_neighbors(lldp_text, expected_hostname):
     expected = str(expected_hostname).strip().lower()
     return [
         item
-        for item in parse_lldp_neighbors_text(lldp_text or "", "", "")
+        for item in _lldp_summary_neighbors(lldp_text)
         if str(item.get("remote_system_name") or "").strip().lower() == expected
     ]
 
@@ -141,10 +169,11 @@ def observe_qfx_attachment(dev, device_policy, policy, expected_ex_hostname, hos
     observed_hostname = str(facts.get("hostname") or "")
     observed_model = str(facts.get("model") or "")
 
-    lldp_text = dev.cli("show lldp neighbors detail", warning=False) or ""
+    lldp_text = dev.cli("show lldp neighbors", warning=False) or ""
     neighbors = _target_neighbors(lldp_text, expected_ex_hostname)
     unique_neighbor = neighbors[0] if len(neighbors) == 1 else None
     physical = str(unique_neighbor.get("local_interface") or "") if unique_neighbor else ""
+    lldp_parent = str(unique_neighbor.get("parent_interface") or "") if unique_neighbor else ""
 
     allowed = _allowed_ports(policy)
     excluded = set(policy.get("excluded_interfaces", []))
@@ -228,6 +257,9 @@ def observe_qfx_attachment(dev, device_policy, policy, expected_ex_hostname, hos
         "physical_interface_allowed": bool(physical) and physical in allowed,
         "physical_interface_not_excluded": bool(physical) and physical not in excluded,
         "physical_maps_to_one_ae": bool(ae),
+        "lldp_parent_matches_configured_ae": bool(ae)
+        and bool(lldp_parent)
+        and lldp_parent == ae,
         "ae_in_allowed_range": ae_number is not None
         and ae_pool["ae_min"] <= ae_number <= ae_pool["ae_max"],
         "lacp_configured": lacp_configured,
