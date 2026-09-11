@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from ex_migration_analyzer.core import (
     atomic_json,
     canonical_bytes,
@@ -7,7 +9,6 @@ from ex_migration_analyzer.core import (
     sha256_file,
     utc_now,
 )
-from ex_migration_discovery.parsers import parse_lldp_neighbors_text
 
 from .core import ProvisioningError
 
@@ -94,17 +95,30 @@ def persist_transaction(migration_root, transaction, candidate_diffs):
 
 def _target_lldp_neighbors(text, expected_hostname):
     expected = str(expected_hostname).strip().lower()
-    return [
-        item
-        for item in parse_lldp_neighbors_text(text or "", "", "")
-        if str(item.get("remote_system_name") or "").strip().lower() == expected
-    ]
+    results = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.lower().startswith("local interface"):
+            continue
+        columns = re.split(r"\s{2,}", line)
+        if len(columns) < 5:
+            continue
+        local_interface, parent_interface = columns[0], columns[1]
+        remote_system_name = columns[-1].strip()
+        if remote_system_name.lower() != expected:
+            continue
+        results.append({
+            "local_interface": local_interface,
+            "parent_interface": parent_interface,
+            "remote_system_name": remote_system_name,
+        })
+    return results
 
 
 def validate_post_commit_device(dev, plan_device, expected_ex_hostname):
     physical = plan_device["physical_interface"]
     ae = plan_device["ae_interface"]
-    lldp_text = dev.cli("show lldp neighbors detail", warning=False) or ""
+    lldp_text = dev.cli("show lldp neighbors", warning=False) or ""
     neighbors = _target_lldp_neighbors(lldp_text, expected_ex_hostname)
     matching_local = [
         item for item in neighbors
@@ -130,6 +144,8 @@ def validate_post_commit_device(dev, plan_device, expected_ex_hostname):
     statement_set = {line.strip() for line in ae_config.splitlines() if line.strip()}
     checks = {
         "lldp_target_on_bound_physical_interface": len(matching_local) == 1,
+        "lldp_parent_matches_bound_ae": len(matching_local) == 1
+        and str(matching_local[0].get("parent_interface") or "") == ae,
         "physical_interface_still_maps_to_bound_ae": (
             expected_parent in physical_config or alternate_parent in physical_config
         ),
