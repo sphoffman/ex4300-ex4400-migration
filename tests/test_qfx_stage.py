@@ -80,7 +80,7 @@ def attachment(plan_digest, policy_digest):
             "expected_ex_hostname": TARGET,
             "lldp_match_count": 1,
             "physical_interface": "et-0/0/5",
-            "remote_port_id": "ae0",
+            "remote_port_id": "ge-0/0/0",
             "ae_interface": "ae2",
             "lacp_system_id": "00:01:02:03:04:02",
             "baseline_vlan_ids": [163, 3999],
@@ -113,13 +113,10 @@ class FakeQFX:
         self.missing_vlan = missing_vlan
 
     def cli(self, command, warning=False):
-        if command == "show lldp neighbors detail":
+        if command == "show lldp neighbors":
             return "\n".join([
-                "LLDP Neighbor Information:",
-                "Local Interface    : et-0/0/5",
-                "Parent Interface   : -",
-                "Port ID            : ae0",
-                "System name        : %s" % TARGET,
+                "Local Interface    Parent Interface    Chassis Id                               Port info          System Name",
+                "et-0/0/5           ae2                 2c:6b:f5:94:59:c0                        ge-0/0/0            %s" % TARGET,
                 "",
             ])
         if command == "show configuration interfaces et-0/0/5 | display set":
@@ -217,6 +214,34 @@ def test_qfx_vlan_plan_resolves_existing_mac_vrf_vlans_and_adds_membership_only(
 
     schema = json.loads((ROOT / "schemas/qfx-vlan-plan-1.0.json").read_text())
     Draft202012Validator.check_schema(schema)
+    Draft202012Validator(schema).validate(value)
+
+
+def test_qfx_vlan_plan_removes_recovery_membership_when_recovery_is_disabled():
+    plan = migration_plan()
+    plan_digest = digest("a")
+    policy_digest = digest("b")
+    effective_policy = policy()
+    effective_policy["_old_switch_recovery_required"] = False
+    value = build_qfx_vlan_plan(
+        "sw1203",
+        plan,
+        plan_digest,
+        attachment(plan_digest, policy_digest),
+        digest("c"),
+        effective_policy,
+        policy_digest,
+        devices(),
+        host_keys(),
+        created_at="2026-09-08T19:00:00Z",
+    )
+    assert value["result"] == "PASS"
+    expected_delete = (
+        "delete interfaces ae2 unit 0 family ethernet-switching vlan members TEMP-RECOVERY"
+    )
+    assert expected_delete in value["devices"][0]["statements"]
+    assert expected_delete in value["devices"][1]["statements"]
+    schema = json.loads((ROOT / "schemas/qfx-vlan-plan-1.0.json").read_text())
     Draft202012Validator(schema).validate(value)
 
 
