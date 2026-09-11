@@ -118,7 +118,15 @@ if (( discovery_session == 1 && help_requested == 0 )); then
   docker_env+=(--env "$password_env_name")
 fi
 
+# Preserve host ownership on bind-mounted artifacts. Without an explicit user,
+# the juniper/pyez container runs as root and creates root-owned snapshots/config
+# files in the repository. Running with the invoking user's numeric UID/GID keeps
+# all generated artifacts owned by the operator on the host filesystem.
+host_uid="$(id -u)"
+host_gid="$(id -g)"
+
 exec docker run --rm -it \
+  --user "${host_uid}:${host_gid}" \
   --entrypoint python \
   --workdir /scripts \
   "${docker_env[@]}" \
