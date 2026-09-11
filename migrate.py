@@ -20,6 +20,17 @@ ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
+
+# Several workflow phases intentionally launch child Python processes with
+# ``sys.executable -m <module>``. In the Docker wrapper, PYTHONPATH is supplied
+# by the container invocation. When already inside a PyEZ container, propagate
+# the repository source path through the process environment so every child
+# process imports the same checkout as this launcher.
+_existing_pythonpath = os.environ.get("PYTHONPATH", "")
+_pythonpath_entries = [item for item in _existing_pythonpath.split(os.pathsep) if item]
+if str(SRC) not in _pythonpath_entries:
+    os.environ["PYTHONPATH"] = os.pathsep.join([str(SRC)] + _pythonpath_entries)
+
 os.chdir(str(ROOT))
 
 MIGRATION_COMMANDS = {
