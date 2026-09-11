@@ -28,6 +28,10 @@ def _option_value(args, name, default=None):
     return default
 
 
+def _has_option(args, name):
+    return any(value == name or value.startswith(name + "=") for value in args)
+
+
 def _settings_path(args):
     return _option_value(args, "--settings", "config/site.json")
 
@@ -84,7 +88,23 @@ def _site_init(args):
         return 2
     recovery_required = answer not in ("n", "no")
 
-    result = site_cli.main(["site-init"] + list(args))
+    site_args = list(args)
+    # Production is the normal deployment target. Lab operation remains an
+    # explicit override instead of the default path.
+    if not _has_option(site_args, "--environment"):
+        site_args.extend(["--environment", "production"])
+
+    # VLAN 3998 is the EX-only temporary/default holding VLAN used before
+    # per-port endpoint activation. Junos keeps the actual VLAN name "default";
+    # this value is rendered as its description/semantic label. Standardize it
+    # so operators are not prompted for the same site-independent values on
+    # every site-init. Both remain explicitly overridable when required.
+    if not _has_option(site_args, "--prestage-vlan-name"):
+        site_args.extend(["--prestage-vlan-name", "Temp-Management"])
+    if not _has_option(site_args, "--prestage-vlan-id"):
+        site_args.extend(["--prestage-vlan-id", "3998"])
+
+    result = site_cli.main(["site-init"] + site_args)
     if result != 0:
         return result
 
