@@ -212,6 +212,13 @@ def run(argv):
         paths["site_policy"] = args.site_policy
     base._require_paths(paths)
     policy = validate_pre_cutover_site_policy(base.read_json(paths["site_policy"]))
+    # This is an operator workflow policy loaded from site.local.json. Keep the
+    # immutable generated site-policy digest unchanged, but carry the effective
+    # recovery requirement into the per-migration QFX plan so an already-staged
+    # TEMP-RECOVERY VLAN can be removed when old-switch recovery is disabled.
+    policy["_old_switch_recovery_required"] = (
+        settings.get("old_switch_recovery_required", True) is not False
+    )
     if args.no_host_key_check and policy["environment"] != "lab":
         raise base.ProvisioningError(
             "--no-host-key-check is permitted only by a lab QFX site policy"
