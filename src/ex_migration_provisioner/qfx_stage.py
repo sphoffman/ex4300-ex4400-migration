@@ -215,6 +215,19 @@ def observe_qfx_vlan_plan_device(
         for item in resolved
     ] if ae else []
 
+    recovery_required = policy.get("_old_switch_recovery_required", True) is not False
+    recovery_vlan = policy["temporary_recovery_vlan"]
+    current_baseline = observation.get("baseline_vlan_ids") or []
+    if (
+        ae
+        and not recovery_required
+        and int(recovery_vlan["vlan_id"]) in current_baseline
+    ):
+        statements.append(
+            "delete interfaces %s unit 0 family ethernet-switching vlan members %s"
+            % (ae, recovery_vlan["name"])
+        )
+
     checks = {
         "attachment_still_valid": observation.get("result") == "PASS",
         "attachment_matches_bound_artifact": bound_matches,
@@ -347,7 +360,7 @@ def build_qfx_vlan_plan(
             "ex4400_writes_authorized": False,
             "operator_supplied_ports_used": False,
             "creates_vlan_definitions": False,
-            "adds_ae_vlan_membership_only": True,
+            "changes_ae_vlan_membership_only": True,
         },
     }
 
