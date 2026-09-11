@@ -47,15 +47,25 @@ def ex_cleanup_statements(
     recovery_interface,
     recovery_vlan_name,
     recovery_port_already_disabled=False,
+    recovery_required=True,
 ):
     _require(recovery_interface, "recovery interface is required")
     _require(recovery_vlan_name, "recovery VLAN name is required")
-    if recovery_port_already_disabled:
+    statements = []
+    if not recovery_port_already_disabled:
+        statements.append("set interfaces %s disable" % recovery_interface)
+    if not recovery_required:
+        statements.extend([
+            "delete interfaces %s unit 0 family ethernet-switching vlan members %s"
+            % (recovery_interface, recovery_vlan_name),
+            "delete vlans %s" % recovery_vlan_name,
+        ])
+    return statements
+
+
+def qfx_cleanup_statements(ae_interface, recovery_vlan_name, recovery_required=True):
+    if not recovery_required:
         return []
-    return ["set interfaces %s disable" % recovery_interface]
-
-
-def qfx_cleanup_statements(ae_interface, recovery_vlan_name):
     return [
         "delete interfaces %s unit 0 family ethernet-switching vlan members %s"
         % (ae_interface, recovery_vlan_name)
@@ -167,6 +177,7 @@ def validate_pre_cleanup(
     recovery_vlan_name,
     required_production_vlan_ids,
     access_hardening,
+    recovery_required=True,
 ):
     endpoint = required_endpoint_interfaces(plan)
     missing_completed = sorted(
@@ -177,19 +188,24 @@ def validate_pre_cleanup(
         "no_operator_hold_intents": not endpoint["holds"],
         "all_required_endpoint_intents_live": not missing_completed,
         "access_hardening_classification_pass": access_hardening.get("result") == "PASS",
-        "ex_recovery_port_membership_present": bool(ex_state.get("recovery_port_membership_present")),
-        "ex_recovery_vlan_definition_present": bool(ex_state.get("recovery_vlan_definition_present")),
         "ex_holding_default_vlan_present": bool(ex_state.get("holding_default_vlan_present")),
         "ex_no_other_recovery_memberships": not ex_state.get("unexpected_other_recovery_memberships"),
     }
+    if recovery_required:
+        checks["ex_recovery_port_membership_present"] = bool(ex_state.get("recovery_port_membership_present"))
+        checks["ex_recovery_vlan_definition_present"] = bool(ex_state.get("recovery_vlan_definition_present"))
     required_qfx = set(int(value) for value in required_production_vlan_ids)
     required_qfx.add(int(management_vlan_id))
-    required_qfx.add(int(recovery_vlan_id))
+    if recovery_required:
+        required_qfx.add(int(recovery_vlan_id))
     for role, state in sorted(qfx_states.items()):
         ids = set(state.get("vlan_ids", []))
         checks["%s_vlan_membership_resolved" % role] = not state.get("unresolved")
         checks["%s_required_vlans_present" % role] = required_qfx <= ids
-        checks["%s_recovery_vlan_present" % role] = int(recovery_vlan_id) in ids
+        if recovery_required:
+            checks["%s_recovery_vlan_present" % role] = int(recovery_vlan_id) in ids
+        else:
+            checks["%s_recovery_vlan_absent" % role] = int(recovery_vlan_id) not in ids
         checks["%s_recovery_vlan_definition_present" % role] = (
             state.get("definitions", {}).get(recovery_vlan_name) == int(recovery_vlan_id)
         )
@@ -199,6 +215,7 @@ def validate_pre_cleanup(
         "missing_completed_endpoint_intents": missing_completed,
         "operator_hold_intents": endpoint["holds"],
         "access_hardening_blockers": list(access_hardening.get("blockers", [])),
+        "recovery_required": bool(recovery_required),
         "result": "PASS" if all(checks.values()) else "FAIL",
     }
 
@@ -213,6 +230,7 @@ def validate_post_cleanup(
     recovery_vlan_name,
     required_production_vlan_ids,
     access_hardening_validation,
+    recovery_required=True,
 ):
     endpoint = required_endpoint_interfaces(plan)
     missing_completed = sorted(
@@ -224,11 +242,15 @@ def validate_post_cleanup(
         "all_required_endpoint_intents_still_live": not missing_completed,
         "access_hardening_validation_pass": access_hardening_validation.get("result") == "PASS",
         "ex_recovery_port_disabled": bool(ex_state.get("recovery_port_disabled")),
-        "ex_recovery_port_membership_preserved": bool(ex_state.get("recovery_port_membership_present")),
-        "ex_recovery_vlan_definition_preserved": bool(ex_state.get("recovery_vlan_definition_present")),
         "ex_holding_default_vlan_preserved": bool(ex_state.get("holding_default_vlan_present")),
         "ex_no_other_recovery_memberships": not ex_state.get("unexpected_other_recovery_memberships"),
     }
+    if recovery_required:
+        checks["ex_recovery_port_membership_preserved"] = bool(ex_state.get("recovery_port_membership_present"))
+        checks["ex_recovery_vlan_definition_preserved"] = bool(ex_state.get("recovery_vlan_definition_present"))
+    else:
+        checks["ex_recovery_port_membership_absent"] = not bool(ex_state.get("recovery_port_membership_present"))
+        checks["ex_recovery_vlan_definition_absent"] = not bool(ex_state.get("recovery_vlan_definition_present"))
     required_qfx = set(int(value) for value in required_production_vlan_ids)
     required_qfx.add(int(management_vlan_id))
     for role, state in sorted(qfx_states.items()):
@@ -245,6 +267,7 @@ def validate_post_cleanup(
         "missing_completed_endpoint_intents": missing_completed,
         "operator_hold_intents": endpoint["holds"],
         "access_hardening_validation": access_hardening_validation,
+        "recovery_required": bool(recovery_required),
         "result": "PASS" if all(checks.values()) else "FAIL",
     }
 
@@ -272,6 +295,7 @@ def build_cleanup_plan(
     access_hardening,
     access_hardening_statements,
     production_vlan_names,
+    recovery_required=True,
     created_at=None,
 ):
     _require(precheck.get("result") == "PASS", "TEMP-RECOVERY cleanup prechecks did not pass")
@@ -283,10 +307,15 @@ def build_cleanup_plan(
         recovery_interface,
         recovery_vlan_name,
         recovery_port_already_disabled=recovery_port_already_disabled,
+        recovery_required=recovery_required,
     )
     qfx_devices = []
     for role in sorted(qfx_ae_by_role):
-        statements = qfx_cleanup_statements(qfx_ae_by_role[role], recovery_vlan_name)
+        statements = qfx_cleanup_statements(
+            qfx_ae_by_role[role],
+            recovery_vlan_name,
+            recovery_required=recovery_required,
+        )
         qfx_devices.append({
             "role": role,
             "ae_interface": qfx_ae_by_role[role],
@@ -311,6 +340,7 @@ def build_cleanup_plan(
         "recovery_interface": recovery_interface,
         "recovery_vlan_name": recovery_vlan_name,
         "recovery_vlan_id": int(recovery_vlan_id),
+        "recovery_required": bool(recovery_required),
         "recovery_port_already_disabled": bool(recovery_port_already_disabled),
         "production_vlan_names": sorted(set(production_vlan_names)),
         "access_hardening": access_hardening,
@@ -325,12 +355,17 @@ def build_cleanup_plan(
         "created_at": created_at or utc_now(),
         "inputs": inputs,
         "recovery": {
+            "required": bool(recovery_required),
             "interface": recovery_interface,
             "vlan_name": recovery_vlan_name,
             "vlan_id": int(recovery_vlan_id),
             "prestage_default_vlan_id": int(prestage_vlan_id),
             "initially_disabled": bool(recovery_port_already_disabled),
-            "final_state": "DISABLED_LOCAL_RECOVERY_PRESERVED",
+            "final_state": (
+                "DISABLED_LOCAL_RECOVERY_PRESERVED"
+                if recovery_required
+                else "DISABLED_RECOVERY_REMOVED"
+            ),
         },
         "access_hardening": access_hardening,
         "production_vlan_names": sorted(set(production_vlan_names)),
@@ -342,10 +377,10 @@ def build_cleanup_plan(
         "precheck": precheck,
         "result": "PASS",
         "safety": {
-            "terminal_recovery_window_action": True,
+            "terminal_recovery_window_action": bool(recovery_required),
             "old_ex_vme_recovery_configuration_preserved": True,
             "ex4400_recovery_port_disabled": True,
-            "ex4400_recovery_vlan_configuration_preserved": True,
+            "ex4400_recovery_vlan_configuration_preserved": bool(recovery_required),
             "qfx_global_recovery_vlan_definition_preserved": True,
             "endpoint_configuration_must_remain_present": True,
             "configured_unused_ex_ports_disabled": True,
