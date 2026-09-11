@@ -101,7 +101,7 @@ def _route(argv):
 
     if args:
         first = args[0]
-        if first == "site-init":
+        if first in ("site-init", "site-prep"):
             module_name = OPERATOR_MODULE
         elif first in SITE_COMMANDS:
             module_name = "ex_migration_site.cli"
@@ -117,7 +117,11 @@ def _route(argv):
             return None, None, 2
 
     # Match the shell wrapper's bare-resume site readiness gate.
-    if module_name == OPERATOR_MODULE and len(args) == 1 and args[0] != "site-init":
+    if (
+        module_name == OPERATOR_MODULE
+        and len(args) == 1
+        and args[0] not in ("site-init", "site-prep")
+    ):
         if not (ROOT / "config" / "qfx-site-policy.active.json").is_file():
             print("Migration %r is waiting on site readiness." % args[0])
             print("Complete the site prerequisite before continuing this migration.")
