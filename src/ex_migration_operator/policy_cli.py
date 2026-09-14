@@ -11,7 +11,6 @@ from ex_migration_site import cli as site_cli
 from ex_migration_site.core import load_profile
 
 from . import cli as legacy
-from . import core as operator_core
 from . import current_cli
 
 
@@ -42,31 +41,18 @@ def _settings_path(args):
 
 def _old_switch_recovery_required(settings_path):
     settings = provisioner_base.load_settings(Path(settings_path))
-    # Backward compatibility: settings created before this policy existed retain
-    # the original required-recovery behavior.
     return settings.get("old_switch_recovery_required", True) is not False
 
 
 def _policy_workflow_status(root):
-    if _old_switch_recovery_required(_POLICY_SETTINGS):
-        return _ORIGINAL_WORKFLOW_STATUS(root)
-
-    original = operator_core._successful_old_recovery
-    operator_core._successful_old_recovery = lambda _root, _digest: True
-    try:
-        state = _ORIGINAL_WORKFLOW_STATUS(root)
-    finally:
-        operator_core._successful_old_recovery = original
-    state["old_recovery_not_required"] = True
-    return state
+    # Pre-cutover Temp-Management is required regardless of whether the retired
+    # EX4300 will remain available after cutover. Do not bypass the old-switch
+    # staging checkpoint when post-cutover recovery is disabled.
+    return _ORIGINAL_WORKFLOW_STATUS(root)
 
 
 def _policy_status_text(value):
-    if not value.get("old_recovery_not_required"):
-        return _ORIGINAL_STATUS_TEXT(value)
-    display = dict(value)
-    display["old_recovery"] = "NOT_REQUIRED (site policy)"
-    return _ORIGINAL_STATUS_TEXT(display)
+    return _ORIGINAL_STATUS_TEXT(value)
 
 
 def _install_policy_hooks(settings_path):
@@ -98,11 +84,6 @@ def _record_site_runtime_policy(settings_path, recovery_required):
     local_path = settings_path.with_name("site.local.json")
     local = read_json(local_path) if local_path.is_file() else {}
     local["old_switch_recovery_required"] = bool(recovery_required)
-
-    # The generated site profile/policy is authoritative for site VLAN choices.
-    # Mirror those selected values into the local runtime settings so later
-    # provisioning alignment checks compare against this site's actual values,
-    # not repository defaults from config/site.json.
     local["default_management_vlan_id"] = int(profile["management_vlan"]["vlan_id"])
     local["temporary_recovery_vlan_name"] = str(profile["temporary_recovery_vlan"]["name"])
     local["temporary_recovery_vlan_id"] = int(profile["temporary_recovery_vlan"]["vlan_id"])
@@ -132,9 +113,6 @@ def _site_init(args):
     recovery_required = answer not in ("n", "no")
 
     site_args = list(args)
-    # The EX-only prestage/default VLAN remains a fixed holding construct when
-    # old-switch recovery is disabled, so do not ask the operator for it in that
-    # path. Explicit CLI overrides still win.
     if not recovery_required:
         if not _has_option(site_args, "--prestage-vlan-name"):
             site_args.extend(["--prestage-vlan-name", "TEMP-ACCESS"])
@@ -157,13 +135,15 @@ def _site_init(args):
     )
 
     print("")
+    print("Pre-cutover temporary management: REQUIRED")
+    print("  Old EX4300 will stage a proven-unused access port in Temp-Management.")
+    print("  Connect the replacement EX4400 fxp0 to that port until cutover.")
     if recovery_required:
-        print("Old-EX recovery policy: REQUIRED")
-        print("  Prestage will move the approved replacement OOB address to old EX4300 vme.0.")
+        print("Post-cutover old-EX recovery policy: RETAIN")
     else:
-        print("Old-EX recovery policy: NOT REQUIRED")
-        print("  Prestage will skip old-EX vme.0 recovery because retired switches are removed/powered down.")
-        print("  EX-only holding VLAN defaults: TEMP-ACCESS (3998)")
+        print("Post-cutover old-EX recovery policy: NOT REQUIRED")
+        print("  Retired EX4300s may be removed/powered down after cutover.")
+    print("  EX4400 holding VLAN: TEMP-ACCESS (3998)")
     print("  Site environment: %s" % environment.upper())
     print("  Old-switch analysis policy: %s" % analysis_policy)
     print("  Recorded in: %s" % local_path)
