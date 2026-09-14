@@ -177,6 +177,33 @@ def planned_management_ip(approved_plan):
     return value
 
 
+def discovered_management_ip(migration_root, approved_plan=None):
+    """Return the old EX4300 connection address that the EX4400 inherits post-cutover.
+
+    Initial discovery records the exact address used to reach the source EX4300 in
+    manifest.json.  That address is authoritative for post-cutover management and
+    deliberately takes precedence over historical parsed vme/irb addresses in
+    older analysis/plan artifacts.  The plan value remains a compatibility
+    fallback for migrations created before the manifest carried connection_address.
+    """
+    manifest_path = migration_root / "manifest.json"
+    value = ""
+    if manifest_path.is_file():
+        manifest = read_json(manifest_path)
+        value = str(
+            manifest.get("old_switch", {}).get("connection_address") or ""
+        ).strip()
+    if not value and approved_plan is not None:
+        value = planned_management_ip(approved_plan)
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        raise ProvisioningError(
+            "migration has no valid old-switch discovery connection address for post-cutover management"
+        )
+    return value
+
+
 def parse_ed25519_fingerprint(output):
     matches = []
     for line in str(output or "").splitlines():
