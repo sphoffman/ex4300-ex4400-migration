@@ -26,11 +26,9 @@ def _validate_vlan(value, label):
 def validate_site_policy(policy):
     """Validate the generated current site policy.
 
-    QFX identity and staged attachment ports are discovered site evidence. Voice
-    VLAN is intentionally absent here; it is per-migration EX4300 evidence.
-    Temp-Management remains part of the pre-cutover QFX baseline because the old
-    EX4300 uses that VLAN to provide temporary upstream reachability to the
-    replacement EX4400 fxp0.
+    The QFX baseline contains only permanent in-band management. The historical
+    temporary_recovery_vlan field remains in schema 1.2 solely for artifact
+    compatibility and has no active device-write semantics.
     """
     required = {
         "schema_version",
@@ -68,15 +66,17 @@ def validate_site_policy(policy):
         _require(item.get("expected_model"), "QFX discovered model is required")
 
     management_vlan = _validate_vlan(policy["management_vlan"], "management VLAN")
-    temp_management_vlan = _validate_vlan(policy["temporary_recovery_vlan"], "temporary management VLAN")
+    # Schema-compatibility metadata only. Do not use this object to reserve,
+    # validate, stage, clean up, or otherwise manage VLAN 3999.
+    _validate_vlan(policy["temporary_recovery_vlan"], "legacy temporary-management metadata")
     prestage_vlan = _validate_vlan(policy["prestage_access_vlan"], "pre-stage access VLAN")
     _require(
-        len({management_vlan["vlan_id"], temp_management_vlan["vlan_id"], prestage_vlan["vlan_id"]}) == 3,
-        "management, temporary management, and pre-stage access VLAN IDs must be distinct",
+        management_vlan["vlan_id"] != prestage_vlan["vlan_id"],
+        "management and pre-stage access VLAN IDs must be distinct",
     )
     _require(
-        len({management_vlan["name"], temp_management_vlan["name"], prestage_vlan["name"]}) == 3,
-        "management, temporary management, and pre-stage access VLAN names must be distinct",
+        management_vlan["name"] != prestage_vlan["name"],
+        "management and pre-stage access VLAN names must be distinct",
     )
 
     pools = policy["stage_port_pools"]
@@ -101,8 +101,8 @@ def validate_site_policy(policy):
     required_vlans = baseline.get("required_vlan_ids")
     _require(isinstance(required_vlans, list), "QFX baseline required VLAN list is invalid")
     _require(
-        set(required_vlans) == {management_vlan["vlan_id"], temp_management_vlan["vlan_id"]},
-        "QFX baseline must contain exactly management and temporary management VLANs",
+        set(required_vlans) == {management_vlan["vlan_id"]},
+        "QFX baseline must contain exactly the permanent management VLAN",
     )
     _require(
         prestage_vlan["vlan_id"] not in set(required_vlans),
@@ -141,7 +141,6 @@ def render_variables(plan, site_policy, bootstrap_profile):
     variables = deepcopy(plan.get("template_variables", {}))
     management_vlan = site_policy["management_vlan"]
     voice_vlan = migration_voice_vlan(plan)
-    temp_management_vlan = site_policy["temporary_recovery_vlan"]
 
     _require(variables.get("management_vlan_id") == management_vlan["vlan_id"], "approved plan management VLAN does not match site policy")
     _require(isinstance(variables.get("management_vlan_name"), str) and variables["management_vlan_name"], "approved plan has no management VLAN name")
@@ -158,10 +157,6 @@ def render_variables(plan, site_policy, bootstrap_profile):
         _require(isinstance(vlan_id, int) and 1 <= vlan_id <= 4094, "configured VLAN %s has no valid VLAN ID" % name)
         _require(name not in names, "duplicate configured VLAN name %s" % name)
         _require(vlan_id not in ids, "duplicate configured VLAN ID %s" % vlan_id)
-        _require(
-            vlan_id != temp_management_vlan["vlan_id"] and name != temp_management_vlan["name"],
-            "temporary management VLAN collides with approved configured VLAN inventory",
-        )
         names.add(name)
         ids.add(vlan_id)
         item = deepcopy(vlan)
@@ -220,9 +215,7 @@ def derive_required_qfx_vlans(plan, policy):
     excluded_configured = sorted(
         value
         for value in configured_ids
-        if value not in required
-        and value != management_id
-        and value != int(policy["temporary_recovery_vlan"]["vlan_id"])
+        if value not in required and value != management_id
     )
     return {
         "required_vlan_ids": sorted(required),
