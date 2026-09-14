@@ -42,10 +42,9 @@
       "properties": {
         "pre_stage": {
           "type": "object",
-          "required": ["status", "ex4400_recovery_interface", "qfx_attachment_known", "qfx_connections_performed", "device_writes_authorized"],
+          "required": ["status", "qfx_attachment_known", "qfx_connections_performed", "device_writes_authorized"],
           "properties": {
             "status": {"const": "INPUTS_VALIDATED"},
-            "ex4400_recovery_interface": {"type": "string"},
             "qfx_attachment_known": {"const": false},
             "qfx_connections_performed": {"const": false},
             "device_writes_authorized": {"const": false}
