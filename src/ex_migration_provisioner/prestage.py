@@ -206,10 +206,6 @@ def build_pre_stage_package(
     variables["prestage_access_vlan_name"] = prestage_vlan["name"]
     variables["prestage_access_vlan_id"] = prestage_vlan["vlan_id"]
     variables["uplink_interfaces"] = _uplink_interfaces(bootstrap_profile)
-    _require(
-        variables["recovery_interface"] not in variables["uplink_interfaces"],
-        "recovery interface cannot also be an EX4400 AE uplink member",
-    )
     variables["qfx"] = {
         "site_policy_id": site_policy["site_policy_id"],
         "attachment_state": "UNKNOWN_UNTIL_POST_CUTOVER_DISCOVERY",
@@ -246,7 +242,6 @@ def build_pre_stage_package(
     phases = {
         "pre_stage": {
             "status": "INPUTS_VALIDATED",
-            "ex4400_recovery_interface": variables["recovery_interface"],
             "qfx_attachment_known": False,
             "qfx_connections_performed": False,
             "device_writes_authorized": False,
@@ -272,7 +267,6 @@ def build_pre_stage_package(
             "QFX_BASELINE_POLICY_BOUND",
             "LACP_FORCE_UP_PROHIBITED",
             "RENDER_VARIABLES_NORMALIZED",
-            "RECOVERY_INTERFACE_BOUND",
             "EX4400_UPLINK_INTERFACES_BOUND",
             "PRESTAGE_DEFAULT_VLAN_BOUND",
             "INPUT_DIGESTS_BOUND",
