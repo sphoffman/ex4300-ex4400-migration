@@ -211,15 +211,8 @@ def observe_qfx_attachment(dev, device_policy, policy, expected_ex_hostname, hos
 
     ae_number = _ae_number(ae)
     ae_pool = policy["ae_pool"]
-    required_vlans = set(policy["precutover_qfx_baseline"]["required_vlan_ids"])
-    legacy_temp_id = int(policy.get("temporary_recovery_vlan", {}).get("vlan_id", 3999))
-    observed_vlan_set = set(vlan_ids or [])
-    baseline_ok = (
-        vlan_ids is not None
-        and not unresolved_vlans
-        and required_vlans <= observed_vlan_set
-        and (observed_vlan_set - required_vlans) <= {legacy_temp_id}
-    )
+    required_vlans = sorted(policy["precutover_qfx_baseline"]["required_vlan_ids"])
+    baseline_ok = vlan_ids == required_vlans and not unresolved_vlans
     force_up_present = bool(
         ae and re.search(
             r"(?m)^set interfaces %s aggregated-ether-options lacp force-up\s*$"
@@ -267,8 +260,6 @@ def observe_qfx_attachment(dev, device_policy, policy, expected_ex_hostname, hos
         "esi_auto_derive_type_1_lacp": esi_auto,
         "esi_all_active": esi_all_active,
         "baseline_vlan_names_unambiguous": not ambiguous_vlans,
-        # The permanent management VLAN is required. A legacy 3999 observed
-        # from earlier lab runs is tolerated but has no active write semantics.
         "baseline_vlans_exact": baseline_ok,
         "lacp_collecting_distributing": bool(ae)
         and _lacp_operational(lacp_text, physical),
