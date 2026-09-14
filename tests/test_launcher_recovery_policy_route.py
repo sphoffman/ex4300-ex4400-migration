@@ -10,17 +10,17 @@ def _load_launcher():
     return module
 
 
-def test_python_launcher_routes_site_init_through_policy_module():
+def test_python_launcher_routes_site_init_through_current_policy_module():
     module = _load_launcher()
     routed, args, error = module._route(["site-init", "--help"])
     assert error is None
-    assert routed == "ex_migration_operator.policy_cli"
+    assert routed == "ex_migration_operator.current_policy_cli"
     assert args == ["site-init", "--help"]
 
 
-def test_python_launcher_routes_migration_through_policy_module():
+def test_python_launcher_routes_migration_through_current_policy_module():
     module = _load_launcher()
     routed, args, error = module._route(["dh4301", "status"])
     assert error is None
-    assert routed == "ex_migration_operator.policy_cli"
+    assert routed == "ex_migration_operator.current_policy_cli"
     assert args == ["dh4301", "status"]
