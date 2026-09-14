@@ -78,8 +78,8 @@
       "properties": {
         "required_vlan_ids": {
           "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
+          "minItems": 1,
+          "maxItems": 1,
           "uniqueItems": true,
           "items": {"type": "integer", "minimum": 1, "maximum": 4094}
         },
