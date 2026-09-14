@@ -216,8 +216,8 @@ def _identify_parser():
     parser = argparse.ArgumentParser(
         prog="ex-migration-provisioner identify",
         description=(
-            "Read-only observe and operator-bind the replacement EX4400 identity and the "
-            "migration OOB address that will later become the old EX4300 VME recovery address."
+            "Read-only observe and operator-bind the replacement EX4400 identity and "
+            "its pre-cutover OOB fxp0 management address."
         ),
     )
     parser.add_argument("migration_id")
@@ -246,7 +246,6 @@ def _identify(argv):
     environment = str(bootstrap.get("environment") or "")
     if environment not in ("lab", "production"):
         raise base.ProvisioningError("bootstrap profile environment must be lab or production")
-
     try:
         oob = ipaddress.ip_interface(str(args.oob_address))
     except ValueError as exc:
@@ -315,7 +314,7 @@ def _identify(argv):
             member["model"],
         ))
     print(
-        "\nThis record pins the OOB address/prefix, mgmt_junos default gateway, SSH host key, and chassis identity. The same OOB address will later be staged on old-switch vme.0."
+        "\nThis record pins the replacement fxp0 OOB address/prefix, mgmt_junos default gateway, SSH host key, and chassis identity. The old EX4300 temporary-management step will provide VLAN 3999 transit to this fxp0 path; it will not move this address onto old-switch vme.0."
     )
     answer = input(
         "Bind exactly this replacement identity and OOB management intent to migration %s? [y/N]: "
