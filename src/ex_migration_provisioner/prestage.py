@@ -96,7 +96,7 @@ def validate_pre_cutover_site_policy(policy):
 
     management_vlan = _validate_vlan(policy["management_vlan"], "management VLAN")
     voice_vlan = _validate_vlan(policy["voice_vlan"], "voice VLAN")
-    recovery_vlan = _validate_vlan(policy["temporary_recovery_vlan"], "temporary recovery VLAN")
+    recovery_vlan = _validate_vlan(policy["temporary_recovery_vlan"], "legacy temporary-management metadata")
     prestage_vlan = _validate_vlan(policy["prestage_access_vlan"], "pre-stage access VLAN")
     _require(
         len({
@@ -105,7 +105,7 @@ def validate_pre_cutover_site_policy(policy):
             recovery_vlan["vlan_id"],
             prestage_vlan["vlan_id"],
         }) == 4,
-        "management, voice, temporary recovery, and pre-stage access VLAN IDs must be distinct",
+        "management, voice, legacy temporary-management metadata, and pre-stage access VLAN IDs must be distinct",
     )
     _require(
         len({
@@ -114,7 +114,7 @@ def validate_pre_cutover_site_policy(policy):
             recovery_vlan["name"],
             prestage_vlan["name"],
         }) == 4,
-        "management, voice, temporary recovery, and pre-stage access VLAN names must be distinct",
+        "management, voice, legacy temporary-management metadata, and pre-stage access VLAN names must be distinct",
     )
 
     pools = policy["stage_port_pools"]
@@ -139,8 +139,12 @@ def validate_pre_cutover_site_policy(policy):
     required_vlans = baseline.get("required_vlan_ids")
     _require(isinstance(required_vlans, list), "QFX baseline required VLAN list is invalid")
     _require(
-        set(required_vlans) == {management_vlan["vlan_id"], recovery_vlan["vlan_id"]},
-        "QFX baseline must contain exactly management and temporary recovery VLANs",
+        set(required_vlans) == {management_vlan["vlan_id"]},
+        "QFX baseline must contain exactly the permanent management VLAN",
+    )
+    _require(
+        recovery_vlan["vlan_id"] not in set(required_vlans),
+        "temporary fxp0 management must not be part of the QFX pre-cutover baseline",
     )
     _require(
         prestage_vlan["vlan_id"] not in set(required_vlans),
