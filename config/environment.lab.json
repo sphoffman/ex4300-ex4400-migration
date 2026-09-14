@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "environment": "lab",
   "postcutover_ex_access": {
-    "mode": "transport-override",
+    "mode": "direct-management",
     "port": 830
   },
   "diagnostics": {
