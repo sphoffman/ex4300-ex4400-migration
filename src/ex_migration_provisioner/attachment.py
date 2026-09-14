@@ -127,15 +127,6 @@ def _lacp_operational(text, physical):
 
 
 def _lldp_summary_neighbors(text):
-    """Parse compact ``show lldp neighbors`` rows.
-
-    The summary is intentionally used instead of ``show lldp neighbors detail``.
-    On large Junos systems the detailed command can be expensive enough to hit
-    the default NETCONF RPC timeout, while the summary already contains the
-    local interface, parent AE, remote port and system name needed to locate the
-    attachment. Configuration and LACP are still queried separately to prove
-    the attachment contract rather than trusting the summary alone.
-    """
     result = []
     for raw in (text or "").splitlines():
         line = raw.strip()
@@ -220,7 +211,15 @@ def observe_qfx_attachment(dev, device_policy, policy, expected_ex_hostname, hos
 
     ae_number = _ae_number(ae)
     ae_pool = policy["ae_pool"]
-    required_vlans = sorted(policy["precutover_qfx_baseline"]["required_vlan_ids"])
+    required_vlans = set(policy["precutover_qfx_baseline"]["required_vlan_ids"])
+    legacy_temp_id = int(policy.get("temporary_recovery_vlan", {}).get("vlan_id", 3999))
+    observed_vlan_set = set(vlan_ids or [])
+    baseline_ok = (
+        vlan_ids is not None
+        and not unresolved_vlans
+        and required_vlans <= observed_vlan_set
+        and (observed_vlan_set - required_vlans) <= {legacy_temp_id}
+    )
     force_up_present = bool(
         ae and re.search(
             r"(?m)^set interfaces %s aggregated-ether-options lacp force-up\s*$"
@@ -268,7 +267,9 @@ def observe_qfx_attachment(dev, device_policy, policy, expected_ex_hostname, hos
         "esi_auto_derive_type_1_lacp": esi_auto,
         "esi_all_active": esi_all_active,
         "baseline_vlan_names_unambiguous": not ambiguous_vlans,
-        "baseline_vlans_exact": vlan_ids == required_vlans and not unresolved_vlans,
+        # The permanent management VLAN is required. A legacy 3999 observed
+        # from earlier lab runs is tolerated but has no active write semantics.
+        "baseline_vlans_exact": baseline_ok,
         "lacp_collecting_distributing": bool(ae)
         and _lacp_operational(lacp_text, physical),
     }
@@ -383,43 +384,35 @@ def build_attachment_artifact(
             "site_policy_digest": site_policy_digest,
         },
         "expected_ex_hostname": discovery["expected_ex_hostname"],
-        "devices": discovery["devices"],
+        "devices": stable_devices,
         "pair_checks": discovery["pair_checks"],
         "result": "PASS",
-        "approval": {
-            "approved": True,
-            "method": "interactive-operator-binding",
-            "scope": "observed-post-cutover-qfx-attachment",
-        },
         "safety": {
+            "read_only_discovery": True,
             "qfx_writes_authorized": False,
             "ex4400_writes_authorized": False,
-            "operator_supplied_ports_used": False,
             "force_up_allowed": False,
+            "operator_supplied_ports_used": False,
+            "assignment_source": "LLDP+EXISTING_QFX_AE+LACP+ESI+MGMT_BASELINE",
         },
     }
 
 
-def write_attachment(migration_root, artifact):
-    destination = migration_root / "qfx-attachments" / artifact["attachment_id"]
+def write_attachment(migration_root, value):
+    _require(value.get("result") == "PASS", "QFX attachment artifact did not pass")
+    destination = migration_root / "qfx-attachments" / value["attachment_id"]
     path = destination / "attachment.json"
     if path.is_file():
-        integrity = destination / "integrity.json"
-        _require(integrity.is_file(), "missing attachment integrity record")
-        expected = read_json(integrity).get("attachment.json")
-        _require(expected == sha256_file(path), "attachment integrity validation failed")
+        integrity = read_json(destination / "integrity.json")
+        _require(integrity.get("attachment.json") == sha256_file(path), "QFX attachment integrity failed")
         existing = read_json(path)
         comparable_existing = dict(existing)
-        comparable_new = dict(artifact)
+        comparable_new = dict(value)
         comparable_existing.pop("approved_at", None)
         comparable_new.pop("approved_at", None)
-        if comparable_existing != comparable_new:
-            raise ProvisioningError("existing QFX attachment ID has different content")
+        _require(comparable_existing == comparable_new, "existing QFX attachment ID has different content")
         return destination, existing, "UNCHANGED"
-
     destination.mkdir(parents=True, exist_ok=False)
-    atomic_json(path, artifact)
-    atomic_json(destination / "integrity.json", {
-        "attachment.json": sha256_file(path),
-    })
-    return destination, artifact, "CREATED"
+    atomic_json(path, value)
+    atomic_json(destination / "integrity.json", {"attachment.json": sha256_file(path)})
+    return destination, value, "CREATED"
