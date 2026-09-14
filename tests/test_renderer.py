@@ -58,7 +58,8 @@ def test_pre_stage_render_is_deterministic_and_uses_default_holding_vlan():
     assert "set interfaces ge-0/0/0 gigether-options 802.3ad ae0" in rendered_lines
     assert "set interfaces ge-0/0/1 gigether-options 802.3ad ae0" in rendered_lines
     assert "family ethernet-switching vlan members TEMP-ACCESS" not in rendered_a
-    assert "set interfaces ge-0/0/47 unit 0 family ethernet-switching vlan members TEMP-RECOVERY" in rendered_lines
+    assert "TEMP-RECOVERY" not in rendered_a
+    assert "Temp-Management" not in rendered_a
     assert "set interfaces irb unit 163 family inet address 10.100.163.30/24" in rendered_lines
     assert "set protocols layer2-control nonstop-bridging" in rendered_lines
     assert "deactivate protocols layer2-control" in rendered_lines
@@ -70,7 +71,6 @@ def test_pre_stage_render_is_deterministic_and_uses_default_holding_vlan():
     assert "set vlans default vlan-id 3998" in rendered_lines
     assert "set vlans default description TEMP-ACCESS" in rendered_lines
     assert "set vlans TEMP-ACCESS vlan-id 3998" not in rendered_lines
-    assert "set vlans TEMP-RECOVERY vlan-id 3999" in rendered_lines
     assert rendered_a.count("set vlans voip vlan-id 1111") == 1
     assert rendered_a.count("set vlans v163 vlan-id 163") == 1
     assert "set vlans default l3-interface" not in rendered_a
@@ -140,15 +140,12 @@ def test_pre_stage_static_validation_rejects_ge_uplink_matching_edge_regex():
         render_pre_stage(template, contract, package, RENDERER_VERSION)
 
 
-def test_pre_stage_static_validation_rejects_wrong_recovery_port():
+def test_pre_stage_static_validation_rejects_temp_management_on_replacement_ex():
     package = package_for_render()
     template = (ROOT / "templates/ex4400/ex4400.set.j2").read_text()
     contract = json.loads((ROOT / "templates/ex4400/contract-v1.json").read_text())
     rendered, _validation = render_pre_stage(template, contract, package, RENDERER_VERSION)
-    tampered = rendered.replace(
-        "set interfaces ge-0/0/47 unit 0 family ethernet-switching vlan members TEMP-RECOVERY",
-        "set interfaces ge-0/0/46 unit 0 family ethernet-switching vlan members TEMP-RECOVERY",
-    )
+    tampered = rendered + "set vlans TEMP-RECOVERY vlan-id 3999\n"
     with pytest.raises(RenderError):
         validate_pre_stage_render(tampered, package)
 
