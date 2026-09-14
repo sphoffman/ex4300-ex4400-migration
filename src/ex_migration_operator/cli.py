@@ -92,7 +92,7 @@ def _status_text(value):
     print("  Render:                %s" % value["render"])
     print("  Replacement identity:  %s" % value["identity"])
     print("  EX4400 pre-stage:       %s" % value["ex4400_prestage"])
-    print("  Old-EX recovery:        %s" % value["old_recovery"])
+    print("  Old-EX temp mgmt:       %s" % value["old_recovery"])
     probe = value["silent_probe"]
     probe_text = probe.get("status")
     if probe.get("candidate_count") is not None:
@@ -261,7 +261,7 @@ def _prestage(migration_id, extra):
                 old_transport = source_address_from_evidence(root)
                 if not old_transport:
                     raise OperatorError(
-                        "lab old-switch recovery could not resolve the original discovery connection address"
+                        "lab old-switch temporary management could not resolve the original discovery connection address"
                     )
                 print(
                     "Lab old-switch transport: %s (reused from discovery evidence)"
@@ -312,7 +312,7 @@ def _cutover(migration_id, extra):
     print("  Approved plan: %s" % plan_id)
     print("  This records operator acknowledgement only; it performs no device writes.")
     answer = input(
-        "Confirm endpoint/uplink/recovery cabling has been physically moved and post-cutover automation may proceed? [y/N]: "
+        "Confirm endpoint/uplink cabling has been physically moved and the temporary fxp0 management path is no longer required? [y/N]: "
     ).strip().lower()
     if answer not in ("y", "yes"):
         print("Physical cutover was not acknowledged.")
