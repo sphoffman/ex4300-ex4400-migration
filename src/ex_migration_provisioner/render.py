@@ -58,11 +58,12 @@ def _validate_contract(contract):
     _require("TEMPLATE_DEFINED_EDGE_PORT_RANGE" in includes, "pre-stage contract must keep edge-port membership in the template")
     _require("EXPLICIT_AE0_UPLINK_MEMBERS" in includes, "pre-stage contract must bind explicit AE0 uplink members")
     _require("PRESTAGE_DEFAULT_VLAN" in includes, "pre-stage contract must bind the Junos default VLAN to the holding VLAN ID")
-    _require("TEMPORARY_RECOVERY_PORT_OVERLAY" in includes, "pre-stage contract must include the temporary recovery port overlay")
     excludes = pre_stage.get("exclude", [])
     _require("ENDPOINT_DESCRIPTIONS" in excludes, "pre-stage contract must exclude endpoint descriptions")
     _require("ENDPOINT_DATA_VLAN_ASSIGNMENTS" in excludes, "pre-stage contract must exclude endpoint data VLAN assignments")
     _require("EXPLICIT_PRESTAGE_ACCESS_PORT_ASSIGNMENTS" in excludes, "pre-stage contract must prohibit per-port holding VLAN assignments")
+    _require("TEMPORARY_MANAGEMENT_VLAN" in excludes, "pre-stage contract must keep Temp-Management off the replacement EX4400")
+    _require("TEMPORARY_MANAGEMENT_PORT_OVERLAY" in excludes, "pre-stage contract must keep the old-EX fxp0 transit port off the replacement EX4400")
     safety = contract.get("safety", {})
     _require(safety.get("old_configuration_replay_allowed") is False, "template contract cannot allow old configuration replay")
     _require(safety.get("root_configuration_retrieval_allowed") is False, "template contract cannot allow root configuration retrieval")
@@ -127,12 +128,8 @@ def validate_pre_stage_render(rendered, package):
     else:
         _require(nonstop_deactivation not in line_set, "non-lab-in-place render must not deactivate layer2-control nonstop-bridging")
 
-    recovery_interface = variables["recovery_interface"]
-    _require(bool(re.fullmatch(r"ge-[0-9]/0/47", recovery_interface)), "recovery interface is outside the standard edge-port range")
-
     uplink_interfaces = list(variables["uplink_interfaces"])
     _require(len(uplink_interfaces) == len(set(uplink_interfaces)), "uplink interface inventory contains duplicates")
-    _require(recovery_interface not in uplink_interfaces, "recovery interface cannot also be an AE0 uplink member")
     _require(
         all(re.fullmatch(r"(?:ge|xe|et)-[0-9]+/[0-9]+/[0-9]+", interface) for interface in uplink_interfaces),
         "uplink interface inventory contains an unsupported physical interface",
@@ -161,17 +158,13 @@ def validate_pre_stage_render(rendered, package):
     }
     _require(actual_uplinks == expected_uplinks, "AE0 physical member configuration does not match the approved uplink interface inventory")
 
-    expected_recovery_assignment = (
-        "set interfaces %s unit 0 family ethernet-switching vlan members %s"
-        % (recovery_interface, variables["temporary_recovery_vlan_name"])
-    )
     physical_vlan_assignments = [
         line for line in lines
         if re.match(r"^set interfaces (?:ge|xe|et)-\d+/\d+/\d+ unit \d+ family ethernet-switching vlan members ", line)
     ]
     _require(
-        physical_vlan_assignments == [expected_recovery_assignment],
-        "pre-stage render must not explicitly assign ordinary edge ports to a VLAN; only the recovery port may have explicit VLAN membership",
+        not physical_vlan_assignments,
+        "pre-stage render must not explicitly assign ordinary edge ports to a VLAN",
     )
 
     default_vlan_id = "set vlans default vlan-id %s" % variables["prestage_access_vlan_id"]
@@ -181,7 +174,6 @@ def validate_pre_stage_render(rendered, package):
         "set system syslog source-address %s" % variables["management_ip"],
         "set system ntp source-address %s" % variables["management_ip"],
         "set system services netconf ssh",
-        expected_recovery_assignment,
         "set interfaces irb unit %s family inet address %s" % (variables["management_vlan_id"], variables["management_prefix"]),
         "set interfaces ae0 aggregated-ether-options lacp active",
         "set interfaces ae0 unit 0 family ethernet-switching interface-mode trunk",
@@ -195,7 +187,6 @@ def validate_pre_stage_render(rendered, package):
         "set vlans %s l3-interface irb.%s" % (variables["management_vlan_name"], variables["management_vlan_id"]),
         default_vlan_id,
         default_vlan_description,
-        "set vlans %s vlan-id %s" % (variables["temporary_recovery_vlan_name"], variables["temporary_recovery_vlan_id"]),
     }
     required.update(expected_uplinks)
     missing = sorted(required - line_set)
@@ -229,8 +220,15 @@ def validate_pre_stage_render(rendered, package):
     }
     allowed_vlan_lines = set(expected_vlan_lines)
     allowed_vlan_lines.add(default_vlan_id)
-    allowed_vlan_lines.add("set vlans %s vlan-id %s" % (variables["temporary_recovery_vlan_name"], variables["temporary_recovery_vlan_id"]))
     _require(actual_vlan_lines == allowed_vlan_lines, "pre-stage render contains an unapproved or missing VLAN definition")
+
+    temp_name = str(variables.get("temporary_recovery_vlan_name") or "")
+    temp_id = variables.get("temporary_recovery_vlan_id")
+    if temp_name and temp_id is not None:
+        _require(
+            "set vlans %s vlan-id %s" % (temp_name, temp_id) not in line_set,
+            "Temp-Management belongs on the old EX4300 pre-cutover transit, not the replacement EX4400",
+        )
 
     for item in configured:
         if item.get("classification") == "data":
@@ -257,7 +255,7 @@ def validate_pre_stage_render(rendered, package):
             "EXPLICIT_AE0_UPLINK_MEMBERS_PRESENT",
             "DEFAULT_VLAN_RENUMBERED_FOR_PRESTAGE_ACCESS",
             "NO_EXPLICIT_PRESTAGE_ACCESS_PORT_ASSIGNMENTS",
-            "TEMP_RECOVERY_PORT_PRESENT",
+            "NO_TEMP_MANAGEMENT_ON_REPLACEMENT_EX",
             "ALL_APPROVED_VLANS_PRESENT",
             "MANAGEMENT_IDENTITY_PRESENT",
             "AE0_TRUNK_PRESENT",
