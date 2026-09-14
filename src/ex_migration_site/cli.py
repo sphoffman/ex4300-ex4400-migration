@@ -5,24 +5,20 @@ import getpass
 import os
 import sys
 
-from ex_migration_analyzer.core import utc_now
+from ex_migration_analyzer.core import canonical_bytes, sha256_bytes, sha256_file, utc_now
 from ex_migration_provisioner import cli_base as provisioner_base
 
+from . import core as site_core
 from .core import (
     SiteError,
     active_policy_path,
-    build_active_policy,
     build_profile,
-    build_site_discovery,
-    build_site_inventory,
     load_profile,
     load_settings,
     observe_qfx,
     profile_path,
     site_discovery_candidates,
     site_inventory_candidates,
-    stage_statements,
-    validate_staged_device,
     write_active_policy,
     write_profile,
     write_site_discovery,
@@ -93,6 +89,306 @@ def _connect_pair(profile, username, password, port, no_host_key_check=False):
         raise
 
 
+def _required_qfx_vlan_ids(profile):
+    return [int(profile["management_vlan"]["vlan_id"])]
+
+
+def _legacy_temp_vlan_id(profile):
+    value = profile.get("temporary_recovery_vlan") or {}
+    try:
+        return int(value.get("vlan_id", 3999))
+    except (TypeError, ValueError):
+        return 3999
+
+
+def _build_site_discovery(profile, observations, observed_at=None):
+    """Discover only the new QFX topology and permanent management baseline.
+
+    Temp-Management is an external legacy-path prerequisite.  A historical 3999
+    membership is tolerated so old lab artifacts do not block discovery, but it
+    is never required, staged, or removed by this workflow.
+    """
+    site_core.validate_profile(profile)
+    by_role = {item["role"]: item for item in observations}
+    site_core._require(set(by_role) == {"qfx-a", "qfx-b"}, "site discovery requires both QFX observations")
+    a = by_role["qfx-a"]
+    b = by_role["qfx-b"]
+    site_core._require(a["hostname"] and b["hostname"], "QFX hostnames could not be observed")
+    site_core._require(a["hostname"].lower() != b["hostname"].lower(), "QFX hostnames must be distinct")
+    site_core._require(a["model"] and b["model"], "QFX models could not be observed")
+
+    excluded = set(profile["excluded_interfaces"])
+    common = sorted((set(a["interfaces"]) & set(b["interfaces"])) - excluded)
+    only_a = sorted(set(a["interfaces"]) - set(b["interfaces"]))
+    only_b = sorted(set(b["interfaces"]) - set(a["interfaces"]))
+
+    management_id = int(profile["management_vlan"]["vlan_id"])
+    legacy_temp_id = _legacy_temp_vlan_id(profile)
+    required_baseline = [management_id]
+    tolerated_existing = {management_id, legacy_temp_id}
+    definitions_a = site_core._vlan_definitions(a["vlan_config_text"])
+    definitions_b = site_core._vlan_definitions(b["vlan_config_text"])
+    site_core._require(
+        len(definitions_a.get(management_id, set())) == 1,
+        "qfx-a does not define exactly one management VLAN ID %s" % management_id,
+    )
+    site_core._require(
+        len(definitions_b.get(management_id, set())) == 1,
+        "qfx-b does not define exactly one management VLAN ID %s" % management_id,
+    )
+
+    members_a = site_core._ae_members(a["ae_map"])
+    members_b = site_core._ae_members(b["ae_map"])
+    attachments = []
+    blocked = []
+
+    for physical in common:
+        ae_a = a["ae_map"].get(physical)
+        ae_b = b["ae_map"].get(physical)
+        if not ae_a and not ae_b:
+            blocked.append({"physical_interface": physical, "reason": "NOT_PREPROVISIONED_TO_AE"})
+            continue
+        if not ae_a or ae_a != ae_b:
+            blocked.append({
+                "physical_interface": physical,
+                "reason": "ASYMMETRIC_EXISTING_AE",
+                "qfx_a_ae": ae_a,
+                "qfx_b_ae": ae_b,
+            })
+            continue
+
+        ae = ae_a
+        if len(members_a.get(ae, [])) != 1 or len(members_b.get(ae, [])) != 1:
+            blocked.append({
+                "physical_interface": physical,
+                "reason": "AE_HAS_MULTIPLE_ET_MEMBERS",
+                "ae_interface": ae,
+                "qfx_a_members": members_a.get(ae, []),
+                "qfx_b_members": members_b.get(ae, []),
+            })
+            continue
+
+        contract_a = site_core._ae_contract(a["interface_config_text"], ae)
+        contract_b = site_core._ae_contract(b["interface_config_text"], ae)
+        system_a = site_core._lacp_system_id(a["interface_config_text"], ae)
+        system_b = site_core._lacp_system_id(b["interface_config_text"], ae)
+        structural_ok = all(contract_a.values()) and all(contract_b.values()) and bool(system_a) and system_a == system_b
+        if not structural_ok:
+            blocked.append({
+                "physical_interface": physical,
+                "reason": "PREPROVISIONED_AE_CONTRACT_FAILED",
+                "ae_interface": ae,
+                "qfx_a_checks": contract_a,
+                "qfx_b_checks": contract_b,
+                "qfx_a_lacp_system_id": system_a,
+                "qfx_b_lacp_system_id": system_b,
+            })
+            continue
+
+        vlan_a = site_core._vlan_ids(a["interface_config_text"], ae, definitions_a)
+        vlan_b = site_core._vlan_ids(b["interface_config_text"], ae, definitions_b)
+        if vlan_a is None or vlan_b is None:
+            blocked.append({
+                "physical_interface": physical,
+                "reason": "UNRESOLVED_AE_VLAN_MEMBERSHIP",
+                "ae_interface": ae,
+            })
+            continue
+        if not set(vlan_a).issubset(tolerated_existing) or not set(vlan_b).issubset(tolerated_existing):
+            blocked.append({
+                "physical_interface": physical,
+                "reason": "EXISTING_AE_HAS_NON_BASELINE_VLANS",
+                "ae_interface": ae,
+                "qfx_a_vlans": vlan_a,
+                "qfx_b_vlans": vlan_b,
+            })
+            continue
+
+        attachments.append({
+            "physical_interface": physical,
+            "ae_interface": ae,
+            "mapping_source": "PREPROVISIONED_SYMMETRIC",
+            "lacp_system_id": system_a,
+            "current_vlan_ids": {"qfx-a": vlan_a, "qfx-b": vlan_b},
+        })
+
+    key = {
+        "site_id": profile["site_id"],
+        "profile": profile,
+        "qfx": [
+            {k: item.get(k) for k in ("role", "management_address", "ssh_host_key_sha256", "hostname", "model", "serial_number")}
+            for item in sorted(observations, key=lambda value: value["role"])
+        ],
+        "attachments": attachments,
+        "blocked": blocked,
+        "required_qfx_vlan_ids": required_baseline,
+    }
+    discovery_id = sha256_bytes(canonical_bytes(key))[:16]
+    return {
+        "schema_version": "1.1",
+        "discovery_id": discovery_id,
+        "site_id": profile["site_id"],
+        "observed_at": observed_at or utc_now(),
+        "environment": profile["environment"],
+        "qfx_pair": key["qfx"],
+        "attachment_inventory": attachments,
+        "blocked_interfaces": blocked,
+        "asymmetric_interfaces": {"qfx-a-only": only_a, "qfx-b-only": only_b},
+        "baseline_vlan_ids": required_baseline,
+        "approval": {"approved": False},
+    }
+
+
+def _stage_statements(profile, discovery):
+    mgmt = profile["management_vlan"]["name"]
+    return [
+        "set interfaces %s unit 0 family ethernet-switching vlan members %s" % (ae, mgmt)
+        for ae in sorted({item["ae_interface"] for item in discovery["attachment_inventory"]})
+    ]
+
+
+def _validate_staged_device(dev, profile, discovery):
+    config = dev.cli("show configuration interfaces | display set", warning=False) or ""
+    vlan_top = dev.cli("show configuration vlans | display set", warning=False) or ""
+    vlan_ri = dev.cli("show configuration routing-instances | display set", warning=False) or ""
+    definitions = site_core._vlan_definitions(vlan_top + "\n" + vlan_ri)
+    management_id = int(profile["management_vlan"]["vlan_id"])
+    legacy_temp_id = _legacy_temp_vlan_id(profile)
+    allowed = {management_id, legacy_temp_id}
+    mapping = site_core._ae_map(config)
+    checks = []
+    for item in discovery["attachment_inventory"]:
+        physical = item["physical_interface"]
+        ae = item["ae_interface"]
+        observed_vlans = site_core._vlan_ids(config, ae, definitions)
+        observed_system = site_core._lacp_system_id(config, ae)
+        contract = site_core._ae_contract(config, ae)
+        resolved = observed_vlans is not None
+        ids = set(observed_vlans or [])
+        checks.append({
+            "physical_interface": physical,
+            "ae_interface": ae,
+            "mapping_matches": mapping.get(physical) == ae,
+            "baseline_vlan_ids": observed_vlans,
+            "management_vlan_present": management_id in ids,
+            "only_supported_preexisting_vlans": resolved and ids <= allowed,
+            "lacp_system_id": observed_system,
+            "lacp_system_id_matches_discovery": observed_system == item.get("lacp_system_id"),
+            "lacp_active": contract["lacp_active"],
+            "lacp_force_up_absent": contract["lacp_force_up_absent"],
+            "esi_auto": contract["esi_auto_derive_type_1_lacp"],
+            "esi_all_active": contract["esi_all_active"],
+            "interface_mode_trunk": contract["interface_mode_trunk"],
+        })
+    passed = all(
+        item["mapping_matches"]
+        and item["management_vlan_present"]
+        and item["only_supported_preexisting_vlans"]
+        and item["lacp_system_id_matches_discovery"]
+        and item["lacp_active"]
+        and item["lacp_force_up_absent"]
+        and item["esi_auto"]
+        and item["esi_all_active"]
+        and item["interface_mode_trunk"]
+        for item in checks
+    )
+    return checks, passed
+
+
+def _build_site_inventory(profile, discovery, qfx_observations, validation_by_role, created_at=None):
+    site_core._require(all(item["passed"] for item in validation_by_role.values()), "QFX management baseline VLAN validation failed")
+    attachments = [
+        {
+            "physical_interface": item["physical_interface"],
+            "ae_interface": item["ae_interface"],
+            "lacp_system_id": item["lacp_system_id"],
+            "baseline_vlan_ids": _required_qfx_vlan_ids(profile),
+        }
+        for item in discovery["attachment_inventory"]
+    ]
+    stable_qfx = [
+        {k: item.get(k) for k in ("role", "management_address", "ssh_host_key_sha256", "hostname", "model", "serial_number")}
+        for item in sorted(qfx_observations, key=lambda value: value["role"])
+    ]
+    key = {
+        "site_id": profile["site_id"],
+        "profile": profile,
+        "source_discovery_id": discovery["discovery_id"],
+        "qfx_pair": stable_qfx,
+        "attachments": attachments,
+    }
+    inventory_id = sha256_bytes(canonical_bytes(key))[:16]
+    return {
+        "schema_version": "1.1",
+        "inventory_id": inventory_id,
+        "site_id": profile["site_id"],
+        "created_at": created_at or utc_now(),
+        "environment": profile["environment"],
+        "source_discovery_id": discovery["discovery_id"],
+        "qfx_pair": stable_qfx,
+        "attachments": attachments,
+        "baseline_vlan_ids": _required_qfx_vlan_ids(profile),
+        "validation": {role: value for role, value in sorted(validation_by_role.items())},
+        "result": "PASS",
+    }
+
+
+def _build_active_policy(profile, inventory, inventory_path):
+    pair = [
+        {
+            "role": item["role"],
+            "management_address": item["management_address"],
+            "expected_hostname": item["hostname"],
+            "expected_model": item["model"],
+        }
+        for item in inventory["qfx_pair"]
+    ]
+    ports = [item["physical_interface"] for item in inventory["attachments"]]
+    ae_numbers = [int(item["ae_interface"][2:]) for item in inventory["attachments"]]
+    # temporary_recovery_vlan remains only as dormant schema compatibility
+    # metadata for older artifacts.  It is not part of the active QFX baseline
+    # and no live path is allowed to stage/remove it.
+    return {
+        "schema_version": "1.2",
+        "site_policy_id": "%s-%s" % (profile["site_id"], inventory["inventory_id"]),
+        "site_id": profile["site_id"],
+        "environment": profile["environment"],
+        "production_eligible": profile["production_eligible"],
+        "qfx_pair": pair,
+        "stage_port_pools": {"site-verified": ports},
+        "excluded_interfaces": list(profile["excluded_interfaces"]),
+        "ae_pool": {
+            "method": "discover-from-existing-qfx-config",
+            "ae_min": min(ae_numbers),
+            "ae_max": max(ae_numbers),
+            "migration_assignment_prebound": False,
+        },
+        "management_vlan": dict(profile["management_vlan"]),
+        "temporary_recovery_vlan": dict(profile.get("temporary_recovery_vlan") or {"name": "Temp-Management", "vlan_id": 3999}),
+        "prestage_access_vlan": dict(profile["prestage_access_vlan"]),
+        "precutover_qfx_baseline": {
+            "required_vlan_ids": list(inventory["baseline_vlan_ids"]),
+            "lacp_mode": "active",
+            "force_up": False,
+        },
+        "esi": {"method": "auto-derive-type-1-lacp", "all_active": True},
+        "validation": {
+            "attachment_discovered_post_cutover": True,
+            "require_interface_symmetry": True,
+            "require_lldp": True,
+            "require_lacp_partner": True,
+            "require_matching_ae": True,
+            "require_matching_lacp_system_id": True,
+            "operator_supplied_ports_allowed": False,
+        },
+        "source_site_inventory": {
+            "inventory_id": inventory["inventory_id"],
+            "inventory_digest": sha256_file(inventory_path),
+            "path": str(inventory_path),
+        },
+    }
+
+
 def _site_init(argv):
     parser = argparse.ArgumentParser(prog="migrate site-init")
     parser.add_argument("--settings", default="config/site.json")
@@ -102,8 +398,9 @@ def _site_init(argv):
     parser.add_argument("--qfx-b")
     parser.add_argument("--management-vlan-id", type=int)
     parser.add_argument("--management-vlan-name")
-    parser.add_argument("--recovery-vlan-id", type=int)
-    parser.add_argument("--recovery-vlan-name")
+    # Legacy options remain accepted but hidden so old automation does not fail.
+    parser.add_argument("--recovery-vlan-id", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--recovery-vlan-name", help=argparse.SUPPRESS)
     parser.add_argument("--prestage-vlan-id", type=int)
     parser.add_argument("--prestage-vlan-name")
     parser.add_argument("--exclude", action="append", default=[])
@@ -128,8 +425,6 @@ def _site_init(argv):
 
     mgmt_name = _prompt(args.management_vlan_name, "Management VLAN name", "MGMT")
     mgmt_id = _prompt_int(args.management_vlan_id, "Management VLAN ID", 163)
-    recovery_name = _prompt(args.recovery_vlan_name, "Temporary recovery VLAN name", "TEMP-RECOVERY")
-    recovery_id = _prompt_int(args.recovery_vlan_id, "Temporary recovery VLAN ID", 3999)
     prestage_name = _prompt(args.prestage_vlan_name, "EX-only prestage/default VLAN name", "TEMP-ACCESS")
     prestage_id = _prompt_int(args.prestage_vlan_id, "EX-only prestage/default VLAN ID", 3998)
 
@@ -139,13 +434,17 @@ def _site_init(argv):
         if raw:
             excluded = [item.strip() for item in raw.split(",") if item.strip()]
 
+    # Keep the old profile field only so historical schemas/loaders remain
+    # compatible.  It is deliberately not operator configurable and is not used
+    # by site discovery/staging or per-migration writes.
+    legacy_temp = {"name": "Temp-Management", "vlan_id": 3999}
     value = build_profile(
         site_id,
         environment,
         qfx_a,
         qfx_b,
         {"name": mgmt_name, "vlan_id": mgmt_id},
-        {"name": recovery_name, "vlan_id": recovery_id},
+        legacy_temp,
         {"name": prestage_name, "vlan_id": prestage_id},
         excluded,
     )
@@ -156,12 +455,13 @@ def _site_init(argv):
     print("  Production eligible: %s" % ("YES" if value["production_eligible"] else "NO"))
     print("  QFX-A: %s" % qfx_a)
     print("  QFX-B: %s" % qfx_b)
-    print("  Required pre-cutover QFX VLANs: %s (%s), %s (%s)" % (mgmt_name, mgmt_id, recovery_name, recovery_id))
+    print("  Required pre-cutover QFX VLAN: %s (%s)" % (mgmt_name, mgmt_id))
     print("  EX-only prestage VLAN: %s (%s)" % (prestage_name, prestage_id))
+    print("  Temporary fxp0 management: EXTERNAL PREREQUISITE (not managed by this project)")
     print("  Voice VLAN: DISCOVERED PER MIGRATION FROM EX4300")
     print("  QFX hostname/model: DISCOVERED")
     print("  QFX ET->AE/LACP/ESI/trunk structure: MUST ALREADY BE PREPROVISIONED")
-    print("  This tool may add only missing MGMT/TEMP-RECOVERY membership during site-stage.")
+    print("  This tool may add only missing management VLAN membership during site-stage.")
     print("  Explicitly excluded ET interfaces: %s" % (", ".join(excluded) if excluded else "none"))
 
     if input("\nCreate this site profile? [y/N]: ").strip().lower() not in ("y", "yes"):
@@ -187,10 +487,8 @@ def _site_discover(argv):
 
     opened = []
     try:
-        _devices, observations, opened = _connect_pair(
-            profile, username, password, args.port, args.no_host_key_check
-        )
-        discovery = build_site_discovery(profile, observations)
+        _devices, observations, opened = _connect_pair(profile, username, password, args.port, args.no_host_key_check)
+        discovery = _build_site_discovery(profile, observations)
     finally:
         for dev in reversed(opened):
             try:
@@ -206,10 +504,7 @@ def _site_discover(argv):
         for item in discovery["attachment_inventory"]:
             current = item["current_vlan_ids"]
             print("  %-14s -> %-6s  VLANs qfx-a=%s qfx-b=%s" % (
-                item["physical_interface"],
-                item["ae_interface"],
-                current["qfx-a"],
-                current["qfx-b"],
+                item["physical_interface"], item["ae_interface"], current["qfx-a"], current["qfx-b"]
             ))
     else:
         print("  none")
@@ -226,7 +521,8 @@ def _site_discover(argv):
     if not discovery["attachment_inventory"]:
         raise SiteError("site discovery found no valid preprovisioned ET-to-AE attachment interfaces")
     print("\nNo QFX configuration has been changed.")
-    print("site-stage will only add missing management/TEMP-RECOVERY VLAN membership; it cannot create or repair AE/LACP/ESI structure.")
+    print("site-stage will only ensure management VLAN membership; it cannot create or repair AE/LACP/ESI structure.")
+    print("Temporary fxp0 management is external to this project and is not inspected or changed.")
     if input("Approve this discovered QFX identity and preprovisioned AE inventory? [y/N]: ").strip().lower() not in ("y", "yes"):
         print("Site discovery was not approved; no site artifact created.")
         return 1
@@ -247,7 +543,7 @@ def _rollback_pair(configs, committed_roles):
     for role in reversed(committed_roles):
         try:
             configs[role].rollback(rb_id=1)
-            if configs[role].commit(comment="Rollback failed EX migration QFX baseline VLAN staging", timeout=120) is not True:
+            if configs[role].commit(comment="Rollback failed EX migration QFX management baseline staging", timeout=120) is not True:
                 errors.append("%s rollback commit did not return success" % role)
         except Exception as exc:
             errors.append("%s: %s" % (role, exc))
@@ -279,11 +575,9 @@ def _site_stage(argv):
     locked = []
     committed = []
     commit_confirmed = False
-    payload = "\n".join(stage_statements(profile, discovery)) + "\n"
+    payload = "\n".join(_stage_statements(profile, discovery)) + "\n"
     try:
-        devices, observations, opened = _connect_pair(
-            profile, username, password, args.port, args.no_host_key_check
-        )
+        devices, observations, opened = _connect_pair(profile, username, password, args.port, args.no_host_key_check)
         observed_by_role = {item["role"]: item for item in observations}
         bound_by_role = {item["role"]: item for item in discovery["qfx_pair"]}
         for role in ("qfx-a", "qfx-b"):
@@ -304,17 +598,17 @@ def _site_stage(argv):
                 raise SiteError("%s already has uncommitted candidate changes" % role)
             cu.load(payload, format="set", merge=True)
             if cu.commit_check() is not True:
-                raise SiteError("%s site baseline VLAN commit-check did not return PASS" % role)
+                raise SiteError("%s site management baseline commit-check did not return PASS" % role)
             diffs[role] = str(cu.diff() or "")
 
         if diffs["qfx-a"] or diffs["qfx-b"]:
-            print("\nQFX pre-cutover baseline VLAN candidate diffs")
+            print("\nQFX pre-cutover management baseline candidate diffs")
             for role in ("qfx-a", "qfx-b"):
                 print("\n--- %s ---" % role)
                 print(diffs[role].rstrip() or "(no candidate diff)")
-            print("\nIntent: add only missing management and TEMP-RECOVERY VLAN membership to already-preprovisioned migration AEs.")
-            print("AE membership, LACP, system IDs, ESI, and trunk structure are outside this tool's write scope.")
-            if input("\nApprove exactly these VLAN-membership candidates for commit confirmed on both QFXs? [y/N]: ").strip().lower() not in ("y", "yes"):
+            print("\nIntent: add only missing permanent management VLAN membership to already-preprovisioned migration AEs.")
+            print("Temporary fxp0 management, AE membership, LACP, system IDs, ESI, and trunk structure are outside this tool's write scope.")
+            if input("\nApprove exactly these management-VLAN candidates for commit confirmed on both QFXs? [y/N]: ").strip().lower() not in ("y", "yes"):
                 for role in reversed(locked):
                     configs[role].rollback()
                 print("Site baseline candidate was not approved; no commit performed.")
@@ -322,7 +616,7 @@ def _site_stage(argv):
             for role in ("qfx-a", "qfx-b"):
                 if configs[role].commit(
                     confirm=args.confirm_minutes,
-                    comment="EX migration pre-cutover QFX VLAN baseline %s" % discovery["discovery_id"],
+                    comment="EX migration pre-cutover QFX management baseline %s" % discovery["discovery_id"],
                     timeout=120,
                 ) is not True:
                     raise SiteError("%s commit confirmed did not return success" % role)
@@ -331,28 +625,29 @@ def _site_stage(argv):
 
         validation = {}
         for role in ("qfx-a", "qfx-b"):
-            checks, passed = validate_staged_device(devices[role], profile, discovery)
+            checks, passed = _validate_staged_device(devices[role], profile, discovery)
             validation[role] = {"passed": passed, "checks": checks}
             if not passed:
-                raise SiteError("%s failed post-stage QFX baseline validation" % role)
+                raise SiteError("%s failed post-stage QFX management baseline validation" % role)
 
         if commit_confirmed:
             for role in ("qfx-a", "qfx-b"):
                 if configs[role].commit(
-                    comment="Confirm EX migration pre-cutover QFX VLAN baseline %s" % discovery["discovery_id"],
+                    comment="Confirm EX migration pre-cutover QFX management baseline %s" % discovery["discovery_id"],
                     timeout=120,
                 ) is not True:
                     raise SiteError("%s final site baseline confirmation failed" % role)
             commit_confirmed = False
 
-        inventory = build_site_inventory(profile, discovery, observations, validation)
+        inventory = _build_site_inventory(profile, discovery, observations, validation)
         directory, inventory, action = write_site_inventory(settings, profile, inventory)
-        policy = build_active_policy(profile, inventory, directory / "inventory.json")
+        policy = _build_active_policy(profile, inventory, directory / "inventory.json")
         policy_path = write_active_policy(settings, policy)
-        print("\nQFX pre-cutover baseline: PASS")
+        print("\nQFX pre-cutover management baseline: PASS")
         print("  Site inventory: %s (%s)" % (inventory["inventory_id"], action))
         print("  Verified preprovisioned EX attachment AEs: %d" % len(inventory["attachments"]))
-        print("  Required VLAN IDs on every migration AE: %s" % ", ".join(str(value) for value in inventory["baseline_vlan_ids"]))
+        print("  Required VLAN ID on every migration AE: %s" % inventory["baseline_vlan_ids"][0])
+        print("  Temporary fxp0 management: EXTERNAL (not part of QFX baseline)")
         print("  Voice/data VLANs on migration AEs: NONE at site baseline")
         print("  Inventory: %s" % (directory / "inventory.json"))
         print("  Generated active policy: %s" % policy_path)
@@ -403,8 +698,9 @@ def _site_status(argv):
     print("  Production eligible: %s" % ("YES" if profile["production_eligible"] else "NO"))
     print("  Site profile: COMPLETE")
     print("  Preprovisioned QFX AE discovery: %s" % ("APPROVED" if discoveries else "PENDING"))
-    print("  QFX MGMT/TEMP-RECOVERY baseline: %s" % ("COMPLETE" if inventories else "PENDING"))
+    print("  QFX management baseline: %s" % ("COMPLETE" if inventories else "PENDING"))
     print("  Active generated policy: %s" % ("COMPLETE" if active.is_file() else "PENDING"))
+    print("  Temporary fxp0 management: EXTERNAL PREREQUISITE")
     if inventories:
         inventory = inventories[0][0]
         print("  Verified EX attachment AEs: %d" % len(inventory["attachments"]))
