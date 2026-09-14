@@ -37,7 +37,7 @@ def _qfx_state(ids):
     }
 
 
-def test_cleanup_statements_preserve_local_recovery_configuration():
+def test_cleanup_statements_preserve_historical_recovery_configuration_when_explicitly_required():
     assert ex_cleanup_statements("ge-0/0/47", "TEMP-RECOVERY") == [
         "set interfaces ge-0/0/47 disable",
     ]
@@ -51,19 +51,15 @@ def test_cleanup_statements_preserve_local_recovery_configuration():
     ]
 
 
-def test_cleanup_statements_remove_local_recovery_when_policy_disabled():
+def test_current_cleanup_never_manages_external_temp_management():
     assert ex_cleanup_statements(
-        "ge-0/0/47",
-        "TEMP-RECOVERY",
+        "EXTERNAL",
+        "EXTERNAL-TEMP-MGMT",
         recovery_required=False,
-    ) == [
-        "set interfaces ge-0/0/47 disable",
-        "delete interfaces ge-0/0/47 unit 0 family ethernet-switching vlan members TEMP-RECOVERY",
-        "delete vlans TEMP-RECOVERY",
-    ]
+    ) == []
     assert qfx_cleanup_statements(
         "ae2",
-        "TEMP-RECOVERY",
+        "EXTERNAL-TEMP-MGMT",
         recovery_required=False,
     ) == []
 
@@ -94,7 +90,7 @@ def test_qfx_vlan_state_resolves_members_and_preserves_definition_inventory():
     assert value["definitions"]["TEMP-RECOVERY"] == 3999
 
 
-def test_ex_recovery_state_before_and_after_cleanup():
+def test_ex_recovery_state_remains_available_for_historical_artifacts():
     before = "\n".join([
         "set interfaces ge-0/0/47 unit 0 family ethernet-switching vlan members TEMP-RECOVERY",
         "set vlans TEMP-RECOVERY vlan-id 3999",
@@ -118,7 +114,7 @@ def test_ex_recovery_state_before_and_after_cleanup():
     assert state["holding_default_vlan_present"] is True
 
 
-def test_pre_cleanup_requires_recovery_membership_on_both_qfxs():
+def test_historical_pre_cleanup_requires_recovery_membership_on_both_qfxs():
     ex_state = {
         "recovery_port_disabled": False,
         "recovery_port_membership_present": True,
@@ -144,7 +140,7 @@ def test_pre_cleanup_requires_recovery_membership_on_both_qfxs():
     assert value["result"] == "FAIL"
 
 
-def test_pre_cleanup_requires_recovery_absent_when_policy_disabled():
+def test_current_pre_cleanup_ignores_temp_management_state():
     ex_state = {
         "recovery_port_disabled": False,
         "recovery_port_membership_present": True,
@@ -154,7 +150,7 @@ def test_pre_cleanup_requires_recovery_absent_when_policy_disabled():
     }
     qfx = {
         "qfx-a": _qfx_state([100, 163, 200, 1111]),
-        "qfx-b": _qfx_state([100, 163, 200, 1111]),
+        "qfx-b": _qfx_state([100, 163, 200, 1111, 3999]),
     }
     value = validate_pre_cleanup(
         _plan(), _live(), ex_state, qfx, 163, 3999, "TEMP-RECOVERY",
@@ -162,19 +158,10 @@ def test_pre_cleanup_requires_recovery_absent_when_policy_disabled():
         recovery_required=False,
     )
     assert value["result"] == "PASS"
-    assert value["checks"]["qfx-a_recovery_vlan_absent"] is True
-    assert value["checks"]["qfx-b_recovery_vlan_absent"] is True
-
-    qfx["qfx-b"] = _qfx_state([100, 163, 200, 1111, 3999])
-    value = validate_pre_cleanup(
-        _plan(), _live(), ex_state, qfx, 163, 3999, "TEMP-RECOVERY",
-        [100, 200, 1111], {"result": "PASS", "blockers": []},
-        recovery_required=False,
-    )
-    assert value["result"] == "FAIL"
+    assert not any("recovery" in key for key in value["checks"])
 
 
-def test_post_cleanup_requires_disabled_preserved_local_recovery_attachment():
+def test_historical_post_cleanup_requires_disabled_preserved_local_recovery_attachment():
     ex_state = {
         "recovery_port_disabled": True,
         "recovery_port_membership_present": True,
@@ -195,40 +182,17 @@ def test_post_cleanup_requires_disabled_preserved_local_recovery_attachment():
     assert value["checks"]["ex_recovery_port_membership_preserved"] is True
     assert value["checks"]["ex_recovery_vlan_definition_preserved"] is True
 
-    ex_state["recovery_port_disabled"] = False
-    value = validate_post_cleanup(
-        _plan(), _live(), ex_state, qfx, 163, 3999, "TEMP-RECOVERY",
-        [100, 200, 1111], {"result": "PASS"},
-    )
-    assert value["result"] == "FAIL"
 
-    ex_state["recovery_port_disabled"] = True
-    ex_state["recovery_port_membership_present"] = False
-    value = validate_post_cleanup(
-        _plan(), _live(), ex_state, qfx, 163, 3999, "TEMP-RECOVERY",
-        [100, 200, 1111], {"result": "PASS"},
-    )
-    assert value["result"] == "FAIL"
-
-    ex_state["recovery_port_membership_present"] = True
-    qfx["qfx-a"]["definitions"].pop("TEMP-RECOVERY")
-    value = validate_post_cleanup(
-        _plan(), _live(), ex_state, qfx, 163, 3999, "TEMP-RECOVERY",
-        [100, 200, 1111], {"result": "PASS"},
-    )
-    assert value["result"] == "FAIL"
-
-
-def test_post_cleanup_requires_local_recovery_removed_when_policy_disabled():
+def test_current_post_cleanup_ignores_temp_management_state():
     ex_state = {
-        "recovery_port_disabled": True,
-        "recovery_port_membership_present": False,
-        "recovery_vlan_definition_present": False,
+        "recovery_port_disabled": False,
+        "recovery_port_membership_present": True,
+        "recovery_vlan_definition_present": True,
         "holding_default_vlan_present": True,
-        "unexpected_other_recovery_memberships": [],
+        "unexpected_other_recovery_memberships": ["anything"],
     }
     qfx = {
-        "qfx-a": _qfx_state([100, 163, 200, 1111]),
+        "qfx-a": _qfx_state([100, 163, 200, 1111, 3999]),
         "qfx-b": _qfx_state([100, 163, 200, 1111]),
     }
     value = validate_post_cleanup(
@@ -237,13 +201,4 @@ def test_post_cleanup_requires_local_recovery_removed_when_policy_disabled():
         recovery_required=False,
     )
     assert value["result"] == "PASS"
-    assert value["checks"]["ex_recovery_port_membership_absent"] is True
-    assert value["checks"]["ex_recovery_vlan_definition_absent"] is True
-
-    ex_state["recovery_port_membership_present"] = True
-    value = validate_post_cleanup(
-        _plan(), _live(), ex_state, qfx, 163, 3999, "TEMP-RECOVERY",
-        [100, 200, 1111], {"result": "PASS"},
-        recovery_required=False,
-    )
-    assert value["result"] == "FAIL"
+    assert not any("recovery" in key for key in value["checks"])
