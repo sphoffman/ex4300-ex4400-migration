@@ -46,7 +46,8 @@ MIGRATION_COMMANDS = {
     "mac",
 }
 SITE_COMMANDS = {"site-discover", "site-stage", "site-status"}
-OPERATOR_MODULE = "ex_migration_operator.policy_cli"
+OPERATOR_MODULE = "ex_migration_operator.current_policy_cli"
+SITE_MODULE = "ex_migration_site.current_cli"
 
 
 def _has_option(args, name):
@@ -104,7 +105,7 @@ def _route(argv):
         if first in ("site-init", "site-prep"):
             module_name = OPERATOR_MODULE
         elif first in SITE_COMMANDS:
-            module_name = "ex_migration_site.cli"
+            module_name = SITE_MODULE
         elif first == "discover":
             module_name = "ex_migration_operator.initial_discovery"
             initial_discovery = True
@@ -126,7 +127,7 @@ def _route(argv):
             print("Migration %r is waiting on site readiness." % args[0])
             print("Complete the site prerequisite before continuing this migration.")
             print("")
-            module_name = "ex_migration_site.cli"
+            module_name = SITE_MODULE
             args = ["site-status"]
 
     discovery_session = False
