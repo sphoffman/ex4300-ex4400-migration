@@ -46,28 +46,21 @@ def test_old_switch_recovery_can_be_disabled_by_local_settings(tmp_path, monkeyp
     assert policy_cli._old_switch_recovery_required("config/site.json") is False
 
 
-def test_policy_status_marks_recovery_satisfied_without_transaction(tmp_path, monkeypatch):
+def test_temp_management_checkpoint_is_not_bypassed_when_post_cutover_recovery_disabled(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _settings(tmp_path)
     atomic_json(
         Path("config/site.local.json"),
         {"old_switch_recovery_required": False},
     )
-
     monkeypatch.setattr(
         policy_cli,
         "_ORIGINAL_WORKFLOW_STATUS",
-        lambda _root: {
-            "old_recovery": "COMPLETE"
-            if policy_cli.operator_core._successful_old_recovery(None, None)
-            else "PENDING",
-            "next_action": "cutover",
-        },
+        lambda _root: {"old_recovery": "PENDING", "next_action": "prestage"},
     )
-    policy_cli._POLICY_SETTINGS = "config/site.json"
     state = policy_cli._policy_workflow_status(tmp_path / "snapshots/migrations/test")
-    assert state["old_recovery"] == "COMPLETE"
-    assert state["old_recovery_not_required"] is True
+    assert state["old_recovery"] == "PENDING"
+    assert "old_recovery_not_required" not in state
 
 
 def test_site_init_recovery_disabled_uses_fixed_temp_access_and_lab_policy(tmp_path, monkeypatch):
