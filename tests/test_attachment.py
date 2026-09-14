@@ -152,14 +152,14 @@ def test_attachment_discovery_learns_matching_existing_ae_from_lldp_ports():
         assert "show lldp neighbors detail" not in device.commands
 
 
-def test_attachment_discovery_tolerates_legacy_3999_without_managing_it():
+def test_attachment_discovery_rejects_temp_management_on_qfx_baseline():
     result = discover_qfx_attachment(
         policy(), TARGET,
         devices(a=FakeQFX("BD-1", baseline=(163, 3999)), b=FakeQFX("BD-2", baseline=(163, 3999))),
         host_keys(), observed_at="2026-09-08T18:00:00Z"
     )
-    assert result["result"] == "PASS"
-    assert all(item["baseline_vlan_ids"] == [163, 3999] for item in result["devices"])
+    assert result["result"] == "FAIL"
+    assert all(item["checks"]["baseline_vlans_exact"] is False for item in result["devices"])
 
 
 def test_attachment_discovery_rejects_unrelated_extra_baseline_vlan():
