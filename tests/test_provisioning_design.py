@@ -38,6 +38,8 @@ def test_site_settings_point_to_generated_profile_and_policy():
     settings = load("config/site.json")
     assert settings["site_profile"] == "config/site-profile.json"
     assert settings["qfx_site_policy"] == "config/qfx-site-policy.active.json"
+    # Historical compatibility metadata may remain in settings, but active
+    # site/provisioning logic must not use it for device writes.
     assert settings["temporary_recovery_vlan_name"] == "Temp-Management"
     assert settings["temporary_recovery_vlan_id"] == 3999
     assert settings["default_collection_interval_seconds"] == 180
@@ -102,7 +104,7 @@ def test_contract_keeps_bootstrap_variables_outside_template():
     assert "TEMPORARY_MANAGEMENT_PORT_OVERLAY" in excludes
 
 
-def test_generated_qfx_site_policy_validates_and_has_no_site_voice_vlan():
+def test_generated_qfx_site_policy_validates_and_excludes_temp_management_from_baseline():
     schema = load("schemas/qfx-site-policy-1.2.json")
     policy = generated_policy()
     Draft202012Validator.check_schema(schema)
@@ -121,14 +123,16 @@ def test_generated_qfx_site_policy_validates_and_has_no_site_voice_vlan():
         "et-0/0/5",
     }
     assert policy["management_vlan"] == {"name": "MGMT", "vlan_id": 163}
+    # Kept only for current-schema compatibility. It has no active write role.
     assert policy["temporary_recovery_vlan"] == {"name": "TEMP-RECOVERY", "vlan_id": 3999}
     assert policy["prestage_access_vlan"] == {"name": "TEMP-ACCESS", "vlan_id": 3998}
     assert policy["precutover_qfx_baseline"] == {
-        "required_vlan_ids": [163, 3999],
+        "required_vlan_ids": [163],
         "lacp_mode": "active",
         "force_up": False,
     }
     assert 3998 not in policy["precutover_qfx_baseline"]["required_vlan_ids"]
+    assert 3999 not in policy["precutover_qfx_baseline"]["required_vlan_ids"]
 
 
 def test_generated_qfx_policy_rejects_force_up_and_lab_production_eligibility():
