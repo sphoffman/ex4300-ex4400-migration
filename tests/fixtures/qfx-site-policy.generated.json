@@ -45,7 +45,7 @@
     "vlan_id": 3998
   },
   "precutover_qfx_baseline": {
-    "required_vlan_ids": [163, 3999],
+    "required_vlan_ids": [163],
     "lacp_mode": "active",
     "force_up": false
   },
