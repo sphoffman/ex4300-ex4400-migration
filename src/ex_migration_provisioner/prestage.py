@@ -368,7 +368,20 @@ def choose_package_compat(migration_root, package_id=None):
     if not candidates:
         suffix = " %s" % package_id if package_id else ""
         raise base.ProvisioningError("no current-schema integrity-valid provisioning package%s was found" % suffix)
-    return candidates[0]
+
+    # Endpoint activation historically consumed two package fields from the
+    # retired old-switch recovery design. Current packages intentionally omit
+    # them. Supply inert in-memory compatibility values so existing immutable
+    # packages remain usable without reintroducing any recovery-port or VLAN
+    # semantics. These values are never written back to package.json.
+    selected = dict(candidates[0])
+    package = dict(selected["package"])
+    variables = dict(package.get("variables") or {})
+    variables.setdefault("recovery_interface", "")
+    variables.setdefault("temporary_recovery_vlan_id", 0)
+    package["variables"] = variables
+    selected["package"] = package
+    return selected
 
 
 def verify_package_inputs_compat(selected, settings, migration_root, paths):
