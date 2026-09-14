@@ -83,6 +83,8 @@ def attachment(plan_digest, policy_digest):
             "remote_port_id": "ge-0/0/0",
             "ae_interface": "ae2",
             "lacp_system_id": "00:01:02:03:04:02",
+            # A historical lab can still contain 3999. It is tolerated as
+            # observed state but must never drive a migration write.
             "baseline_vlan_ids": [163, 3999],
             "unresolved_vlan_members": [],
             "checks": {"ok": True},
@@ -149,11 +151,7 @@ class FakeQFX:
             "set routing-instances MAC-VRF-1 vlans voip vlan-id 1111",
         ]
         if self.missing_vlan is not None:
-            rows = [
-                row
-                for row in rows
-                if not row.endswith(" vlan-id %s" % self.missing_vlan)
-            ]
+            rows = [row for row in rows if not row.endswith(" vlan-id %s" % self.missing_vlan)]
         if not vlan_only:
             rows.insert(0, "set routing-instances MAC-VRF-1 interface ae2.0")
         return "\n".join(rows) + "\n"
@@ -187,27 +185,18 @@ def test_qfx_vlan_plan_resolves_existing_mac_vrf_vlans_and_adds_membership_only(
     plan_digest = digest("a")
     policy_digest = digest("b")
     value = build_qfx_vlan_plan(
-        "sw1203",
-        plan,
-        plan_digest,
-        attachment(plan_digest, policy_digest),
-        digest("c"),
-        policy(),
-        policy_digest,
-        devices(),
-        host_keys(),
-        created_at="2026-09-08T19:00:00Z",
+        "sw1203", plan, plan_digest, attachment(plan_digest, policy_digest), digest("c"),
+        policy(), policy_digest, devices(), host_keys(), created_at="2026-09-08T19:00:00Z",
     )
     assert value["result"] == "PASS"
     assert value["derivation"]["required_vlan_ids"] == [100, 200, 1111]
-    assert all(
-        item["routing_instance"] == "MAC-VRF-1" for item in value["devices"]
-    )
-    assert value["devices"][0]["statements"] == [
+    assert all(item["routing_instance"] == "MAC-VRF-1" for item in value["devices"])
+    expected = [
         "set interfaces ae2 unit 0 family ethernet-switching vlan members v100",
         "set interfaces ae2 unit 0 family ethernet-switching vlan members v200",
         "set interfaces ae2 unit 0 family ethernet-switching vlan members voip",
     ]
+    assert value["devices"][0]["statements"] == expected
     assert value["devices"][0]["statements"] == value["devices"][1]["statements"]
     assert value["safety"]["creates_vlan_definitions"] is False
     assert value["safety"]["qfx_writes_authorized"] is False
@@ -217,30 +206,21 @@ def test_qfx_vlan_plan_resolves_existing_mac_vrf_vlans_and_adds_membership_only(
     Draft202012Validator(schema).validate(value)
 
 
-def test_qfx_vlan_plan_removes_recovery_membership_when_recovery_is_disabled():
+def test_qfx_vlan_plan_never_manages_external_temp_management():
     plan = migration_plan()
     plan_digest = digest("a")
     policy_digest = digest("b")
     effective_policy = policy()
     effective_policy["_old_switch_recovery_required"] = False
     value = build_qfx_vlan_plan(
-        "sw1203",
-        plan,
-        plan_digest,
-        attachment(plan_digest, policy_digest),
-        digest("c"),
-        effective_policy,
-        policy_digest,
-        devices(),
-        host_keys(),
-        created_at="2026-09-08T19:00:00Z",
+        "sw1203", plan, plan_digest, attachment(plan_digest, policy_digest), digest("c"),
+        effective_policy, policy_digest, devices(), host_keys(), created_at="2026-09-08T19:00:00Z",
     )
     assert value["result"] == "PASS"
-    expected_delete = (
-        "delete interfaces ae2 unit 0 family ethernet-switching vlan members TEMP-RECOVERY"
-    )
-    assert expected_delete in value["devices"][0]["statements"]
-    assert expected_delete in value["devices"][1]["statements"]
+    for device in value["devices"]:
+        assert all("TEMP-RECOVERY" not in statement for statement in device["statements"])
+        assert all("Temp-Management" not in statement for statement in device["statements"])
+        assert all("3999" not in statement for statement in device["statements"])
     schema = json.loads((ROOT / "schemas/qfx-vlan-plan-1.0.json").read_text())
     Draft202012Validator(schema).validate(value)
 
@@ -250,26 +230,11 @@ def test_qfx_vlan_plan_fails_if_required_vlan_is_missing_from_one_mac_vrf():
     plan_digest = digest("a")
     policy_digest = digest("b")
     broken = devices()
-    broken["qfx-b"] = FakeQFX(
-        "BD-2", "SHA256:" + "B" * 43, missing_vlan=200
-    )
+    broken["qfx-b"] = FakeQFX("BD-2", "SHA256:" + "B" * 43, missing_vlan=200)
     value = build_qfx_vlan_plan(
-        "sw1203",
-        plan,
-        plan_digest,
-        attachment(plan_digest, policy_digest),
-        digest("c"),
-        policy(),
-        policy_digest,
-        broken,
-        host_keys(),
-        created_at="2026-09-08T19:00:00Z",
+        "sw1203", plan, plan_digest, attachment(plan_digest, policy_digest), digest("c"),
+        policy(), policy_digest, broken, host_keys(), created_at="2026-09-08T19:00:00Z",
     )
     assert value["result"] == "FAIL"
-    assert (
-        value["devices"][1]["checks"][
-            "all_required_vlans_defined_in_owning_mac_vrf"
-        ]
-        is False
-    )
+    assert value["devices"][1]["checks"]["all_required_vlans_defined_in_owning_mac_vrf"] is False
     assert value["devices"][1]["resolution_failures"][0]["vlan_id"] == 200
