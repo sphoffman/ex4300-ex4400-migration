@@ -49,17 +49,16 @@ def ex_cleanup_statements(
     recovery_port_already_disabled=False,
     recovery_required=True,
 ):
+    # Historical recovery cleanup remains supported only for old artifacts that
+    # explicitly require it. Current migrations treat temporary fxp0 management
+    # as external and therefore generate no recovery/temp-management writes.
+    if not recovery_required:
+        return []
     _require(recovery_interface, "recovery interface is required")
     _require(recovery_vlan_name, "recovery VLAN name is required")
     statements = []
     if not recovery_port_already_disabled:
         statements.append("set interfaces %s disable" % recovery_interface)
-    if not recovery_required:
-        statements.extend([
-            "delete interfaces %s unit 0 family ethernet-switching vlan members %s"
-            % (recovery_interface, recovery_vlan_name),
-            "delete vlans %s" % recovery_vlan_name,
-        ])
     return statements
 
 
@@ -85,14 +84,6 @@ def inverse_statements(statements):
 
 
 def complete_stale_vlan_object_deletes(statements, access_hardening):
-    """Delete the proven-unused VLAN object after deleting its observed leaves.
-
-    Junos can retain a named hierarchy node after its child leaves are removed
-    (for example a DHCP-security group under a VLAN).  The final broad delete is
-    therefore required to guarantee that no residual VLAN hierarchy remains.
-    The leaf deletes stay in the transaction so inverse_statements() still has
-    the exact observed leaves available for compensating rollback.
-    """
     result = list(statements)
     for item in access_hardening.get("stale_vlans", {}).get("delete", []):
         name = str(item.get("name") or "")
@@ -104,6 +95,11 @@ def complete_stale_vlan_object_deletes(statements, access_hardening):
 
 
 def ex_recovery_state(config_text, recovery_interface, recovery_vlan_name, recovery_vlan_id, prestage_vlan_id):
+    """Compatibility observation for historical cleanup artifacts.
+
+    Current migrations pass an external sentinel and do not make decisions from
+    temporary-management state.
+    """
     lines = {line.strip() for line in str(config_text or "").splitlines() if line.strip()}
     disabled = "set interfaces %s disable" % recovery_interface
     member = (
@@ -189,11 +185,12 @@ def validate_pre_cleanup(
         "all_required_endpoint_intents_live": not missing_completed,
         "access_hardening_classification_pass": access_hardening.get("result") == "PASS",
         "ex_holding_default_vlan_present": bool(ex_state.get("holding_default_vlan_present")),
-        "ex_no_other_recovery_memberships": not ex_state.get("unexpected_other_recovery_memberships"),
     }
     if recovery_required:
+        checks["ex_no_other_recovery_memberships"] = not ex_state.get("unexpected_other_recovery_memberships")
         checks["ex_recovery_port_membership_present"] = bool(ex_state.get("recovery_port_membership_present"))
         checks["ex_recovery_vlan_definition_present"] = bool(ex_state.get("recovery_vlan_definition_present"))
+
     required_qfx = set(int(value) for value in required_production_vlan_ids)
     required_qfx.add(int(management_vlan_id))
     if recovery_required:
@@ -204,11 +201,9 @@ def validate_pre_cleanup(
         checks["%s_required_vlans_present" % role] = required_qfx <= ids
         if recovery_required:
             checks["%s_recovery_vlan_present" % role] = int(recovery_vlan_id) in ids
-        else:
-            checks["%s_recovery_vlan_absent" % role] = int(recovery_vlan_id) not in ids
-        checks["%s_recovery_vlan_definition_present" % role] = (
-            state.get("definitions", {}).get(recovery_vlan_name) == int(recovery_vlan_id)
-        )
+            checks["%s_recovery_vlan_definition_present" % role] = (
+                state.get("definitions", {}).get(recovery_vlan_name) == int(recovery_vlan_id)
+            )
         checks["%s_topology_validation_pass" % role] = state.get("topology_result") == "PASS"
     return {
         "checks": checks,
@@ -241,26 +236,25 @@ def validate_post_cleanup(
         "no_operator_hold_intents": not endpoint["holds"],
         "all_required_endpoint_intents_still_live": not missing_completed,
         "access_hardening_validation_pass": access_hardening_validation.get("result") == "PASS",
-        "ex_recovery_port_disabled": bool(ex_state.get("recovery_port_disabled")),
         "ex_holding_default_vlan_preserved": bool(ex_state.get("holding_default_vlan_present")),
-        "ex_no_other_recovery_memberships": not ex_state.get("unexpected_other_recovery_memberships"),
     }
     if recovery_required:
+        checks["ex_recovery_port_disabled"] = bool(ex_state.get("recovery_port_disabled"))
+        checks["ex_no_other_recovery_memberships"] = not ex_state.get("unexpected_other_recovery_memberships")
         checks["ex_recovery_port_membership_preserved"] = bool(ex_state.get("recovery_port_membership_present"))
         checks["ex_recovery_vlan_definition_preserved"] = bool(ex_state.get("recovery_vlan_definition_present"))
-    else:
-        checks["ex_recovery_port_membership_absent"] = not bool(ex_state.get("recovery_port_membership_present"))
-        checks["ex_recovery_vlan_definition_absent"] = not bool(ex_state.get("recovery_vlan_definition_present"))
+
     required_qfx = set(int(value) for value in required_production_vlan_ids)
     required_qfx.add(int(management_vlan_id))
     for role, state in sorted(qfx_states.items()):
         ids = set(state.get("vlan_ids", []))
         checks["%s_vlan_membership_resolved" % role] = not state.get("unresolved")
         checks["%s_required_production_and_management_preserved" % role] = required_qfx <= ids
-        checks["%s_recovery_vlan_absent" % role] = int(recovery_vlan_id) not in ids
-        checks["%s_recovery_vlan_definition_preserved" % role] = (
-            state.get("definitions", {}).get(recovery_vlan_name) == int(recovery_vlan_id)
-        )
+        if recovery_required:
+            checks["%s_recovery_vlan_absent" % role] = int(recovery_vlan_id) not in ids
+            checks["%s_recovery_vlan_definition_preserved" % role] = (
+                state.get("definitions", {}).get(recovery_vlan_name) == int(recovery_vlan_id)
+            )
         checks["%s_topology_validation_pass" % role] = state.get("topology_result") == "PASS"
     return {
         "checks": checks,
@@ -298,7 +292,7 @@ def build_cleanup_plan(
     recovery_required=True,
     created_at=None,
 ):
-    _require(precheck.get("result") == "PASS", "TEMP-RECOVERY cleanup prechecks did not pass")
+    _require(precheck.get("result") == "PASS", "final cleanup prechecks did not pass")
     hardened_statements = complete_stale_vlan_object_deletes(
         access_hardening_statements,
         access_hardening,
@@ -354,6 +348,9 @@ def build_cleanup_plan(
         "migration_id": migration_id,
         "created_at": created_at or utc_now(),
         "inputs": inputs,
+        # This object remains for cleanup schema compatibility. Current
+        # migrations set required=false and no device statement is generated
+        # from these fields.
         "recovery": {
             "required": bool(recovery_required),
             "interface": recovery_interface,
@@ -364,7 +361,7 @@ def build_cleanup_plan(
             "final_state": (
                 "DISABLED_LOCAL_RECOVERY_PRESERVED"
                 if recovery_required
-                else "DISABLED_RECOVERY_REMOVED"
+                else "EXTERNAL_NOT_MANAGED"
             ),
         },
         "access_hardening": access_hardening,
@@ -379,7 +376,7 @@ def build_cleanup_plan(
         "safety": {
             "terminal_recovery_window_action": bool(recovery_required),
             "old_ex_vme_recovery_configuration_preserved": True,
-            "ex4400_recovery_port_disabled": True,
+            "ex4400_recovery_port_disabled": bool(recovery_required),
             "ex4400_recovery_vlan_configuration_preserved": bool(recovery_required),
             "qfx_global_recovery_vlan_definition_preserved": True,
             "endpoint_configuration_must_remain_present": True,
@@ -398,7 +395,7 @@ def write_cleanup_plan(migration_root, value):
     destination = migration_root / "recovery-cleanup-plans" / value["cleanup_plan_id"]
     path = destination / "plan.json"
     if path.is_file():
-        integrity = read_json(destination / "integrity.json")
+        integrity = read_json(directory / "integrity.json")
         _require(integrity.get("plan.json") == sha256_file(path), "cleanup plan integrity failed")
         existing = read_json(path)
         comparable_existing = dict(existing)
