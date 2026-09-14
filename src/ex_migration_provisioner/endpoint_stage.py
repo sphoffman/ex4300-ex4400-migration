@@ -57,7 +57,7 @@ def resolve_postcutover_access(profile, management_ip):
             else str(management_ip)
         ),
         "port": int(access.get("port", 830)),
-        "allow_vjunos_switch": mode == "transport-override",
+        "allow_vjunos_switch": profile["environment"] == "lab",
     }
 
 
