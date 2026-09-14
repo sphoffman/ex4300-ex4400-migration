@@ -28,6 +28,9 @@ def validate_site_policy(policy):
 
     QFX identity and staged attachment ports are discovered site evidence. Voice
     VLAN is intentionally absent here; it is per-migration EX4300 evidence.
+    Temp-Management remains part of the pre-cutover QFX baseline because the old
+    EX4300 uses that VLAN to provide temporary upstream reachability to the
+    replacement EX4400 fxp0.
     """
     required = {
         "schema_version",
@@ -49,19 +52,10 @@ def validate_site_policy(policy):
     }
     _require(isinstance(policy, dict), "QFX site policy must be an object")
     _require(required <= set(policy), "QFX site policy is missing required fields")
-    _require(
-        policy.get("schema_version") == SITE_POLICY_SCHEMA_VERSION,
-        "unsupported QFX site-policy schema",
-    )
-    _require(
-        policy.get("environment") in ("lab", "production"),
-        "invalid QFX site-policy environment",
-    )
+    _require(policy.get("schema_version") == SITE_POLICY_SCHEMA_VERSION, "unsupported QFX site-policy schema")
+    _require(policy.get("environment") in ("lab", "production"), "invalid QFX site-policy environment")
     if policy["environment"] == "lab":
-        _require(
-            policy.get("production_eligible") is False,
-            "lab QFX policy cannot be production eligible",
-        )
+        _require(policy.get("production_eligible") is False, "lab QFX policy cannot be production eligible")
 
     pair = policy["qfx_pair"]
     _require(isinstance(pair, list) and len(pair) == 2, "QFX policy must define exactly two devices")
@@ -74,15 +68,15 @@ def validate_site_policy(policy):
         _require(item.get("expected_model"), "QFX discovered model is required")
 
     management_vlan = _validate_vlan(policy["management_vlan"], "management VLAN")
-    recovery_vlan = _validate_vlan(policy["temporary_recovery_vlan"], "temporary recovery VLAN")
+    temp_management_vlan = _validate_vlan(policy["temporary_recovery_vlan"], "temporary management VLAN")
     prestage_vlan = _validate_vlan(policy["prestage_access_vlan"], "pre-stage access VLAN")
     _require(
-        len({management_vlan["vlan_id"], recovery_vlan["vlan_id"], prestage_vlan["vlan_id"]}) == 3,
-        "management, temporary recovery, and pre-stage access VLAN IDs must be distinct",
+        len({management_vlan["vlan_id"], temp_management_vlan["vlan_id"], prestage_vlan["vlan_id"]}) == 3,
+        "management, temporary management, and pre-stage access VLAN IDs must be distinct",
     )
     _require(
-        len({management_vlan["name"], recovery_vlan["name"], prestage_vlan["name"]}) == 3,
-        "management, temporary recovery, and pre-stage access VLAN names must be distinct",
+        len({management_vlan["name"], temp_management_vlan["name"], prestage_vlan["name"]}) == 3,
+        "management, temporary management, and pre-stage access VLAN names must be distinct",
     )
 
     pools = policy["stage_port_pools"]
@@ -107,8 +101,8 @@ def validate_site_policy(policy):
     required_vlans = baseline.get("required_vlan_ids")
     _require(isinstance(required_vlans, list), "QFX baseline required VLAN list is invalid")
     _require(
-        set(required_vlans) == {management_vlan["vlan_id"], recovery_vlan["vlan_id"]},
-        "QFX baseline must contain exactly management and temporary recovery VLANs",
+        set(required_vlans) == {management_vlan["vlan_id"], temp_management_vlan["vlan_id"]},
+        "QFX baseline must contain exactly management and temporary management VLANs",
     )
     _require(
         prestage_vlan["vlan_id"] not in set(required_vlans),
@@ -129,10 +123,7 @@ def validate_site_policy(policy):
         "require_matching_lacp_system_id",
     ):
         _require(validation.get(flag) is True, "QFX validation flag %s must be true" % flag)
-    _require(
-        validation.get("operator_supplied_ports_allowed") is False,
-        "operator-supplied QFX ports must remain disabled",
-    )
+    _require(validation.get("operator_supplied_ports_allowed") is False, "operator-supplied QFX ports must remain disabled")
     return policy
 
 
@@ -150,7 +141,7 @@ def render_variables(plan, site_policy, bootstrap_profile):
     variables = deepcopy(plan.get("template_variables", {}))
     management_vlan = site_policy["management_vlan"]
     voice_vlan = migration_voice_vlan(plan)
-    recovery_vlan = site_policy["temporary_recovery_vlan"]
+    temp_management_vlan = site_policy["temporary_recovery_vlan"]
 
     _require(variables.get("management_vlan_id") == management_vlan["vlan_id"], "approved plan management VLAN does not match site policy")
     _require(isinstance(variables.get("management_vlan_name"), str) and variables["management_vlan_name"], "approved plan has no management VLAN name")
@@ -167,7 +158,10 @@ def render_variables(plan, site_policy, bootstrap_profile):
         _require(isinstance(vlan_id, int) and 1 <= vlan_id <= 4094, "configured VLAN %s has no valid VLAN ID" % name)
         _require(name not in names, "duplicate configured VLAN name %s" % name)
         _require(vlan_id not in ids, "duplicate configured VLAN ID %s" % vlan_id)
-        _require(vlan_id != recovery_vlan["vlan_id"] and name != recovery_vlan["name"], "temporary recovery VLAN collides with approved configured VLAN inventory")
+        _require(
+            vlan_id != temp_management_vlan["vlan_id"] and name != temp_management_vlan["name"],
+            "temporary management VLAN collides with approved configured VLAN inventory",
+        )
         names.add(name)
         ids.add(vlan_id)
         item = deepcopy(vlan)
@@ -188,19 +182,16 @@ def render_variables(plan, site_policy, bootstrap_profile):
     variables["configured_vlans"] = normalized
     variables["voice_vlan"] = voice_vlan["name"]
     variables["voice_vlan_id"] = voice_vlan["vlan_id"]
-    variables["temporary_recovery_vlan"] = deepcopy(recovery_vlan)
-    variables["temporary_recovery_vlan_name"] = recovery_vlan["name"]
-    variables["temporary_recovery_vlan_id"] = recovery_vlan["vlan_id"]
-
-    # Keep the established recovery-port selection contract.
-    from .core import _recovery_interface
-    variables["recovery_interface"] = _recovery_interface(bootstrap_profile)
+    variables.pop("temporary_recovery_vlan", None)
+    variables.pop("temporary_recovery_vlan_name", None)
+    variables.pop("temporary_recovery_vlan_id", None)
+    variables.pop("recovery_interface", None)
     variables["plan_id"] = plan["plan_id"]
     return variables
 
 
 def derive_required_qfx_vlans(plan, policy):
-    """Derive only this migration's data VLANs and EX-discovered voice VLAN."""
+    """Derive only this migration's post-cutover data VLANs and EX-discovered voice VLAN."""
     validate_site_policy(policy)
     management_id = int(policy["management_vlan"]["vlan_id"])
     voice = migration_voice_vlan(plan)
