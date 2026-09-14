@@ -38,8 +38,9 @@ def test_site_settings_point_to_generated_profile_and_policy():
     settings = load("config/site.json")
     assert settings["site_profile"] == "config/site-profile.json"
     assert settings["qfx_site_policy"] == "config/qfx-site-policy.active.json"
-    assert settings["temporary_recovery_vlan_name"] == "TEMP-RECOVERY"
+    assert settings["temporary_recovery_vlan_name"] == "Temp-Management"
     assert settings["temporary_recovery_vlan_id"] == 3999
+    assert settings["default_collection_interval_seconds"] == 180
 
 
 def test_lab_bootstrap_is_never_production_eligible_and_binds_uplinks():
@@ -67,7 +68,8 @@ def test_template_keeps_edge_regex_and_uses_default_holding_vlan():
     assert "for interface in uplink_interfaces" in template
     assert "gigether-options 802.3ad ae0" in template
     assert "ether-options 802.3ad ae0" in template
-    assert "set interfaces {{recovery_interface}} unit 0 family ethernet-switching vlan members {{temporary_recovery_vlan_name}}" in template
+    assert "recovery_interface" not in template
+    assert "temporary_recovery_vlan_name" not in template
     assert "set vlans default vlan-id {{prestage_access_vlan_id}}" in template
     assert "set vlans default description {{prestage_access_vlan_name}}" in template
     assert "set vlans {{prestage_access_vlan_name}} vlan-id" not in template
@@ -88,11 +90,16 @@ def test_contract_keeps_bootstrap_variables_outside_template():
     assert "prestage_access_vlan_id" in required
     assert "prestage_access_interfaces" not in collections
     assert "uplink_interfaces" in collections
-    assert "recovery_interface" in required
+    assert "recovery_interface" not in required
+    assert "temporary_recovery_vlan_name" not in required
+    assert "temporary_recovery_vlan_id" not in required
     assert "provisioning_mode" in required
     assert "fxp0_management_ip" in bootstrap
     assert "uplink_interfaces" in bootstrap
     assert not required.intersection(bootstrap)
+    excludes = set(contract["phase_contract"]["pre_stage"]["exclude"])
+    assert "TEMPORARY_MANAGEMENT_VLAN" in excludes
+    assert "TEMPORARY_MANAGEMENT_PORT_OVERLAY" in excludes
 
 
 def test_generated_qfx_site_policy_validates_and_has_no_site_voice_vlan():
