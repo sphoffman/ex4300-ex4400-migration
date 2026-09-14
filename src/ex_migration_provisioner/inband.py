@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import shlex
+from pathlib import Path
 
 from ex_migration_analyzer.core import (
     atomic_json,
@@ -167,13 +168,22 @@ def pinned_fingerprint(identity):
 
 
 def planned_management_ip(approved_plan):
-    value = str(
-        approved_plan.get("template_variables", {}).get("management_ip") or ""
-    ).strip()
+    migration_id = str(approved_plan.get("migration_id") or "").strip()
+    manifest_path = Path("snapshots") / "migrations" / migration_id / "manifest.json"
+    value = ""
+    if migration_id and manifest_path.is_file():
+        manifest = read_json(manifest_path)
+        value = str(
+            manifest.get("old_switch", {}).get("connection_address") or ""
+        ).strip()
+    if not value:
+        value = str(
+            approved_plan.get("template_variables", {}).get("management_ip") or ""
+        ).strip()
     try:
         ipaddress.ip_address(value)
     except ValueError:
-        raise ProvisioningError("approved migration plan has an invalid management_ip")
+        raise ProvisioningError("approved migration has no valid post-cutover management IP")
     return value
 
 
@@ -194,7 +204,9 @@ def discovered_management_ip(migration_root, approved_plan=None):
             manifest.get("old_switch", {}).get("connection_address") or ""
         ).strip()
     if not value and approved_plan is not None:
-        value = planned_management_ip(approved_plan)
+        value = str(
+            approved_plan.get("template_variables", {}).get("management_ip") or ""
+        ).strip()
     try:
         ipaddress.ip_address(value)
     except ValueError:
