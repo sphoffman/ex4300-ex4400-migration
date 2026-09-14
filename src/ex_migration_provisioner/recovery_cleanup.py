@@ -49,9 +49,6 @@ def ex_cleanup_statements(
     recovery_port_already_disabled=False,
     recovery_required=True,
 ):
-    # Historical recovery cleanup remains supported only for old artifacts that
-    # explicitly require it. Current migrations treat temporary fxp0 management
-    # as external and therefore generate no recovery/temp-management writes.
     if not recovery_required:
         return []
     _require(recovery_interface, "recovery interface is required")
@@ -95,11 +92,6 @@ def complete_stale_vlan_object_deletes(statements, access_hardening):
 
 
 def ex_recovery_state(config_text, recovery_interface, recovery_vlan_name, recovery_vlan_id, prestage_vlan_id):
-    """Compatibility observation for historical cleanup artifacts.
-
-    Current migrations pass an external sentinel and do not make decisions from
-    temporary-management state.
-    """
     lines = {line.strip() for line in str(config_text or "").splitlines() if line.strip()}
     disabled = "set interfaces %s disable" % recovery_interface
     member = (
@@ -348,9 +340,6 @@ def build_cleanup_plan(
         "migration_id": migration_id,
         "created_at": created_at or utc_now(),
         "inputs": inputs,
-        # This object remains for cleanup schema compatibility. Current
-        # migrations set required=false and no device statement is generated
-        # from these fields.
         "recovery": {
             "required": bool(recovery_required),
             "interface": recovery_interface,
@@ -395,7 +384,7 @@ def write_cleanup_plan(migration_root, value):
     destination = migration_root / "recovery-cleanup-plans" / value["cleanup_plan_id"]
     path = destination / "plan.json"
     if path.is_file():
-        integrity = read_json(directory / "integrity.json")
+        integrity = read_json(destination / "integrity.json")
         _require(integrity.get("plan.json") == sha256_file(path), "cleanup plan integrity failed")
         existing = read_json(path)
         comparable_existing = dict(existing)
