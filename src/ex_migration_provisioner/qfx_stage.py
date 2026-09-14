@@ -81,6 +81,7 @@ def choose_attachment(migration_root, attachment_id=None):
 def derive_required_qfx_vlans(plan, policy):
     management_id = int(policy["management_vlan"]["vlan_id"])
     voice_id = int(policy["voice_vlan"]["vlan_id"])
+    voice_name = str(policy["voice_vlan"]["name"])
     configured_ids = {
         int(item["vlan_id"])
         for item in plan.get("vlan_intents", [])
@@ -111,6 +112,7 @@ def derive_required_qfx_vlans(plan, policy):
         "required_vlan_ids": sorted(required),
         "endpoint_data_vlan_ids": sorted(endpoint_ids),
         "voice_vlan_id": voice_id if voice_id in configured_ids else None,
+        "voice_vlan_name": voice_name if voice_id in configured_ids else None,
         "configured_but_not_required_vlan_ids": excluded_configured,
     }
 
@@ -202,7 +204,7 @@ def observe_qfx_vlan_plan_device(
         "matches": [],
     } for vlan_id in required_vlan_ids])
 
-    # This phase owns only production data/voice VLAN additions.  Temporary
+    # This phase owns only production data/voice VLAN additions. Temporary
     # fxp0 management is external to this project and is neither added nor
     # removed here, even if legacy lab configuration happens to contain it.
     statements = [
