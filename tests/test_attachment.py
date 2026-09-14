@@ -25,7 +25,7 @@ class FakeQFX:
         force_up=False,
         lacp_up=True,
         explicit_lacp_active=True,
-        baseline=(163, 3999),
+        baseline=(163,),
         vlan_scope="top-level",
         conflicting_vlan_name=False,
         lldp_parent=None,
@@ -76,7 +76,7 @@ class FakeQFX:
                     "set interfaces %s aggregated-ether-options lacp force-up"
                     % self.ae
                 )
-            names = {163: "v163", 3999: "TEMP-RECOVERY"}
+            names = {163: "v163", 3999: "TEMP-RECOVERY", 999: "EXTRA"}
             for vlan_id in self.baseline:
                 lines.append(
                     "set interfaces %s unit 0 family ethernet-switching vlan members %s"
@@ -88,6 +88,7 @@ class FakeQFX:
                 lines = [
                     "set vlans v163 vlan-id 163",
                     "set vlans TEMP-RECOVERY vlan-id 3999",
+                    "set vlans EXTRA vlan-id 999",
                 ]
                 if self.conflicting_vlan_name:
                     lines.append("set vlans v163 vlan-id 999")
@@ -98,6 +99,7 @@ class FakeQFX:
                 lines = [
                     "set routing-instances MAC-VRF-1 vlans v163 vlan-id 163",
                     "set routing-instances MAC-VRF-1 vlans TEMP-RECOVERY vlan-id 3999",
+                    "set routing-instances MAC-VRF-1 vlans EXTRA vlan-id 999",
                 ]
                 if self.conflicting_vlan_name:
                     lines.append(
@@ -142,12 +144,32 @@ def test_attachment_discovery_learns_matching_existing_ae_from_lldp_ports():
     ]
     assert [item["ae_interface"] for item in result["devices"]] == ["ae2", "ae2"]
     assert [item["baseline_vlan_ids"] for item in result["devices"]] == [
-        [163, 3999],
-        [163, 3999],
+        [163],
+        [163],
     ]
     for device in pair.values():
         assert "show lldp neighbors" in device.commands
         assert "show lldp neighbors detail" not in device.commands
+
+
+def test_attachment_discovery_tolerates_legacy_3999_without_managing_it():
+    result = discover_qfx_attachment(
+        policy(), TARGET,
+        devices(a=FakeQFX("BD-1", baseline=(163, 3999)), b=FakeQFX("BD-2", baseline=(163, 3999))),
+        host_keys(), observed_at="2026-09-08T18:00:00Z"
+    )
+    assert result["result"] == "PASS"
+    assert all(item["baseline_vlan_ids"] == [163, 3999] for item in result["devices"])
+
+
+def test_attachment_discovery_rejects_unrelated_extra_baseline_vlan():
+    result = discover_qfx_attachment(
+        policy(), TARGET,
+        devices(a=FakeQFX("BD-1", baseline=(163, 999))),
+        host_keys(), observed_at="2026-09-08T18:00:00Z"
+    )
+    assert result["result"] == "FAIL"
+    assert result["devices"][0]["checks"]["baseline_vlans_exact"] is False
 
 
 def test_attachment_discovery_requires_lldp_parent_to_match_configured_ae():
@@ -182,7 +204,7 @@ def test_attachment_discovery_accepts_operational_lacp_without_explicit_active()
     for item in result["devices"]:
         assert item["checks"]["lacp_configured"] is True
         assert item["checks"]["lacp_collecting_distributing"] is True
-        assert item["baseline_vlan_ids"] == [163, 3999]
+        assert item["baseline_vlan_ids"] == [163]
         assert item["unresolved_vlan_members"] == []
 
 
@@ -223,11 +245,11 @@ def test_attachment_discovery_fails_if_force_up_is_present():
     assert result["devices"][0]["checks"]["lacp_force_up_absent"] is False
 
 
-def test_attachment_discovery_requires_exact_management_recovery_baseline():
+def test_attachment_discovery_requires_permanent_management_baseline():
     result = discover_qfx_attachment(
         policy(),
         TARGET,
-        devices(a=FakeQFX("BD-1", baseline=(163,))),
+        devices(a=FakeQFX("BD-1", baseline=())),
         host_keys(),
         observed_at="2026-09-08T18:00:00Z",
     )
