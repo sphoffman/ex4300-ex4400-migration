@@ -5,7 +5,7 @@
   "display_timezone": "EST5EDT,M3.2.0,M11.1.0",
   "default_management_vlan_id": 163,
   "default_collection_duration_seconds": 1800,
-  "default_collection_interval_seconds": 60,
+  "default_collection_interval_seconds": 180,
   "collection_workers": 4,
   "require_host_key_verification": true,
   "ex4400_template": "templates/ex4400/ex4400.set.j2",
@@ -13,6 +13,6 @@
   "site_profile": "config/site-profile.json",
   "qfx_site_policy": "config/qfx-site-policy.active.json",
   "bootstrap_profile": "config/bootstrap.lab.example.json",
-  "temporary_recovery_vlan_name": "TEMP-RECOVERY",
+  "temporary_recovery_vlan_name": "Temp-Management",
   "temporary_recovery_vlan_id": 3999
 }
