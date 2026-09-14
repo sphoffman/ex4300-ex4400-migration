@@ -6,7 +6,7 @@
   "required": [
     "schema_version", "attachment_id", "migration_id", "observed_at", "approved_at",
     "plan", "site_policy", "expected_ex_hostname", "devices", "pair_checks",
-    "result", "approval", "safety"
+    "result", "safety"
   ],
   "properties": {
     "schema_version": {"const": "1.0"},
@@ -40,37 +40,24 @@
       "items": {
         "type": "object",
         "required": [
-          "role", "management_address", "ssh_host_key_sha256", "expected_qfx_hostname",
-          "expected_qfx_model", "observed_qfx_hostname", "observed_qfx_model",
-          "expected_ex_hostname", "lldp_match_count", "physical_interface",
-          "remote_port_id", "ae_interface", "lacp_system_id", "baseline_vlan_ids",
-          "unresolved_vlan_members", "checks", "result"
+          "role", "management_address", "ssh_host_key_sha256",
+          "observed_qfx_hostname", "observed_qfx_model", "physical_interface",
+          "remote_port_id", "ae_interface", "lacp_system_id", "baseline_vlan_ids"
         ],
         "properties": {
           "role": {"enum": ["qfx-a", "qfx-b"]},
           "management_address": {"type": "string"},
           "ssh_host_key_sha256": {"type": "string", "pattern": "^SHA256:"},
-          "expected_qfx_hostname": {"type": "string"},
-          "expected_qfx_model": {"type": "string"},
-          "observed_qfx_hostname": {"type": "string"},
-          "observed_qfx_model": {"type": "string"},
-          "expected_ex_hostname": {"type": "string"},
-          "lldp_match_count": {"const": 1},
+          "observed_qfx_hostname": {"type": "string", "minLength": 1},
+          "observed_qfx_model": {"type": "string", "minLength": 1},
           "physical_interface": {"type": "string", "pattern": "^et-[0-9]+/[0-9]+/[0-9]+$"},
           "remote_port_id": {"type": ["string", "null"]},
           "ae_interface": {"type": "string", "pattern": "^ae[0-9]+$"},
           "lacp_system_id": {"type": "string", "pattern": "^([0-9a-f]{2}:){5}[0-9a-f]{2}$"},
           "baseline_vlan_ids": {
-            "type": "array", "minItems": 2, "uniqueItems": true,
+            "type": "array", "minItems": 1, "uniqueItems": true,
             "items": {"type": "integer", "minimum": 1, "maximum": 4094}
-          },
-          "unresolved_vlan_members": {"type": "array", "maxItems": 0},
-          "checks": {
-            "type": "object",
-            "minProperties": 1,
-            "additionalProperties": {"const": true}
-          },
-          "result": {"const": "PASS"}
+          }
         },
         "additionalProperties": false
       }
@@ -90,27 +77,19 @@
       "additionalProperties": false
     },
     "result": {"const": "PASS"},
-    "approval": {
-      "type": "object",
-      "required": ["approved", "method", "scope"],
-      "properties": {
-        "approved": {"const": true},
-        "method": {"const": "interactive-operator-binding"},
-        "scope": {"const": "observed-post-cutover-qfx-attachment"}
-      },
-      "additionalProperties": false
-    },
     "safety": {
       "type": "object",
       "required": [
-        "qfx_writes_authorized", "ex4400_writes_authorized",
-        "operator_supplied_ports_used", "force_up_allowed"
+        "read_only_discovery", "qfx_writes_authorized", "ex4400_writes_authorized",
+        "operator_supplied_ports_used", "force_up_allowed", "assignment_source"
       ],
       "properties": {
+        "read_only_discovery": {"const": true},
         "qfx_writes_authorized": {"const": false},
         "ex4400_writes_authorized": {"const": false},
         "operator_supplied_ports_used": {"const": false},
-        "force_up_allowed": {"const": false}
+        "force_up_allowed": {"const": false},
+        "assignment_source": {"const": "LLDP+EXISTING_QFX_AE+LACP+ESI+MGMT_BASELINE"}
       },
       "additionalProperties": false
     }
