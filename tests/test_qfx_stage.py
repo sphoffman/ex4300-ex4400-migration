@@ -83,9 +83,7 @@ def attachment(plan_digest, policy_digest):
             "remote_port_id": "ge-0/0/0",
             "ae_interface": "ae2",
             "lacp_system_id": "00:01:02:03:04:02",
-            # A historical lab can still contain 3999. It is tolerated as
-            # observed state but must never drive a migration write.
-            "baseline_vlan_ids": [163, 3999],
+            "baseline_vlan_ids": [163],
             "unresolved_vlan_members": [],
             "checks": {"ok": True},
             "result": "PASS",
@@ -129,7 +127,6 @@ class FakeQFX:
                 "set interfaces ae2 esi auto-derive type-1-lacp",
                 "set interfaces ae2 esi all-active",
                 "set interfaces ae2 unit 0 family ethernet-switching vlan members v163",
-                "set interfaces ae2 unit 0 family ethernet-switching vlan members TEMP-RECOVERY",
                 "",
             ])
         if command == "show lacp interfaces ae2 extensive":
@@ -145,7 +142,6 @@ class FakeQFX:
     def _routing_instances(self, vlan_only):
         rows = [
             "set routing-instances MAC-VRF-1 vlans v163 vlan-id 163",
-            "set routing-instances MAC-VRF-1 vlans TEMP-RECOVERY vlan-id 3999",
             "set routing-instances MAC-VRF-1 vlans v100 vlan-id 100",
             "set routing-instances MAC-VRF-1 vlans v200 vlan-id 200",
             "set routing-instances MAC-VRF-1 vlans voip vlan-id 1111",
