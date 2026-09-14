@@ -105,9 +105,7 @@ def derive_required_qfx_vlans(plan, policy):
     excluded_configured = sorted(
         value
         for value in configured_ids
-        if value not in required
-        and value != management_id
-        and value != int(policy["temporary_recovery_vlan"]["vlan_id"])
+        if value not in required and value != management_id
     )
     return {
         "required_vlan_ids": sorted(required),
@@ -150,9 +148,7 @@ def _resolve_required(definitions, routing_instance, required_vlan_ids):
         if len(matches) != 1:
             failures.append({
                 "vlan_id": vlan_id,
-                "reason": (
-                    "missing" if not matches else "ambiguous"
-                ),
+                "reason": "missing" if not matches else "ambiguous",
                 "matches": matches,
             })
             continue
@@ -179,12 +175,9 @@ def observe_qfx_vlan_plan_device(
 
     bound_matches = (
         observation.get("result") == "PASS"
-        and observation.get("physical_interface")
-        == attachment_device.get("physical_interface")
-        and observation.get("ae_interface")
-        == attachment_device.get("ae_interface")
-        and observation.get("lacp_system_id")
-        == attachment_device.get("lacp_system_id")
+        and observation.get("physical_interface") == attachment_device.get("physical_interface")
+        and observation.get("ae_interface") == attachment_device.get("ae_interface")
+        and observation.get("lacp_system_id") == attachment_device.get("lacp_system_id")
         and host_key == attachment_device.get("ssh_host_key_sha256")
     )
 
@@ -209,24 +202,14 @@ def observe_qfx_vlan_plan_device(
         "matches": [],
     } for vlan_id in required_vlan_ids])
 
+    # This phase owns only production data/voice VLAN additions.  Temporary
+    # fxp0 management is external to this project and is neither added nor
+    # removed here, even if legacy lab configuration happens to contain it.
     statements = [
         "set interfaces %s unit 0 family ethernet-switching vlan members %s"
         % (ae, item["name"])
         for item in resolved
     ] if ae else []
-
-    recovery_required = policy.get("_old_switch_recovery_required", True) is not False
-    recovery_vlan = policy["temporary_recovery_vlan"]
-    current_baseline = observation.get("baseline_vlan_ids") or []
-    if (
-        ae
-        and not recovery_required
-        and int(recovery_vlan["vlan_id"]) in current_baseline
-    ):
-        statements.append(
-            "delete interfaces %s unit 0 family ethernet-switching vlan members %s"
-            % (ae, recovery_vlan["name"])
-        )
 
     checks = {
         "attachment_still_valid": observation.get("result") == "PASS",
