@@ -23,6 +23,7 @@ def _mock_profile(monkeypatch, environment="lab"):
             {
                 "environment": environment,
                 "management_vlan": {"name": "v163", "vlan_id": 163},
+                # Dormant compatibility metadata only; no live write uses it.
                 "temporary_recovery_vlan": {"name": "Temp-Management", "vlan_id": 3999},
             },
             Path("config/site-profile.json"),
@@ -30,46 +31,24 @@ def _mock_profile(monkeypatch, environment="lab"):
     )
 
 
-def test_old_switch_recovery_defaults_required_for_existing_settings(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    _settings(tmp_path)
-    assert policy_cli._old_switch_recovery_required("config/site.json") is True
+def test_external_temp_management_satisfies_legacy_status_checkpoint(monkeypatch):
+    def fake_status(_root):
+        # The wrapper must present the obsolete old_recovery checkpoint as
+        # satisfied so guided prestage never invokes stage-old-recovery.
+        return {"old_recovery": "PENDING", "next_action": "prestage"}
+
+    monkeypatch.setattr(policy_cli, "_ORIGINAL_WORKFLOW_STATUS", fake_status)
+    state = policy_cli._policy_workflow_status(Path("snapshots/migrations/test"))
+    assert state["old_recovery"] == "COMPLETE"
+    assert state["next_action"] == "prestage"
 
 
-def test_old_switch_recovery_can_be_disabled_by_local_settings(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    _settings(tmp_path)
-    atomic_json(
-        Path("config/site.local.json"),
-        {"old_switch_recovery_required": False},
-    )
-    assert policy_cli._old_switch_recovery_required("config/site.json") is False
-
-
-def test_temp_management_checkpoint_is_not_bypassed_when_post_cutover_recovery_disabled(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    _settings(tmp_path)
-    atomic_json(
-        Path("config/site.local.json"),
-        {"old_switch_recovery_required": False},
-    )
-    monkeypatch.setattr(
-        policy_cli,
-        "_ORIGINAL_WORKFLOW_STATUS",
-        lambda _root: {"old_recovery": "PENDING", "next_action": "prestage"},
-    )
-    state = policy_cli._policy_workflow_status(tmp_path / "snapshots/migrations/test")
-    assert state["old_recovery"] == "PENDING"
-    assert "old_recovery_not_required" not in state
-
-
-def test_site_init_recovery_disabled_uses_fixed_temp_access_and_lab_policy(tmp_path, monkeypatch):
+def test_site_init_uses_fixed_temp_access_and_records_external_temp_management(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _settings(tmp_path)
     _mock_profile(monkeypatch, "lab")
     captured = []
 
-    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
     monkeypatch.setattr(
         policy_cli.site_cli,
         "main",
@@ -88,6 +67,7 @@ def test_site_init_recovery_disabled_uses_fixed_temp_access_and_lab_policy(tmp_p
     assert local["default_collection_duration_seconds"] == 60
     assert local["default_collection_interval_seconds"] == 60
     assert local["default_management_vlan_id"] == 163
+    # Compatibility-only values remain stable while old schemas exist.
     assert local["temporary_recovery_vlan_name"] == "Temp-Management"
     assert local["temporary_recovery_vlan_id"] == 3999
 
@@ -96,44 +76,22 @@ def test_site_init_production_binds_production_analysis_policy(tmp_path, monkeyp
     monkeypatch.chdir(tmp_path)
     _settings(tmp_path)
     _mock_profile(monkeypatch, "production")
-    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
     monkeypatch.setattr(policy_cli.site_cli, "main", lambda _argv: 0)
 
     assert policy_cli._site_init([]) == 0
     local = read_json(Path("config/site.local.json"))
-    assert local["old_switch_recovery_required"] is True
+    assert local["old_switch_recovery_required"] is False
     assert local["analysis_policy"] == "policies/production-old-v1.json"
     assert local["default_collection_duration_seconds"] == 1800
     assert local["default_collection_interval_seconds"] == 180
     assert local["default_management_vlan_id"] == 163
-    assert local["temporary_recovery_vlan_name"] == "Temp-Management"
-    assert local["temporary_recovery_vlan_id"] == 3999
 
 
-def test_site_init_recovery_enabled_keeps_temp_access_interactive(tmp_path, monkeypatch):
+def test_site_init_explicit_temp_access_overrides_win(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _settings(tmp_path)
     _mock_profile(monkeypatch, "lab")
     captured = []
-
-    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
-    monkeypatch.setattr(
-        policy_cli.site_cli,
-        "main",
-        lambda argv: captured.append(list(argv)) or 0,
-    )
-
-    assert policy_cli._site_init([]) == 0
-    assert captured == [["site-init"]]
-
-
-def test_site_init_explicit_temp_access_overrides_win_when_recovery_disabled(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    _settings(tmp_path)
-    _mock_profile(monkeypatch, "lab")
-    captured = []
-
-    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
     monkeypatch.setattr(
         policy_cli.site_cli,
         "main",
@@ -148,7 +106,7 @@ def test_site_init_explicit_temp_access_overrides_win_when_recovery_disabled(tmp
     assert captured == [["site-init"] + args]
 
 
-def test_site_init_prompt_defaults_and_labels():
+def test_site_init_prompt_only_changes_environment_default():
     captured = []
     original = policy_cli._ORIGINAL_SITE_PROMPT
     try:
@@ -156,16 +114,12 @@ def test_site_init_prompt_defaults_and_labels():
             lambda value, label, default=None: captured.append((value, label, default)) or str(default)
         )
         assert policy_cli._site_init_prompt(None, "Environment (lab/production)", "lab") == "production"
-        assert policy_cli._site_init_prompt(None, "Temporary recovery VLAN name", "TEMP-RECOVERY") == "Temp-Management"
-        assert policy_cli._site_init_prompt(None, "Temporary recovery VLAN ID", 3999) == "3999"
         assert policy_cli._site_init_prompt(None, "EX-only prestage/default VLAN name", "TEMP-ACCESS") == "TEMP-ACCESS"
     finally:
         policy_cli._ORIGINAL_SITE_PROMPT = original
 
     assert captured == [
         (None, "Environment (lab/production)", "production"),
-        (None, "Temporary Management VLAN name", "Temp-Management"),
-        (None, "Temporary Management VLAN ID", 3999),
         (None, "EX-only prestage/default VLAN name", "TEMP-ACCESS"),
     ]
 
