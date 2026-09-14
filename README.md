@@ -2,13 +2,11 @@
 
 Evidence-driven automation for staged Juniper EX4300-to-EX4400 migrations.
 
-The project is designed around a small number of **operator-facing workflow commands**. Internal phase commands remain available for troubleshooting and resume, but the normal operator should not need to remember them.
+The project is organized around a small number of **operator-facing workflow commands**. Internal phase commands remain available for troubleshooting/resume, but the normal operator should not need to remember them.
 
 ## Quick start
 
-Run from the repository root.
-
-On the server/host checkout:
+From the server/host checkout:
 
 ```bash
 ./migrate site-prep
@@ -27,39 +25,99 @@ python migrate.py <migration-id>
 
 Those are the three primary operator entry points:
 
-1. `site-prep` — initialize the site, discover/approve the QFX pair, and validate/stage the site baseline.
+1. `site-prep` — initialize the site, discover/approve the QFX pair, and validate/stage the QFX site baseline.
 2. `discover` — collect the first EX4300 evidence and derive the migration ID from the switch hostname.
 3. `<migration-id>` — resume the guided migration from whatever safe phase is next.
 
-Migration evidence and approvals are retained as immutable, digest-bound artifacts under:
+Migration artifacts are immutable and digest-bound under:
 
 ```text
 snapshots/migrations/<migration-id>/
 ```
 
-Site-level QFX discovery and inventory artifacts are stored under:
+Site-level QFX discovery/inventory artifacts are stored under:
 
 ```text
 snapshots/site/<site-id>/
 ```
 
-## Operator workflow
+## Management and temporary VLAN model
 
-### 1. Prepare the site
+Three VLAN roles are intentionally separate:
 
-The normal site preparation command is:
+```text
+3998  TEMP-ACCESS      replacement EX4400 holding/default access VLAN
+3999  Temp-Management  pre-cutover old-EX transit for replacement fxp0
+163   v163             permanent replacement EX4400 in-band management
+```
+
+### VLAN 3998 — `TEMP-ACCESS`
+
+`TEMP-ACCESS` is local to the replacement EX4400 prestage design. The Junos `default` VLAN is renumbered to 3998 so edge ports remain in a non-production holding VLAN until endpoint activation.
+
+It is **not** used for switch management and is not part of the QFX pre-cutover baseline.
+
+### VLAN 3999 — `Temp-Management`
+
+`Temp-Management` provides temporary management of the replacement EX4400 **before physical cutover**.
+
+The intended path is:
+
+```text
+replacement EX4400 fxp0
+        |
+        | Ethernet cable
+        |
+proven-unused old EX4300 access port
+        |
+        | VLAN 3999 Temp-Management
+        |
+old EX4300 ae0/uplink
+        |
+QFX migration AE carrying VLAN 3999
+        |
+management network
+```
+
+The automation selects a proven-unused old EX4300 access port from the approved migration plan, preferring the highest-numbered eligible port. It fails closed if no safe unused port is available.
+
+The old EX temporary-management prestage may add:
+
+```text
+set vlans Temp-Management vlan-id 3999
+set interfaces <unused-old-port> unit 0 family ethernet-switching interface-mode access
+set interfaces <unused-old-port> unit 0 family ethernet-switching vlan members Temp-Management
+```
+
+If the old EX `ae0` trunk uses explicit VLAN members, the automation also adds `Temp-Management` to `ae0`. If `ae0` already uses `vlan members all`, no redundant member statement is needed.
+
+The temporary-management step **does not rewrite old-switch `vme.0`**, does not move the replacement OOB address onto the old EX, and does not change the old EX management identity.
+
+VLAN 3999 remains part of the QFX pre-cutover site baseline because the still-running old EX must carry it upstream while the new EX is being managed through `fxp0`.
+
+The replacement EX4400 switching configuration itself does **not** contain VLAN 3999 and does not reserve one of its edge ports for Temp-Management. `fxp0` is physically connected to the old EX access port instead.
+
+### VLAN 163 — permanent in-band management
+
+After physical cutover, the replacement EX4400 uses its normal in-band management interface/VLAN (for example `irb.163` / `v163`) through `ae0` to the QFX pair.
+
+The temporary `fxp0 -> old EX -> VLAN 3999` path is then no longer required, and the retired EX4300 can be removed/powered down when the site policy says post-cutover old-switch recovery is not required.
+
+## Site preparation
+
+Normal site preparation:
 
 ```bash
 ./migrate site-prep
 ```
 
-or, inside PyEZ1:
+or inside PyEZ1:
 
 ```bash
 python migrate.py site-prep
 ```
 
-`site-prep` runs the following internal phases in one process:
+`site-prep` runs:
 
 ```text
 site-init
@@ -67,31 +125,19 @@ site-init
   -> site-stage
 ```
 
-It prompts once for the QFX credentials and reuses them for discovery and staging. Approval boundaries remain intact: the operator still approves the discovered QFX identity/inventory before site staging proceeds.
+in one process and prompts for QFX credentials once. Approval boundaries remain intact.
 
-The QFX migration-facing physical interfaces and AEs are expected to be **preprovisioned by a separate site tool** before this migration project uses them. This migration project does not create ET-to-AE mappings, LACP system IDs, ESI, or trunk structure.
-
-Site preparation records:
-
-- site ID and environment;
-- QFX-A and QFX-B management addresses;
-- management VLAN identity;
-- temporary management/recovery VLAN identity;
-- EX-only prestage/default VLAN identity;
-- old-switch recovery policy;
-- environment-appropriate analysis/discovery policy.
-
-The environment defaults to `production`. Lab operators should explicitly select `lab`.
-
-Current production discovery defaults are:
+The QFX migration-facing ET interfaces and AEs must already be preprovisioned by the external QFX provisioning process. This migration project does **not** create or repair:
 
 ```text
-observation window: 1800 seconds (30 minutes)
-sample interval:    180 seconds (3 minutes)
-minimum samples:    10
+ET -> AE mapping
+LACP active/system-id
+ESI auto-derive type-1-lacp
+ESI all-active
+ethernet-switching trunk structure
 ```
 
-The longer observation window is preserved while avoiding redundant one-minute MAC-table polling.
+The QFX pre-cutover baseline requires the site management VLAN and `Temp-Management`/3999 on approved migration AEs. Data and voice VLANs are added later only to the actual AE discovered for a migration.
 
 The lower-level site commands remain available for troubleshooting/resume:
 
@@ -102,80 +148,61 @@ The lower-level site commands remain available for troubleshooting/resume:
 ./migrate site-status
 ```
 
-Inside PyEZ1 use the equivalent `python migrate.py ...` form.
+Inside PyEZ1 use `python migrate.py ...` instead.
 
-Before an EX4300 migration begins, every approved migration AE must already have the expected preprovisioned attachment structure:
+## Old-switch discovery
 
-```text
-ET -> AE mapping
-LACP active
-matching LACP system ID on both QFXs
-ESI auto-derive type-1-lacp
-ESI all-active
-ethernet-switching trunk
-required site baseline VLAN membership
-```
-
-The migration project may adjust only the VLAN membership allowed by the generated site policy. If the AE/LACP/ESI/trunk structure itself is missing or inconsistent, the migration tool fails closed and the external QFX preprovisioning process must correct it.
-
-Data and voice VLANs are intentionally **not** part of the site baseline. They are added only to the actual QFX AE discovered for each migration.
-
-### 2. Start a migration with initial discovery
-
-The first discovery does **not** require a migration ID. The switch hostname is observed and the migration ID is derived automatically:
+Initial discovery does not require a migration ID:
 
 ```bash
 ./migrate discover
 ```
 
-Inside PyEZ1:
+or:
 
 ```bash
 python migrate.py discover
 ```
 
-The command prompts for the old EX4300 reachable address and credentials when they are not supplied. On success it prints the derived ID, for example:
+The switch hostname is observed and becomes the migration ID.
 
-```text
-Discovered migration ID: sw1203
-Continue with: ./migrate sw1203
-```
-
-A short lab collection can be requested explicitly, for example:
+A short lab collection can be requested explicitly:
 
 ```bash
 ./migrate discover --count 1 --duration 60 --interval 60
 ```
 
-For production, normally omit `--duration` and `--interval` and let the site environment select the production collection policy automatically.
+For production, normally omit `--duration` and `--interval`. Current production defaults are:
 
-For several independent collections:
-
-```bash
-./migrate discover --count 3 --pause-minutes 5
+```text
+observation window: 1800 seconds (30 minutes)
+sample interval:    180 seconds (3 minutes)
+minimum samples:    10
 ```
 
-The first collection derives the migration ID. Every later collection in that same invocation asserts the derived ID so evidence cannot silently move to another switch.
+The 30-minute window gives intermittent endpoints time to transmit while the 3-minute cadence avoids redundant polling relative to normal MAC aging behavior.
 
-### 3. Resume the guided migration
-
-Once the ID exists, the normal command is simply:
+Repeat collections after the migration ID exists with:
 
 ```bash
-./migrate sw1203
+./migrate <migration-id> discover
+```
+
+## Guided migration
+
+Once discovery exists, the normal command is simply:
+
+```bash
+./migrate <migration-id>
 ```
 
 or inside PyEZ1:
 
 ```bash
-python migrate.py sw1203
+python migrate.py <migration-id>
 ```
 
-The launcher prints current state, determines the next safe phase, and asks whether to run it.
-
-The guided workflow now groups related internal steps so the operator does not need a new shell invocation for every implementation phase. For example, when the next action is `build`, a successful migration-intent approval automatically continues into replacement prestaging in the same invocation while preserving separate approval scopes.
-
-Typical progression is conceptually:
+Typical progression:
 
 ```text
 discover
@@ -189,246 +216,74 @@ discover
   -> complete
 ```
 
-The two pre-cutover approvals remain separate even though they can occur in one process:
+The guided workflow groups related internal phases but retains meaningful approval boundaries. During `build + prestage`, for example:
 
 ```text
-Migration intent approval
-  -> package/render generation
-  -> replacement identity binding
-  -> exact EX4400 candidate-diff approval
+approve exact migration intent
+  -> create package/render
+  -> bind replacement EX4400 identity/OOB fxp0 address
+  -> approve exact EX4400 candidate diff
+  -> commit-confirm + validate replacement EX4400
+  -> stage/approve old EX Temp-Management access-port candidate
 ```
 
-The first approval records **what migration is intended**. The second authorizes **the exact candidate configuration shown for the device write**.
+The replacement OOB address **must include an explicit CIDR prefix**. A bare address such as `10.255.3.16` is rejected rather than silently becoming `/32`.
 
-### 4. Repeat discovery after the migration ID exists
+Status now reports the pre-cutover old-switch step as:
 
-Additional old-switch collections use the migration ID first:
-
-```bash
-./migrate sw1203 discover
+```text
+Old-EX temp mgmt:       PENDING|COMPLETE
 ```
 
-Example lab collection:
+rather than describing it as old-switch recovery.
 
-```bash
-./migrate sw1203 discover --count 1 --duration 60 --interval 60
-```
+## Physical cutover
 
-The previously observed source connection address is reused unless `--address` is supplied, and every collection verifies that the hostname still derives to `sw1203`.
+The `cutover` checkpoint is an operator acknowledgement only; it performs no device writes.
 
-### 5. Endpoint activation and accepted exceptions
+By that point the replacement EX4400 has been managed pre-cutover through `fxp0` and the old EX temporary-management port. The cutover acknowledgement confirms that endpoint/uplink cabling has moved and that the temporary `fxp0` management path is no longer required.
 
-Endpoint activation is evidence-driven and resumable. An endpoint is configured only when approved historical MAC evidence maps unambiguously to a current EX4400 edge port.
+After cutover, the `activate` phase discovers the live QFX attachment, stages only the required per-migration QFX VLANs, and activates endpoints using approved historical MAC evidence.
 
-If some endpoints are still unresolved, activation may be rerun later:
+## Endpoint activation and exceptions
 
-```bash
-./migrate sw1203 activate
-```
+Endpoint activation is evidence-driven. An endpoint receives a data VLAN only when approved historical MAC evidence maps unambiguously to a current EX4400 edge port.
 
-When unresolved endpoints remain, the operator may explicitly accept them as migration exceptions so the overall migration can continue. An accepted exception:
+If unresolved endpoints remain, the operator may accept them as migration exceptions. An accepted exception:
 
-- does **not** mark the endpoint migrated;
-- does **not** authorize a VLAN assignment;
+- does not mark the endpoint migrated;
+- does not authorize a VLAN assignment;
 - requires an operator reason;
-- is stored as an immutable artifact bound to the current approved plan and correlation evidence;
-- remains eligible for later reconciliation.
+- is stored as immutable, digest-bound evidence;
+- can be reconciled later by rerunning `activate`.
 
-Status may therefore show:
+Example status:
 
 ```text
 Endpoint activation: 7/8 + 1 ACCEPTED_EXCEPTION
 ```
 
-Even after validation/finalization, the operator may run:
+## Lower-level per-migration commands
+
+These remain available for explicit resume/troubleshooting:
 
 ```bash
-./migrate sw1203 activate
+./migrate <migration-id> status
+./migrate <migration-id> discover
+./migrate <migration-id> analyze
+./migrate <migration-id> build
+./migrate <migration-id> prestage
+./migrate <migration-id> cutover-ready
+./migrate <migration-id> cutover
+./migrate <migration-id> activate
+./migrate <migration-id> validate
+./migrate <migration-id> finalize
+./migrate <migration-id> mac <mac-address>
 ```
 
-again. If the missing MAC later appears and can be correlated safely, the endpoint is configured through a normal committed endpoint transaction and the active exception is automatically retired. The original exception remains immutable history.
+The normal guided path remains `./migrate <migration-id>`.
 
-## CLI reference
-
-### Normal operator commands
-
-```bash
-./migrate site-prep
-./migrate discover [address] [options]
-./migrate <migration-id>
-```
-
-Inside PyEZ1:
-
-```bash
-python migrate.py site-prep
-python migrate.py discover [address] [options]
-python migrate.py <migration-id>
-```
-
-### Lower-level site commands
-
-These are retained for troubleshooting or resuming a partially completed site-preparation workflow:
-
-```bash
-./migrate site-init [options]
-./migrate site-discover [options]
-./migrate site-stage [options]
-./migrate site-status [options]
-```
-
-### Lower-level per-migration commands
-
-These remain available for troubleshooting, explicit resume, and automation:
-
-```bash
-./migrate <migration-id> status [options]
-./migrate <migration-id> discover [options]
-./migrate <migration-id> analyze [options]
-./migrate <migration-id> build [options]
-./migrate <migration-id> prestage [options]
-./migrate <migration-id> cutover-ready [options]
-./migrate <migration-id> cutover [options]
-./migrate <migration-id> activate [options]
-./migrate <migration-id> validate [options]
-./migrate <migration-id> finalize [options]
-./migrate <migration-id> mac <mac-address> [options]
-```
-
-A migration command cannot be used as the first positional token. For example, `./migrate status` is rejected; use `./migrate sw1203 status`.
-
-### `site-prep`
-
-```text
-Runs site-init -> site-discover -> site-stage as one operator workflow.
-Prompts once for QFX credentials and reuses them across discovery/staging.
-Preserves the existing approval boundaries.
-```
-
-Typical use:
-
-```bash
-./migrate site-prep
-```
-
-### `site-init`
-
-```text
---settings PATH
---site-id ID
---environment {lab,production}
---qfx-a ADDRESS
---qfx-b ADDRESS
---management-vlan-id VLAN_ID
---management-vlan-name NAME
---recovery-vlan-id VLAN_ID
---recovery-vlan-name NAME
---prestage-vlan-id VLAN_ID
---prestage-vlan-name NAME
---exclude INTERFACE              repeatable
-```
-
-Interactive defaults include site ID `campus`, environment `production`, management VLAN 163, temporary management VLAN `Temp-Management` / 3999, and EX-only prestage/default VLAN `TEMP-ACCESS` / 3998.
-
-The operator is also asked whether the retired EX4300 remains powered/reachable after cutover for recovery. When recovery is not required, the runtime policy records that decision and the guided workflow skips old-switch recovery staging.
-
-### `site-discover`
-
-```text
---settings PATH
---username USER
---password-env ENV_VAR
---port PORT                     default 830
---no-host-key-check             lab only
-```
-
-Read-only discovery of the QFX identities and already-preprovisioned symmetric ET-to-AE migration attachments.
-
-### `site-stage`
-
-```text
---settings PATH
---username USER
---password-env ENV_VAR
---port PORT                     default 830
---confirm-minutes MINUTES       default 10; valid 1-60
---no-host-key-check             lab only
-```
-
-Validates the generated site baseline and may apply only the VLAN membership changes allowed by the site policy. It does not create or repair AE/LACP/ESI/trunk structure.
-
-### `site-status`
-
-```text
---settings PATH
-```
-
-### Initial `discover`
-
-```text
-[address]                       optional; otherwise prompted
---settings PATH
---username USER
---password-env ENV_VAR
---duration SECONDS
---interval SECONDS
---port PORT                     default 830
---count COUNT                   default 1
---pause-minutes MINUTES         default 0
---no-host-key-check
-```
-
-The launcher prompts once for discovery credentials when they are not supplied and exposes the password to child collections only through an ephemeral environment variable for that launcher invocation.
-
-### `<migration-id>`
-
-No extra arguments. Prints current status, chooses the next action, and asks whether to run it.
-
-```bash
-./migrate sw1203
-```
-
-The guided resume may chain related internal phases in one invocation when the previous phase completes successfully. Explicit phase commands remain available when the operator wants to stop/resume at a specific boundary.
-
-### `status`
-
-```text
---settings PATH
-```
-
-### Repeat `discover`
-
-```text
---settings PATH
---address ADDRESS
---duration SECONDS
---interval SECONDS
---username USER
---password-env ENV_VAR
---port PORT                     default 830
---count COUNT                   default 1
---pause-minutes MINUTES         default 0
---no-host-key-check
-```
-
-### `analyze`
-
-```text
---settings PATH
---policy PATH
---non-interactive
-```
-
-Runs the offline composite analyzer over all eligible discovery collections for the migration. Interactive mode handles evidence approval and finding disposition.
-
-### `build`
-
-```text
---settings PATH
---non-interactive
-```
-
-Builds and approves immutable migration intent from the accepted analysis. In the normal guided workflow, successful build approval automatically continues into `prestage` in the same invocation.
+## Useful options
 
 ### `prestage`
 
@@ -441,11 +296,7 @@ Builds and approves immutable migration intent from the accepted analysis. In th
 --no-host-key-check
 ```
 
-This grouped phase resumes only the incomplete pre-cutover steps: package creation, render, replacement identity, EX4400 pre-stage, and old-EX recovery staging when required.
-
-The replacement EX4400 OOB address **must include an explicit CIDR prefix**. A bare address such as `10.255.3.16` is rejected rather than silently treated as `/32`.
-
-Credentials are reused for the grouped device operations.
+`--old-transport-address` is a lab-only override for reaching the original EX4300 while staging its Temp-Management access port.
 
 ### `cutover-ready`
 
@@ -453,138 +304,73 @@ Credentials are reused for the grouped device operations.
 --settings PATH
 --username USER
 --password-env ENV_VAR
---port PORT                     default 830
---down-seconds SECONDS          default 5
---relearn-seconds SECONDS       default 30
---observation-seconds SECONDS   default 120
---interval-seconds SECONDS      default 30
+--port PORT
+--down-seconds SECONDS
+--relearn-seconds SECONDS
+--observation-seconds SECONDS
+--interval-seconds SECONDS
 --plan-only
---no-host-key-check             lab only
+--no-host-key-check
 ```
 
-Used only when approved analysis contains eligible silent-port candidates. State-only evidence never authorizes a VLAN assignment.
-
-### `cutover`
-
-```text
---settings PATH
-```
-
-Records the operator's immutable physical-cutover acknowledgement. It performs no device writes.
+Used only when approved analysis contains eligible silent-port candidates.
 
 ### `activate`
 
 ```text
 --settings PATH
---environment PATH              default config/environment.lab.json
+--environment PATH
 --username USER
 --password-env ENV_VAR
 --no-host-key-check
 ```
 
-Grouped post-cutover phase. As needed it performs:
+Grouped post-cutover phase:
 
 ```text
-QFX attachment discovery (read-only)
+QFX attachment discovery
 QFX per-migration VLAN staging
 EX4400 endpoint correlation/activation
 ```
 
-One shared credential prompt is reused across QFX and EX4400 operations for the phase. The password is retained only in an ephemeral environment variable for the invocation.
-
-The command remains valid after accepted endpoint exceptions and after the main workflow reaches completion, allowing late endpoint migrations to be reconciled.
-
-### `validate`
-
-```text
---settings PATH
---environment PATH              default config/environment.lab.json
-```
-
-Runs the post-cutover port-state comparison and facilities/cabling report.
-
-### `finalize`
-
-Arguments are passed through to the final cleanup command:
-
-```text
---settings PATH
---environment PATH              default config/environment.lab.json
---site-policy PATH
---identity-id ID
---package-id ID
---qfx-transaction-id ID
---username USER                 shared EX/QFX username
---password-env ENV_VAR          shared EX/QFX password variable
---ex-username USER
---ex-password-env ENV_VAR
---qfx-username USER
---qfx-password-env ENV_VAR
---port PORT                     default 830
---confirm-minutes MINUTES       default 10
---plan-only
---no-host-key-check             lab only
-```
-
-Finalization removes temporary migration-only configuration according to the active recovery policy, hardens proven-unused edge ports, and removes only proven-unused legacy VLANs. Historical migration evidence and accepted endpoint exceptions remain available so late `activate` reconciliation can still occur.
-
 ### `mac`
 
-```text
-<mac-address>
---settings PATH
-```
-
-Looks up a MAC in the approved historical EX4300 evidence and reports the old interface, description, configured data VLAN, observed VLAN evidence, and supporting discovery snapshots.
-
-Example:
-
 ```bash
-./migrate sw1203 mac 02:54:af:72:dc:1c
+./migrate <migration-id> mac <mac-address>
 ```
 
-## Useful help commands
-
-Every routed CLI is backed by `argparse`, so command-specific help can be requested with `-h`/`--help`, for example:
-
-```bash
-./migrate site-prep --help
-./migrate site-init --help
-./migrate discover --help
-./migrate sw1203 discover --help
-./migrate sw1203 activate --help
-./migrate sw1203 finalize --help
-```
+Reports the old interface, description, configured data VLAN, observed VLAN evidence, and supporting discovery snapshots for a MAC in approved historical evidence.
 
 ## Safety model
 
-The project intentionally fails closed around device identity, immutable artifact integrity, candidate state, QFX symmetry, and ambiguous endpoint evidence.
+The project intentionally fails closed around device identity, immutable artifact integrity, QFX symmetry, candidate state, and ambiguous endpoint evidence.
 
 Important rules include:
 
 - first discovery derives the migration ID from the old-switch hostname;
-- later discovery asserts the known migration ID;
-- QFX ET-to-AE/LACP/ESI/trunk infrastructure is preprovisioned externally;
-- QFX attachment is discovered after physical cutover through live LLDP/LACP evidence;
-- per-migration data and voice VLANs are added only to the discovered AE;
-- endpoint VLAN assignment requires unambiguous approved historical MAC evidence;
-- state-only/same-position evidence is advisory and never authorizes VLAN assignment;
-- accepted endpoint exceptions allow workflow continuation but never mark an endpoint migrated;
+- later discovery asserts that migration ID;
+- QFX ET/AE/LACP/ESI infrastructure is externally preprovisioned;
+- QFX site baseline includes management + Temp-Management, but not endpoint data/voice VLANs;
+- Temp-Management is staged on a proven-unused **old EX** access port, never on a replacement EX switching port;
+- old EX `vme.0` is not rewritten for temporary management;
+- replacement EX `fxp0` is its pre-cutover management path;
+- replacement in-band management is used after cutover;
+- endpoint VLAN assignment requires unambiguous approved MAC evidence;
 - write-capable phases show the exact candidate diff and require approval;
-- device writes use commit-confirmed plus post-change validation before final confirmation;
-- immutable history is retained rather than edited in place.
+- device writes use commit-confirmed and post-change validation before final confirmation;
+- historical artifacts are retained rather than edited in place.
 
 ## Development
 
 The project supports Python 3.8 and 3.12 in CI.
 
-Tests:
+Run tests with:
 
 ```bash
 pytest -q
 ```
 
-In the Juniper PyEZ container environment used by the lab:
+In the Juniper PyEZ container environment:
 
 ```bash
 pyez -c '
