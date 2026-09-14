@@ -2,7 +2,7 @@
 
 Evidence-driven automation for staged Juniper EX4300-to-EX4400 migrations.
 
-The project is organized around a small number of **operator-facing workflow commands**. Internal phase commands remain available for troubleshooting/resume, but the normal operator should not need to remember them.
+The project is organized around a small number of **operator-facing workflow commands**. Lower-level phase commands remain available for troubleshooting/resume, but the normal operator should not need to remember them.
 
 ## Quick start
 
@@ -41,15 +41,16 @@ Site-level QFX discovery/inventory artifacts are stored under:
 snapshots/site/<site-id>/
 ```
 
-## Management and temporary VLAN model
+## VLAN and management model
 
-Three VLAN roles are intentionally separate:
+The migration workflow manages two VLAN roles directly:
 
 ```text
-3998  TEMP-ACCESS      replacement EX4400 holding/default access VLAN
-3999  Temp-Management  pre-cutover old-EX transit for replacement fxp0
-163   v163             permanent replacement EX4400 in-band management
+3998  TEMP-ACCESS   replacement EX4400 holding/default access VLAN
+163   v163/MGMT     permanent replacement EX4400 in-band management
 ```
+
+A separate temporary-management network may be used to reach the replacement EX4400 `fxp0` before cutover, but that path is an **external prerequisite** and is outside this project's configuration scope.
 
 ### VLAN 3998 — `TEMP-ACCESS`
 
@@ -57,51 +58,38 @@ Three VLAN roles are intentionally separate:
 
 It is **not** used for switch management and is not part of the QFX pre-cutover baseline.
 
-### VLAN 3999 — `Temp-Management`
+### Temporary `fxp0` management — external prerequisite
 
-`Temp-Management` provides temporary management of the replacement EX4400 **before physical cutover**.
-
-The intended path is:
+In production, temporary pre-cutover reachability may be provided through the legacy network, for example:
 
 ```text
 replacement EX4400 fxp0
         |
-        | Ethernet cable
+legacy EX4300 access port
         |
-proven-unused old EX4300 access port
+legacy EX4300 uplink
         |
-        | VLAN 3999 Temp-Management
-        |
-old EX4300 ae0/uplink
-        |
-QFX migration AE carrying VLAN 3999
-        |
-management network
+EX9200 legacy network
 ```
 
-The automation selects a proven-unused old EX4300 access port from the approved migration plan, preferring the highest-numbered eligible port. It fails closed if no safe unused port is available.
-
-The old EX temporary-management prestage may add:
+The temporary network may use VLAN 3999 / `Temp-Management`, but **this project does not create, stage, validate, modify, or remove that VLAN on any device**. In particular, it does not manage VLAN 3999 on:
 
 ```text
-set vlans Temp-Management vlan-id 3999
-set interfaces <unused-old-port> unit 0 family ethernet-switching interface-mode access
-set interfaces <unused-old-port> unit 0 family ethernet-switching vlan members Temp-Management
+EX4300
+EX9200
+EX4400
+QFX5700
 ```
 
-If the old EX `ae0` trunk uses explicit VLAN members, the automation also adds `Temp-Management` to `ae0`. If `ae0` already uses `vlan members all`, no redundant member statement is needed.
+Before `prestage`, the operator is responsible for ensuring that the replacement EX4400 `fxp0` address is reachable. The migration workflow validates and binds the supplied replacement identity/address; it does not build the legacy transit path that provides that reachability.
 
-The temporary-management step **does not rewrite old-switch `vme.0`**, does not move the replacement OOB address onto the old EX, and does not change the old EX management identity.
-
-VLAN 3999 remains part of the QFX pre-cutover site baseline because the still-running old EX must carry it upstream while the new EX is being managed through `fxp0`.
-
-The replacement EX4400 switching configuration itself does **not** contain VLAN 3999 and does not reserve one of its edge ports for Temp-Management. `fxp0` is physically connected to the old EX access port instead.
+The QFX5700s are not part of the temporary `fxp0` path. A migration-facing QFX AE must therefore contain no temporary-management VLAN membership.
 
 ### VLAN 163 — permanent in-band management
 
-After physical cutover, the replacement EX4400 uses its normal in-band management interface/VLAN (for example `irb.163` / `v163`) through `ae0` to the QFX pair.
+The QFX pre-cutover baseline contains only the permanent management VLAN. Before site staging, a preprovisioned migration AE may be empty or already contain the management VLAN. After site staging, the baseline must be management-only.
 
-The temporary `fxp0 -> old EX -> VLAN 3999` path is then no longer required, and the retired EX4300 can be removed/powered down when the site policy says post-cutover old-switch recovery is not required.
+After physical cutover, the replacement EX4400 uses its normal in-band management interface/VLAN (for example `irb.163` / `v163`) through its new uplinks to the QFX pair.
 
 ## Site preparation
 
@@ -127,6 +115,8 @@ site-init
 
 in one process and prompts for QFX credentials once. Approval boundaries remain intact.
 
+Site initialization asks for the site/environment, QFX management addresses, permanent management VLAN, EX-only TEMP-ACCESS VLAN, and any reserved QFX ET interfaces. It does **not** ask for a temporary-management VLAN.
+
 The QFX migration-facing ET interfaces and AEs must already be preprovisioned by the external QFX provisioning process. This migration project does **not** create or repair:
 
 ```text
@@ -137,7 +127,7 @@ ESI all-active
 ethernet-switching trunk structure
 ```
 
-The QFX pre-cutover baseline requires the site management VLAN and `Temp-Management`/3999 on approved migration AEs. Data and voice VLANs are added later only to the actual AE discovered for a migration.
+`site-stage` may add only missing permanent management-VLAN membership to the approved migration AEs. It does not stage temporary management, data VLANs, or voice VLANs.
 
 The lower-level site commands remain available for troubleshooting/resume:
 
@@ -180,8 +170,6 @@ sample interval:    180 seconds (3 minutes)
 minimum samples:    10
 ```
 
-The 30-minute window gives intermittent endpoints time to transmit while the 3-minute cadence avoids redundant polling relative to normal MAC aging behavior.
-
 Repeat collections after the migration ID exists with:
 
 ```bash
@@ -216,7 +204,7 @@ discover
   -> complete
 ```
 
-The guided workflow groups related internal phases but retains meaningful approval boundaries. During `build + prestage`, for example:
+The guided workflow groups related internal phases but retains meaningful approval boundaries. During `build + prestage`:
 
 ```text
 approve exact migration intent
@@ -224,26 +212,19 @@ approve exact migration intent
   -> bind replacement EX4400 identity/OOB fxp0 address
   -> approve exact EX4400 candidate diff
   -> commit-confirm + validate replacement EX4400
-  -> stage/approve old EX Temp-Management access-port candidate
 ```
 
 The replacement OOB address **must include an explicit CIDR prefix**. A bare address such as `10.255.3.16` is rejected rather than silently becoming `/32`.
 
-Status now reports the pre-cutover old-switch step as:
-
-```text
-Old-EX temp mgmt:       PENDING|COMPLETE
-```
-
-rather than describing it as old-switch recovery.
+Temporary `fxp0` reachability must already exist before prestage; no EX4300/EX9200 temporary-management provisioning is performed by this workflow.
 
 ## Physical cutover
 
 The `cutover` checkpoint is an operator acknowledgement only; it performs no device writes.
 
-By that point the replacement EX4400 has been managed pre-cutover through `fxp0` and the old EX temporary-management port. The cutover acknowledgement confirms that endpoint/uplink cabling has moved and that the temporary `fxp0` management path is no longer required.
+In production, the legacy EX4300 uplinks terminate on EX9200s before cutover. During cutover those uplink fibers are moved to the replacement EX4400/QFX5700 topology. Once the replacement uplinks are active, permanent in-band management is used and the external temporary `fxp0` path is no longer required.
 
-After cutover, the `activate` phase discovers the live QFX attachment, stages only the required per-migration QFX VLANs, and activates endpoints using approved historical MAC evidence.
+After cutover, `activate` discovers the live QFX attachment, stages only the required per-migration QFX data/voice VLANs, and activates endpoints using approved historical MAC evidence.
 
 ## Endpoint activation and exceptions
 
@@ -290,13 +271,10 @@ The normal guided path remains `./migrate <migration-id>`.
 ```text
 --settings PATH
 --oob-address ADDRESS/PREFIX
---old-transport-address ADDRESS    lab only
 --username USER
 --password-env ENV_VAR
 --no-host-key-check
 ```
-
-`--old-transport-address` is a lab-only override for reaching the original EX4300 while staging its Temp-Management access port.
 
 ### `cutover-ready`
 
@@ -350,10 +328,11 @@ Important rules include:
 - first discovery derives the migration ID from the old-switch hostname;
 - later discovery asserts that migration ID;
 - QFX ET/AE/LACP/ESI infrastructure is externally preprovisioned;
-- QFX site baseline includes management + Temp-Management, but not endpoint data/voice VLANs;
-- Temp-Management is staged on a proven-unused **old EX** access port, never on a replacement EX switching port;
-- old EX `vme.0` is not rewritten for temporary management;
-- replacement EX `fxp0` is its pre-cutover management path;
+- QFX site baseline is permanent management only;
+- TEMP-ACCESS/3998 remains EX4400-only;
+- temporary `fxp0` management is an external prerequisite and has no project-managed device writes;
+- QFX migration AEs must not contain a temporary-management VLAN;
+- replacement EX `fxp0` is the pre-cutover management endpoint;
 - replacement in-band management is used after cutover;
 - endpoint VLAN assignment requires unambiguous approved MAC evidence;
 - write-capable phases show the exact candidate diff and require approval;
