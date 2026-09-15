@@ -1,5 +1,0 @@
-pyez -m ex_migration_discovery.cli collect 10.100.163.10 --no-host-key-check 
-
-pyez -m ex_migration_discovery.cli collect 10.255.3.16 --duration 120 --interval 60 --no-host-key-check 
-
-pyez -m ex_migration_analyzer.cli run dh4301 --policy policies/lab-smoke-v1.json
