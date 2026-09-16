@@ -23,6 +23,11 @@ from .endpoint_stage import (
     write_correlation,
 )
 from .inband import choose_qfx_transaction, planned_management_ip
+from .postcutover_observation import (
+    collect_live_postcutover_observation,
+    load_postcutover_observation,
+    write_postcutover_observation,
+)
 from .prestage import choose_package_compat
 
 
@@ -42,6 +47,13 @@ def _parser():
     parser.add_argument("--identity-id")
     parser.add_argument("--package-id")
     parser.add_argument("--qfx-transaction-id")
+    parser.add_argument(
+        "--observation-id",
+        help=(
+            "reuse one integrity-valid post-cutover EX4400 observation instead of collecting "
+            "fresh MAC/interface evidence; plan, identity, and package bindings must match"
+        ),
+    )
     parser.add_argument("--username")
     parser.add_argument("--password-env")
     parser.add_argument("--confirm-minutes", type=int, default=10)
@@ -226,6 +238,20 @@ def _validate_loaded_candidate(dev, activated):
     return rows
 
 
+def _print_observation(observation, directory, action):
+    stats = observation["statistics"]
+    print("\nPost-cutover EX4400 observation")
+    print("  Observation: %s (%s)" % (observation["observation_id"], action))
+    print("  Source: %s" % observation["source"]["kind"])
+    print("  Physical interfaces observed: %d" % stats["physical_interfaces_observed"])
+    print("  Up/up physical interfaces: %d" % stats["physical_interfaces_up"])
+    print("  Dynamic MAC observations: %d" % stats["dynamic_mac_observations"])
+    print("  Unique dynamic MACs: %d" % stats["unique_dynamic_macs"])
+    print("  Dynamic-MAC interfaces: %d" % stats["dynamic_mac_interfaces"])
+    print("  Integrity: PASS")
+    print("  Record: %s" % (directory / "observation.json"))
+
+
 def _print_correlation(value):
     correlation = value["correlation"]
     print("\nPost-cutover EX4400 endpoint correlation")
@@ -329,6 +355,9 @@ def run(argv):
     if package.get("inputs", {}).get("plan_digest") != selected_plan["plan_digest"]:
         raise base.ProvisioningError("selected pre-stage package is bound to a different approved migration plan")
 
+    identity_digest = sha256_file(selected_identity["identity_path"])
+    package_digest = sha256_file(selected_package["package_path"])
+
     qfx_selected = choose_qfx_transaction(migration_root, args.qfx_transaction_id)
     qfx_transaction = qfx_selected["transaction"]
     qfx_plan = qfx_plan_for_transaction(
@@ -412,8 +441,41 @@ def run(argv):
 
         committed_config = _interfaces_config_set(dev, "committed")
         completed = _reconcile_completed_state(committed_config, historical_completed)
-        mac_text = dev.cli("show ethernet-switching table extensive", warning=False) or ""
-        terse_text = dev.cli("show interfaces terse", warning=False) or ""
+
+        if args.observation_id:
+            loaded = load_postcutover_observation(
+                migration_root,
+                args.observation_id,
+                approved_plan_digest=selected_plan["plan_digest"],
+                identity_digest=identity_digest,
+                package_digest=package_digest,
+            )
+            observation = loaded["observation"]
+            observation_dir = loaded["directory"]
+            observation_action = "REUSED"
+            mac_text = loaded["mac_table_text"]
+            terse_text = loaded["terse_text"]
+        else:
+            observation, mac_text, terse_text = collect_live_postcutover_observation(
+                dev,
+                args.migration_id,
+                selected_plan["plan"],
+                selected_plan["plan_digest"],
+                selected_identity["identity"],
+                identity_digest,
+                package,
+                package_digest,
+                access,
+                current_identity,
+            )
+            observation_dir, observation, observation_action = write_postcutover_observation(
+                migration_root,
+                observation,
+                mac_text,
+                terse_text,
+            )
+
+        _print_observation(observation, observation_dir, observation_action)
         correlation = correlate_endpoint_intent(
             selected_plan["plan"],
             mac_text,
@@ -421,7 +483,7 @@ def run(argv):
             management_vlan_id,
             voice_vlan_id,
             recovery_vlan_id,
-            observed_at=utc_now(),
+            observed_at=observation["completed_at"],
             prestage_access_vlan_id=prestage_access_vlan_id,
             uplink_interfaces=uplink_interfaces,
             completed=completed["by_old"],
@@ -439,7 +501,7 @@ def run(argv):
             selected_plan["plan"],
             selected_plan["plan_digest"],
             selected_identity["identity"],
-            sha256_file(selected_identity["identity_path"]),
+            identity_digest,
             qfx_transaction,
             sha256_file(qfx_selected["transaction_path"]),
             qfx_plan["plan_digest"],
@@ -458,6 +520,7 @@ def run(argv):
         )
         _print_correlation(value)
         print("\nEndpoint correlation: %s (%s)" % (value["correlation_id"], action))
+        print("  Observation evidence: %s" % observation["observation_id"])
         print("  Record: %s" % (correlation_dir / "correlation.json"))
 
         if not correlation["activated"]:
