@@ -22,6 +22,7 @@ _PHYSICAL = re.compile(
     r"(?P<admin>up|down)\s+(?P<oper>up|down)(?:\s|$)"
 )
 _HEX_64 = re.compile(r"^[0-9a-f]{64}$")
+_SSH_SHA256 = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
 
 
 def _require(condition, message):
@@ -153,8 +154,8 @@ def validate_postcutover_observation(
     _require(str(device.get("hostname") or ""), "post-cutover observation hostname is required")
     _require(str(device.get("model") or ""), "post-cutover observation model is required")
     _require(
-        _HEX_64.fullmatch(str(device.get("ssh_host_key_sha256") or "")) is not None,
-        "post-cutover observation SSH host-key digest is invalid",
+        _SSH_SHA256.fullmatch(str(device.get("ssh_host_key_sha256") or "")) is not None,
+        "post-cutover observation SSH host-key fingerprint is invalid",
     )
 
     artifacts = _artifact_digests(value)
