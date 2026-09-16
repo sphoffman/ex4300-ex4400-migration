@@ -230,6 +230,54 @@ After cutover, `activate` discovers the live QFX attachment, stages only the req
 
 Endpoint activation is evidence-driven. An endpoint receives a data VLAN only when approved historical MAC evidence maps unambiguously to a current EX4400 edge port.
 
+### Preview and correct client placement before endpoint activation
+
+After the physical cable move and after the migration-specific QFX VLAN transaction has completed, an operator may preview the current EX4400 client mapping without writing endpoint configuration.
+
+From the server/host checkout:
+
+```bash
+PYTHONPATH=src python -m ex_migration_provisioner.endpoint_stage_cli \
+    <migration-id> \
+    --plan-only
+```
+
+Inside PyEZ1, the same command can be run from the repository root:
+
+```bash
+PYTHONPATH=src python -m ex_migration_provisioner.endpoint_stage_cli \
+    <migration-id> \
+    --plan-only
+```
+
+With no `--observation-id`, every `--plan-only` invocation collects a **fresh live post-cutover EX4400 observation** and recomputes endpoint correlation from the currently learned MAC table. The observation and correlation are retained as immutable audit evidence, but no endpoint candidate is loaded, no endpoint transaction is committed, and no endpoint is marked migrated.
+
+This supports a migration-night inspect/correct/recheck loop:
+
+```text
+move endpoint cables
+  -> run endpoint_stage_cli --plan-only
+  -> inspect old-interface -> new-interface MAC correlation
+  -> physically correct any misplaced cables
+  -> generate traffic from moved/quiet endpoints so the EX4400 relearns them
+  -> rerun endpoint_stage_cli --plan-only
+  -> repeat until mappings are acceptable
+  -> run normal endpoint activation
+```
+
+For example, if a preview reports:
+
+```text
+ge-0/0/2 -> ge-0/0/3
+ge-0/0/3 -> ge-0/0/2
+```
+
+those cables can be corrected and `--plan-only` run again. The second run uses newly collected live MAC/interface evidence; it does not overwrite or silently reuse the first observation.
+
+Do **not** pass an older `--observation-id` when the goal is to verify a physical cable correction. Supplying an observation ID intentionally reuses that immutable observation and therefore will not discover the new live mapping.
+
+After the live mapping is satisfactory, proceed with normal activation so the endpoint-specific VLAN/description configuration is generated from the current correlation and committed through the normal approval and commit-confirmed safety path.
+
 If unresolved endpoints remain, the operator may accept them as migration exceptions. An accepted exception:
 
 - does not mark the endpoint migrated;
@@ -310,6 +358,8 @@ QFX attachment discovery
 QFX per-migration VLAN staging
 EX4400 endpoint correlation/activation
 ```
+
+For a no-write preview of endpoint placement after QFX staging, use the documented `endpoint_stage_cli --plan-only` workflow above. The grouped `activate` wrapper does not currently expose that lower-level flag.
 
 ### `mac`
 
