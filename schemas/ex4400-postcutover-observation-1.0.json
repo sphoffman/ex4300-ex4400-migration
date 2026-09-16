@@ -66,7 +66,7 @@
             }
           }
         },
-        "ssh_host_key_sha256": {"$ref": "#/$defs/sha256"}
+        "ssh_host_key_sha256": {"$ref": "#/$defs/ssh_sha256_fingerprint"}
       }
     },
     "access": {
@@ -180,6 +180,10 @@
     "sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
+    },
+    "ssh_sha256_fingerprint": {
+      "type": "string",
+      "pattern": "^SHA256:[A-Za-z0-9+/]{43}$"
     },
     "binding": {
       "type": "object",
