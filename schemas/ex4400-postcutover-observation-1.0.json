@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/schemas/ex4400-postcutover-observation-1.0.json",
+  "title": "EX4400 Post-Cutover Observation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "observation_id",
+    "migration_id",
+    "started_at",
+    "completed_at",
+    "source",
+    "inputs",
+    "device",
+    "access",
+    "interfaces",
+    "mac_observations",
+    "raw_artifacts",
+    "statistics",
+    "validation"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "observation_id": {"type": "string", "minLength": 1},
+    "migration_id": {"type": "string", "minLength": 1},
+    "started_at": {"type": "string", "minLength": 1},
+    "completed_at": {"type": "string", "minLength": 1},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["LIVE", "SIMULATED"]}
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approved_plan", "bootstrap_identity", "prestage_package"],
+      "properties": {
+        "approved_plan": {"$ref": "#/$defs/binding"},
+        "bootstrap_identity": {"$ref": "#/$defs/binding"},
+        "prestage_package": {"$ref": "#/$defs/binding"}
+      }
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hostname", "model", "serial_number", "members", "ssh_host_key_sha256"],
+      "properties": {
+        "hostname": {"type": "string", "minLength": 1},
+        "model": {"type": "string", "minLength": 1},
+        "serial_number": {"type": "string"},
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["member_id", "status", "serial_number", "model"],
+            "properties": {
+              "member_id": {"type": "integer", "minimum": 0},
+              "status": {"type": ["string", "null"]},
+              "serial_number": {"type": "string"},
+              "model": {"type": "string"}
+            }
+          }
+        },
+        "ssh_host_key_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "access": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["environment", "mode", "logical_address", "transport_address", "port"],
+      "properties": {
+        "environment": {"type": ["string", "null"]},
+        "mode": {"type": ["string", "null"]},
+        "logical_address": {"type": ["string", "null"]},
+        "transport_address": {"type": ["string", "null"]},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+      }
+    },
+    "interfaces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["interface", "admin_status", "oper_status"],
+        "properties": {
+          "interface": {"type": "string", "minLength": 1},
+          "admin_status": {"enum": ["up", "down"]},
+          "oper_status": {"enum": ["up", "down"]}
+        }
+      }
+    },
+    "mac_observations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "observed_at",
+          "mac",
+          "routing_instance",
+          "vlan",
+          "reported_interface",
+          "physical_interface",
+          "unit",
+          "interface_class",
+          "mac_type"
+        ],
+        "properties": {
+          "observed_at": {"type": "string"},
+          "mac": {"type": "string", "minLength": 1},
+          "routing_instance": {"type": ["string", "null"]},
+          "vlan": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "vlan_id"],
+            "properties": {
+              "name": {"type": ["string", "null"]},
+              "vlan_id": {"type": ["integer", "null"]}
+            }
+          },
+          "reported_interface": {"type": ["string", "null"]},
+          "physical_interface": {"type": ["string", "null"]},
+          "unit": {"type": ["integer", "null"]},
+          "interface_class": {"type": ["string", "null"]},
+          "mac_type": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "raw_artifacts": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "sha256"],
+        "properties": {
+          "name": {"enum": ["mac-table.txt", "interfaces-terse.txt"]},
+          "sha256": {"$ref": "#/$defs/sha256"}
+        }
+      }
+    },
+    "statistics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "physical_interfaces_observed",
+        "physical_interfaces_up",
+        "dynamic_mac_observations",
+        "unique_dynamic_macs",
+        "dynamic_mac_interfaces"
+      ],
+      "properties": {
+        "physical_interfaces_observed": {"type": "integer", "minimum": 0},
+        "physical_interfaces_up": {"type": "integer", "minimum": 0},
+        "dynamic_mac_observations": {"type": "integer", "minimum": 0},
+        "unique_dynamic_macs": {"type": "integer", "minimum": 0},
+        "dynamic_mac_interfaces": {"type": "integer", "minimum": 0}
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result", "checks"],
+      "properties": {
+        "result": {"const": "PASS"},
+        "checks": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "digest"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "digest": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}
