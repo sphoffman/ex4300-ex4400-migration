@@ -338,6 +338,8 @@ def _activate(migration_id, extra):
     parser.add_argument("--environment", default="config/environment.lab.json")
     parser.add_argument("--username")
     parser.add_argument("--password-env")
+    parser.add_argument("--plan-only", action="store_true")
+    parser.add_argument("--observation-id")
     parser.add_argument("--no-host-key-check", action="store_true")
     args = parser.parse_args(extra)
     settings = _settings(args.settings)
@@ -345,6 +347,13 @@ def _activate(migration_id, extra):
     state = workflow_status(root)
     if state["physical_cutover"] == "PENDING":
         raise OperatorError("physical cutover has not been acknowledged")
+
+    if args.observation_id:
+        environment_profile = read_json(Path(args.environment))
+        if str(environment_profile.get("environment") or "") != "lab":
+            raise OperatorError(
+                "--observation-id is permitted through the operator activate workflow only in a lab environment"
+            )
 
     username, password_env, temporary_password_env = _prestage_credentials(args)
     credential_args = ["--username", username, "--password-env", password_env]
@@ -374,17 +383,19 @@ def _activate(migration_id, extra):
 
         state = workflow_status(root)
         if state["endpoints"] != "COMPLETE":
-            _run_module(
-                "ex_migration_provisioner.cli",
-                [
-                    "activate-endpoints",
-                    migration_id,
-                    "--settings",
-                    args.settings,
-                    "--environment",
-                    args.environment,
-                ] + credential_args,
-            )
+            values = [
+                "activate-endpoints",
+                migration_id,
+                "--settings",
+                args.settings,
+                "--environment",
+                args.environment,
+            ] + credential_args
+            if args.plan_only:
+                values.append("--plan-only")
+            if args.observation_id:
+                values += ["--observation-id", args.observation_id]
+            _run_module("ex_migration_provisioner.cli", values)
         return 0
     finally:
         if temporary_password_env:
