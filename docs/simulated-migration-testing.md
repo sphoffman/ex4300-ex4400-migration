@@ -13,6 +13,7 @@ old-switch discovery
   -> analysis
   -> migration-plan approval
   -> replacement-switch identity/prestage
+  -> physical-cutover workflow checkpoint
   -> QFX attachment discovery and VLAN staging
   -> simulated physical endpoint cable move
   -> normal endpoint correlation
@@ -32,6 +33,7 @@ In the initial all-vJunos rehearsal:
 | Analyzer/planner | Normal production code |
 | Replacement identity | Real connection to replacement vJunos-switch |
 | Replacement prestage | Real candidate, commit-check, commit-confirmed, validation, final confirmation |
+| Physical cutover checkpoint | Normal operator workflow acknowledgement used as a lab gate |
 | QFX attachment discovery | Real if lab QFX topology is present |
 | QFX VLAN staging | Real writes to the lab QFX pair |
 | Physical client move | **Simulated** |
@@ -78,11 +80,13 @@ raise SystemExit(pytest.main(["-q"]))
 '
 ```
 
-The known-good checkpoint for the simulator implementation was:
+The known-good checkpoint before the operator `activate --plan-only` wiring was:
 
 ```text
 254 passed
 ```
+
+New tests have since been added for operator preview/replay behavior, so the total will be higher after those changes are pulled.
 
 If this isolated PyEZ environment uses normal `python` rather than the `py` helper, use the equivalent local invocation for that environment.
 
@@ -180,46 +184,23 @@ eb48af4c2d2f7f30
 
 At this point the replacement switch is genuinely pre-staged. Do not generate the simulated post-cutover observation before prestage has passed.
 
-## Step 5 - Discover and stage the QFX attachment
+## Step 5 - Use the normal physical-cutover workflow checkpoint
 
-If the test topology includes the QFX pair, exercise the normal attachment and coordinated QFX VLAN transaction.
-
-Attachment discovery:
+For the lab rehearsal, continue through the normal operator workflow:
 
 ```bash
-PYTHONPATH=src python -m ex_migration_provisioner.cli \
-    discover-attachment <migration-id>
+python migrate.py <migration-id> cutover
 ```
 
-Then run the normal QFX staging command used by the current environment/workflow.
+The command performs no device writes. It records the normal physical-cutover acknowledgement required by the production state machine.
 
-A successful QFX stage should report:
+For this simulation, the acknowledgement is intentionally being used as a **lab workflow gate** so the rehearsal can continue through the same traditional operator path. No synthetic cutover state is currently required.
 
-```text
-Coordinated QFX VLAN transaction: PASS
-QFX commit-check: PASS on both
-Commit-confirmed validation: PASS on both
-Final confirmation: PASS on both
-EX4400 writes performed: no
-```
+Treat this acknowledgement as disposable lab evidence only. It must not be interpreted as proof that physical client cabling actually moved during the simulated rehearsal.
 
-Known-good first-rehearsal QFX transaction:
+## Step 6 - Generate the simulated post-cutover observation
 
-```text
-71f60d4ec40f6335
-```
-
-## Step 6 - Do not record a physical cutover acknowledgement in the simulation
-
-Do **not** run the normal physical-cutover acknowledgement just to move the state machine forward.
-
-The production prompt states that endpoint/uplink cabling has physically moved. That statement is not true in the simulated test, so the simulation should not create that audit record.
-
-Instead, create a synthetic post-cutover observation directly at the point where the real migration would have moved client cables.
-
-## Step 7 - Generate the simulated post-cutover observation
-
-Run:
+At the point where the real migration would have physically moved the endpoint cables, run:
 
 ```bash
 PYTHONPATH=src python -m ex_migration_provisioner.postcutover_simulator_cli \
@@ -290,16 +271,37 @@ interfaces-terse.txt
 integrity.json
 ```
 
-## Step 8 - Inspect the simulated endpoint mapping without writing
+## Step 7 - Discover and stage the QFX attachment
 
-Use the normal endpoint-correlation engine with the synthetic observation:
+The grouped `activate` workflow can perform QFX attachment discovery and coordinated QFX VLAN staging automatically if they are still pending. The first rehearsal exercised those stages separately and produced:
+
+```text
+Coordinated QFX VLAN transaction: PASS
+QFX commit-check: PASS on both
+Commit-confirmed validation: PASS on both
+Final confirmation: PASS on both
+EX4400 writes performed: no
+```
+
+Known-good first-rehearsal QFX transaction:
+
+```text
+71f60d4ec40f6335
+```
+
+For a repeat test, either stage QFX separately as before or allow the grouped `activate` command in the next step to satisfy the missing QFX prerequisites using the normal approval path.
+
+## Step 8 - Inspect the simulated endpoint mapping without endpoint writes
+
+Use the normal operator-facing activation workflow and replay the synthetic observation:
 
 ```bash
-PYTHONPATH=src python -m ex_migration_provisioner.endpoint_stage_cli \
-    <migration-id> \
-    --observation-id <observation-id> \
-    --plan-only
+python migrate.py <migration-id> activate \
+    --plan-only \
+    --observation-id <observation-id>
 ```
+
+`--observation-id` is accepted through the operator wrapper only with a lab environment profile.
 
 Expected result for a clean scenario:
 
@@ -314,19 +316,20 @@ QFX writes performed: no
 
 Verify that the four intentionally swapped old ports map to the four simulated destination ports, and that the remaining four endpoint intents stay at the same physical position.
 
-`--plan-only` still persists immutable observation/correlation evidence, but it does not create an endpoint transaction, does not commit configuration, and does not mark endpoint intents completed.
+`--plan-only` still persists immutable observation/correlation evidence, but it does not create an endpoint transaction, does not commit endpoint configuration, does not mark endpoint intents completed, and does not offer endpoint-exception acceptance.
+
+If QFX attachment/staging was still pending when this command started, those prerequisite phases may run first through their normal approval/commit-confirmed workflow. `--plan-only` applies specifically to the endpoint-activation portion.
 
 ## Step 9 - Apply the endpoint configuration to the replacement vJunos-switch
 
-After the plan-only correlation looks correct, run the same production endpoint activation without `--plan-only`:
+After the plan-only correlation looks correct, rerun the operator command without `--plan-only` while selecting the same synthetic observation:
 
 ```bash
-PYTHONPATH=src python -m ex_migration_provisioner.endpoint_stage_cli \
-    <migration-id> \
+python migrate.py <migration-id> activate \
     --observation-id <observation-id>
 ```
 
-This is a **real write** to the replacement vJunos-switch.
+This is a **real endpoint write** to the replacement vJunos-switch.
 
 Review the exact candidate diff. The expected destination interfaces must match the MAC-derived simulated placement, including the intentionally swapped interfaces.
 
@@ -345,7 +348,7 @@ Because the clients are synthetic rather than physically connected, the post-com
 
 ## Step 10 - Run post-cutover port-state comparison
 
-Reuse the same simulated observation so correlation and port-state analysis see the same synthetic physical state:
+The current grouped `validate` path still collects/uses its normal validation inputs. To force the exact same simulated observation into the port-state comparison during this rehearsal, use:
 
 ```bash
 PYTHONPATH=src python -m ex_migration_provisioner.port_state_cli \
@@ -367,22 +370,20 @@ This validates that facilities output is derived from the completed endpoint map
 
 The simulator is not required for this production workflow.
 
-During a real migration, the operator can take a fresh live observation without writing endpoint configuration:
+During a real migration, use the normal operator command with no observation ID:
 
 ```bash
-PYTHONPATH=src python -m ex_migration_provisioner.endpoint_stage_cli \
-    <migration-id> \
-    --plan-only
+python migrate.py <migration-id> activate --plan-only
 ```
 
 If the mapping shows misplaced client cables:
 
 1. correct the physical cabling;
 2. cause quiet endpoints to transmit/relearn if needed;
-3. run the same `--plan-only` command again;
+3. run the same `activate --plan-only` command again;
 4. because no `--observation-id` is supplied, a new live EX4400 observation is collected;
 5. repeat until the mapping is correct;
-6. run normal endpoint activation.
+6. run `python migrate.py <migration-id> activate` normally.
 
 Do not reuse an old `--observation-id` after recabling when the goal is to discover the new physical state. Reusing an observation ID intentionally replays the old immutable evidence.
 
@@ -417,31 +418,20 @@ Those require a later real EX4300/EX4400 hardware rehearsal or the first control
 
 ## Remaining simulator/workflow improvements
 
-The current simulator is sufficient to continue the present rehearsal, but several changes will make simulated testing safer and easier to repeat.
+The current simulator is sufficient to continue the present rehearsal. The operator wrapper now supports both `activate --plan-only` and lab-only `--observation-id`, and the lab rehearsal can use the normal physical-cutover checkpoint.
 
-### Required before relying on a fully guided simulated workflow
+### Recommended next improvements
 
-1. **Add an explicit lab-only simulated-cutover workflow state.**
-   The normal `cutover` acknowledgement asserts that physical cabling was moved. Simulation should have a separate audit artifact/state rather than asking an operator to make a false physical-cutover acknowledgement.
+1. **Expose simulated post-cutover generation through the central/operator CLI.**
+   `postcutover_simulator_cli` currently works as a standalone module. A cohesive lab command such as `simulate-postcutover` would make the rehearsal even easier to repeat.
 
-2. **Pass simulation evidence through the operator wrapper.**
-   The grouped `python migrate.py <migration-id> activate` path should eventually accept an observation selector for lab simulation instead of requiring direct invocation of `endpoint_stage_cli`.
-
-3. **Expose `activate --plan-only` in the operator wrapper.**
-   The low-level endpoint command already supports it. The normal migration-night operator interface should pass the option through so repeated discover/re-cable/re-discover is a first-class workflow.
-
-4. **Expose simulated post-cutover generation through the central/operator CLI.**
-   `postcutover_simulator_cli` currently works as a standalone module. A cohesive lab command such as `simulate-postcutover` should route through the normal CLI surface.
-
-### Strongly recommended before testing more hardware/topologies
-
-5. **Derive replacement client-port inventory instead of assuming 48 GE ports per member.**
+2. **Derive replacement client-port inventory instead of assuming 48 GE ports per member.**
    The initial simulator intentionally targets the current EX4400-48-port design. Future hardware/model testing should derive valid edge interfaces from approved device/model inventory rather than hardcoding `ge-<member>/0/0-47`.
 
-6. **Reuse the production recovery-interface fallback.**
+3. **Reuse the production recovery-interface fallback.**
    If a compatibility package leaves `recovery_interface` empty, the simulator should call the same production helper that derives the recovery port. Otherwise a future scenario could accidentally place a synthetic endpoint on the implicit recovery port.
 
-7. **Make simulated provenance explicit in final transaction/report output.**
+4. **Make simulated provenance explicit in final transaction/report output.**
    Configuration writes can be real while pre-activation forwarding evidence is simulated. Reports should clearly state both facts, for example:
 
    ```text
@@ -449,6 +439,9 @@ The current simulator is sufficient to continue the present rehearsal, but sever
    PRE-ACTIVATION MAC/FORWARDING EVIDENCE: SIMULATED
    POST-COMMIT MAC EVIDENCE: LIVE
    ```
+
+5. **Optional future lab-only cutover marker.**
+   A separate simulated-cutover state is no longer required for the current rehearsal because the lab workflow intentionally uses the traditional cutover acknowledgement. It could still be added later if a distinct audit marker becomes useful.
 
 ### Future fault-injection scenarios
 
