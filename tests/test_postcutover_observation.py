@@ -32,7 +32,7 @@ def _bindings():
         "port": 830,
     }
     current_identity = {
-        "connection": {"ssh_host_key_sha256": "d" * 64},
+        "connection": {"ssh_host_key_sha256": "SHA256:" + "A" * 43},
         "device": {
             "hostname": "sw1203-new",
             "model": "EX4400-48F",
