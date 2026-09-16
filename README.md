@@ -41,6 +41,12 @@ Site-level QFX discovery/inventory artifacts are stored under:
 snapshots/site/<site-id>/
 ```
 
+## Testing
+
+For the repeatable vJunos/post-cutover simulation rehearsal, including reset steps, expected checkpoints, and the remaining simulator workflow work, see:
+
+[`docs/simulated-migration-testing.md`](docs/simulated-migration-testing.md)
+
 ## VLAN and management model
 
 The migration workflow manages two VLAN roles directly:
