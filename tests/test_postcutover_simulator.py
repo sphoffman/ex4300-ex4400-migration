@@ -48,7 +48,7 @@ def _identity():
             "connection": {
                 "address": "10.0.0.15",
                 "port": 830,
-                "ssh_host_key_sha256": "d" * 64,
+                "ssh_host_key_sha256": "SHA256:" + "A" * 43,
             },
             "device": {
                 "hostname": "factory-name",
@@ -153,6 +153,7 @@ def test_simulated_observation_matches_production_shape_and_holding_vlan_model()
     observation = result["observation"]
     assert observation["source"] == {"kind": "SIMULATED"}
     assert observation["device"]["hostname"] == "sw1203-new"
+    assert observation["device"]["ssh_host_key_sha256"].startswith("SHA256:")
     assert observation["statistics"]["physical_interfaces_observed"] == 96
     assert observation["statistics"]["unique_dynamic_macs"] == 6
 
