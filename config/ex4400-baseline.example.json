@@ -1,5 +1,6 @@
 {
   "schema_version": "1.0",
+  "environment": "lab",
   "management": {
     "vlan_id": 163,
     "network": "<MANAGEMENT_SUBNET/CIDR>",
