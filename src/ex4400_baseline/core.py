@@ -279,6 +279,15 @@ def load_config(path: Path) -> dict:
             "unsupported baseline configuration schema"
         )
 
+    environment = str(
+        config.get("environment", "production")
+    ).strip().lower()
+    if environment not in ("lab", "production"):
+        raise BaselineError(
+            "environment must be 'lab' or 'production'"
+        )
+    config["environment"] = environment
+
     management = config.get("management")
     if not isinstance(management, dict):
         raise BaselineError(
