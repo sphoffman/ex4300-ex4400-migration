@@ -204,3 +204,9 @@ def test_inventory_upsert_and_ready_lookup(
         == "10.1.1.10"
     )
     assert row["status"] == "READY"
+
+
+def test_cli_module_imports():
+    from ex4400_baseline import cli
+
+    assert callable(cli.main)
