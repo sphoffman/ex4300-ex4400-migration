@@ -508,10 +508,7 @@ def main(argv=None) -> int:
         router = None
 
         try:
-            from (
-                ex_migration_provisioner.write
-                import ssh_host_key_fingerprint
-            )
+            from ex_migration_provisioner.write import ssh_host_key_fingerprint
 
             record[
                 "ex4400_ssh_host_key_sha256"
