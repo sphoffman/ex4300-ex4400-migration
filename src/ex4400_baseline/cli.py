@@ -67,12 +67,29 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--username",
-        help="operator username; prompted when omitted",
+        help=(
+            "EX4300/gateway-router username; "
+            "prompted when omitted"
+        ),
     )
     parser.add_argument(
         "--password-env",
         help=(
-            "read the shared device password from this "
+            "read the EX4300/gateway-router password from this "
+            "environment variable instead of prompting"
+        ),
+    )
+    parser.add_argument(
+        "--ex4400-username",
+        help=(
+            "replacement EX4400 username; "
+            "prompted when omitted"
+        ),
+    )
+    parser.add_argument(
+        "--ex4400-password-env",
+        help=(
+            "read the replacement EX4400 password from this "
             "environment variable instead of prompting"
         ),
     )
@@ -87,33 +104,37 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _credentials(args):
+def _credentials(
+    username_value,
+    password_env,
+    label,
+):
     username = str(
-        args.username
-        or input("Username: ")
+        username_value
+        or input("%s username: " % label)
     ).strip()
     if not username:
         raise BaselineError(
-            "username cannot be empty"
+            "%s username cannot be empty" % label
         )
 
-    if args.password_env:
-        if args.password_env not in os.environ:
+    if password_env:
+        if password_env not in os.environ:
             raise BaselineError(
-                "password environment variable %s is not set"
-                % args.password_env
+                "%s password environment variable %s is not set"
+                % (label, password_env)
             )
         password = os.environ[
-            args.password_env
+            password_env
         ]
     else:
         password = getpass.getpass(
-            "Password: "
+            "%s password: " % label
         )
 
     if not password:
         raise BaselineError(
-            "password cannot be empty"
+            "%s password cannot be empty" % label
         )
 
     return username, password
@@ -361,8 +382,10 @@ def main(argv=None) -> int:
                 % template
             )
 
-        username, password = (
-            _credentials(args)
+        username, password = _credentials(
+            args.username,
+            args.password_env,
+            "EX4300/router",
         )
 
         print(
@@ -542,6 +565,12 @@ def main(argv=None) -> int:
                 % exc
             )
 
+        ex4400_username, ex4400_password = _credentials(
+            args.ex4400_username,
+            args.ex4400_password_env,
+            "EX4400",
+        )
+
         print(
             "Connecting to discovered "
             "EX4400 %s..."
@@ -550,8 +579,8 @@ def main(argv=None) -> int:
 
         target = _open_device(
             arp.ip,
-            username,
-            password,
+            ex4400_username,
+            ex4400_password,
             connection,
         )
 
