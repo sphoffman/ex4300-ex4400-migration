@@ -21,6 +21,19 @@ from .core import (
 
 
 _EX4400_MODEL = re.compile(r"^EX4400(?:-|$)", re.IGNORECASE)
+_LAB_SURROGATE_MODEL = re.compile(
+    r"^(?:EX9214|VJUNOS-SWITCH)$",
+    re.IGNORECASE,
+)
+
+
+def _allowed_target_model(model, environment):
+    if _EX4400_MODEL.match(str(model or "")):
+        return True
+    return bool(
+        str(environment or "").lower() == "lab"
+        and _LAB_SURROGATE_MODEL.match(str(model or ""))
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -556,16 +569,17 @@ def main(argv=None) -> int:
             or ""
         ).strip()
 
-        if not _EX4400_MODEL.match(
-            model
+        if not _allowed_target_model(
+            model,
+            config["environment"],
         ):
             raise BaselineError(
-                "discovered device %s "
-                "reports model %r, "
-                "not an EX4400"
+                "discovered device %s reports model %r, "
+                "which is not an allowed %s EX4400 target"
                 % (
                     arp.ip,
                     model,
+                    config["environment"],
                 )
             )
 
