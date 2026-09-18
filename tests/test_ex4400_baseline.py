@@ -220,3 +220,17 @@ def test_lab_model_policy():
     assert _allowed_target_model("VJUNOS-SWITCH", "lab")
     assert not _allowed_target_model("EX9214", "production")
     assert not _allowed_target_model("QFX5700", "lab")
+
+
+def test_cli_has_separate_ex4400_credentials():
+    from ex4400_baseline.cli import _parser
+
+    args = _parser().parse_args([
+        "172.16.163.10",
+        "--username", "radius-user",
+        "--ex4400-username", "local-admin",
+        "--dry-run",
+    ])
+    assert args.username == "radius-user"
+    assert args.ex4400_username == "local-admin"
+    assert args.dry_run is True
