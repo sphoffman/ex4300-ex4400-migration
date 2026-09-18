@@ -210,3 +210,13 @@ def test_cli_module_imports():
     from ex4400_baseline import cli
 
     assert callable(cli.main)
+
+
+def test_lab_model_policy():
+    from ex4400_baseline.cli import _allowed_target_model
+
+    assert _allowed_target_model("EX4400-48F", "production")
+    assert _allowed_target_model("EX9214", "lab")
+    assert _allowed_target_model("VJUNOS-SWITCH", "lab")
+    assert not _allowed_target_model("EX9214", "production")
+    assert not _allowed_target_model("QFX5700", "lab")
