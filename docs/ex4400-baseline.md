@@ -14,7 +14,7 @@
 8. Loads the approved static baseline as a merge, runs commit check, and commits.
 9. Upserts `data/ex4400_inventory.csv`. `READY` is written only after a successful commit.
 
-The same username and password are reused for the EX4300, router, and EX4400. The normal workflow prompts for both.
+The EX4300 and gateway router share one credential prompt. After the EX4400 vme address is discovered, the utility prompts separately for the replacement EX4400 credentials because the replacement may still be using local authentication before RADIUS is installed.
 
 ## Setup
 
@@ -93,3 +93,26 @@ The utility changes an existing row to `IN_PROGRESS` as soon as the EX4300 hostn
 The static baseline is deliberately loaded with merge semantics. This utility does not perform an overwrite/replace operation.
 
 The currently existing migration provisioner binds an OOB `fxp0`/`mgmt_junos` identity. The address discovered here is the EX4400 `vme` address on the management VLAN. Those are different concepts, so this change publishes a clean inventory contract rather than incorrectly feeding the vme address into the existing OOB identity field.
+
+
+### Separate EX4400 credentials
+
+Normal interactive use prompts twice:
+
+```text
+EX4300/router username:
+EX4300/router password:
+...
+EX4400 username:
+EX4400 password:
+```
+
+For automation, the two credential sets can be supplied independently:
+
+```bash
+PYTHONPATH=src python -m ex4400_baseline 172.16.163.10 \
+  --username radius-user \
+  --password-env OLD_SWITCH_PASSWORD \
+  --ex4400-username local-admin \
+  --ex4400-password-env NEW_SWITCH_PASSWORD
+```
