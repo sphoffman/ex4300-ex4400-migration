@@ -24,6 +24,7 @@ ex-migration-qfx-plan="ex_migration_provisioner.qfx_plan_cli:main"
 ex-migration-qfx-stage="ex_migration_provisioner.qfx_stage_cli:main"
 ex-migration-port-state="ex_migration_provisioner.port_state_cli:main"
 ex-migration-inband="ex_migration_provisioner.inband_cli:main"
+ex-migration-qfx-bootstrap="ex_migration_qfx_bootstrap.cli:main"
 
 [tool.setuptools.packages.find]
 where=["src"]
