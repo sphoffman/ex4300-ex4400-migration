@@ -1,0 +1,26 @@
+{
+  "qfx_pair": [
+    {
+      "role": "qfx-a",
+      "management_address": "10.255.3.14"
+    },
+    {
+      "role": "qfx-b",
+      "management_address": "10.255.3.15"
+    }
+  ],
+  "management_vlan": {
+    "name": "v163",
+    "vlan_id": 163
+  },
+  "interfaces": {
+    "type": "et",
+    "pic": 0,
+    "first_port": 0,
+    "last_port": 15,
+    "ports_per_fpc": 16
+  },
+  "lacp_system_id": {
+    "prefix": "02:00:00:00"
+  }
+}
