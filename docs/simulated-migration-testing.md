@@ -1,104 +1,124 @@
-# Simulated EX4300-to-EX4400 Migration Test Runbook
+# EX4300-to-EX4400 Migration Rehearsal Runbook
 
-This document describes how to repeat the high-fidelity migration rehearsal that uses vJunos-switch and the post-cutover observation simulator.
+This document describes the lab test strategy for the EX4300-to-EX4400 migration automation.
 
-The goal is to exercise as much of the production migration workflow as possible while simulating only the physical client cable move that cannot be reproduced reliably before the first real migration.
+The preferred high-fidelity rehearsal uses a **real EX4300 VC as the source of truth** for configuration, VLANs, interfaces, MAC learning, endpoint history, and discovery evidence. The physical endpoint cable move is then simulated so that the normal post-cutover correlation and EX4400 activation workflow can be exercised before the first production migration.
 
-## Test objective
+The simulator does **not** implement a separate endpoint-correlation algorithm. It generates the same immutable post-cutover observation artifact that the live collector generates. The normal production correlation, activation, validation, and reporting code consumes that artifact.
 
-The rehearsal should prove this sequence:
+## Rehearsal levels
+
+### Level 1 - All-virtual regression rehearsal
+
+Use this for software development and repeatable regression testing.
 
 ```text
-old-switch discovery
-  -> analysis
-  -> migration-plan approval
-  -> replacement-switch identity/prestage
-  -> physical-cutover workflow checkpoint
-  -> QFX attachment discovery and VLAN staging
+source vJunos-switch
+  -> normal discovery
+  -> normal analysis/planning
+  -> replacement vJunos-switch prestage
+  -> simulated physical client move
+  -> normal correlation
+  -> real config write to replacement vJunos-switch
+  -> validation/reporting
+```
+
+This validates workflow and software behavior but does not prove physical EX4300/EX4400 hardware behavior.
+
+### Level 2 - Real-EX4300 hardware-source rehearsal
+
+This is the preferred pre-production lab test.
+
+```text
+real EX4300 VC
+  -> real discovery/config/MAC evidence
+  -> normal analysis
+  -> normal migration-plan approval
+  -> EX4400 replacement identity/prestage
+  -> normal physical-cutover workflow checkpoint
+  -> QFX attachment discovery/VLAN staging as applicable
   -> simulated physical endpoint cable move
-  -> normal endpoint correlation
-  -> real replacement-switch endpoint configuration
+       - mostly same-position placements
+       - intentional swapped-port placements
+  -> normal production endpoint correlation
+  -> real EX4400 endpoint configuration
   -> port-state/cabling validation
 ```
 
-The important design rule is that the simulator does **not** invent a separate correlation algorithm. It creates the same immutable post-cutover observation artifact that the live collector creates, and the normal production correlation/activation code consumes that artifact.
+The MAC addresses used by the simulator are **not invented**. They come from the real EX4300 discovery evidence. Only their post-cutover placement on the replacement switch is simulated.
 
-## What is real and what is simulated
-
-In the initial all-vJunos rehearsal:
+## What Level 2 proves
 
 | Phase | Test behavior |
 | --- | --- |
-| Old-switch discovery | Real collection from source vJunos-switch |
+| EX4300 discovery | **Real** collection from the physical EX4300 VC |
+| Source configuration/VLAN inventory | **Real** |
+| Source MAC/interface evidence | **Real** |
+| Historical endpoint evidence | **Real** |
 | Analyzer/planner | Normal production code |
-| Replacement identity | Real connection to replacement vJunos-switch |
+| Replacement identity | Real connection to replacement EX4400 or approved lab surrogate |
 | Replacement prestage | Real candidate, commit-check, commit-confirmed, validation, final confirmation |
 | Physical cutover checkpoint | Normal operator workflow acknowledgement used as a lab gate |
-| QFX attachment discovery | Real if lab QFX topology is present |
-| QFX VLAN staging | Real writes to the lab QFX pair |
-| Physical client move | **Simulated** |
-| Post-move MAC/interface evidence | **Simulated observation artifact** |
+| QFX attachment discovery | Real when the lab QFX topology is present |
+| QFX VLAN staging | Real writes to the lab QFX pair when included in the rehearsal |
+| Physical client cable move | **Simulated** |
+| Post-move MAC/interface evidence | **Simulated placement using real EX4300 MAC evidence** |
 | Endpoint correlation | Normal production code |
-| Endpoint configuration | Real write to replacement vJunos-switch |
-| Post-commit config validation | Real live validation |
-| Post-commit endpoint MAC validation | Live; expected MACs may be absent because no physical clients are connected |
-
-A later, higher-fidelity rehearsal can replace the source vJunos-switch with a real EX4300 VC while keeping the replacement side virtual or physical.
+| Endpoint configuration | Real write to the replacement switch |
+| Post-commit config validation | Real |
+| Cabling report | Normal production output derived from completed endpoint mappings |
 
 ## Prerequisites
 
-Use the feature branch while this work is under development:
+Use the consolidated production branch:
 
 ```bash
-git checkout feature/postcutover-observation-simulation
+git checkout main
 git pull --ff-only
 ```
 
 The test environment should have:
 
-- one source vJunos-switch representing the old EX4300;
-- one replacement vJunos-switch representing the EX4400;
-- the lab QFX pair if QFX attachment/staging is being exercised;
-- working NETCONF/SSH reachability to all devices used by the test;
-- site configuration and environment files appropriate for the lab;
-- a clean migration artifact directory or a new migration ID for a full repeat.
+- one real EX4300 VC containing representative production-like configuration and endpoint/MAC learning;
+- one replacement EX4400 VC, or an approved lab replacement target where hardware is not available;
+- the lab QFX pair when QFX attachment/staging is part of the rehearsal;
+- working NETCONF/SSH reachability to every device used by the test;
+- site configuration, policies, templates, and environment files appropriate for the lab;
+- a clean migration artifact area or a new migration ID for each complete rehearsal;
+- the `juniper/pyez` Docker image available locally;
+- the repository's portable `./py` launcher.
 
-vJunos-switch is intentionally allowed only in the lab replacement-identity path. A vJunos source may also report `VIRTUAL_CHASSIS_UNSUPPORTED`; for an all-vJunos rehearsal this can be acknowledged as a lab limitation.
+For an air-gapped lab, the runtime does not require Internet access. The optional unit-test suite can use the repository's offline test dependency bundle.
 
-## Run the unit test suite first
+## Test 0 - Verify the software baseline
 
-Before a migration rehearsal, run the complete suite from the PyEZ environment.
-
-If the local test dependency directory is already populated:
+Before a migration rehearsal, run:
 
 ```bash
-py -c '
-import sys
-sys.path.insert(0, "/scripts/.test-deps")
-import pytest
-raise SystemExit(pytest.main(["-q"]))
-'
+./scripts/test.sh
 ```
 
-The known-good checkpoint before the operator `activate --plan-only` wiring was:
+The current consolidated checkpoint is:
 
 ```text
-254 passed
+278 passed
 ```
 
-New tests have since been added for operator preview/replay behavior, so the total will be higher after those changes are pulled.
+On an air-gapped server, `test.sh` uses `vendor/test-wheels/` when that offline dependency bundle was built and transferred with the repository.
 
-If this isolated PyEZ environment uses normal `python` rather than the `py` helper, use the equivalent local invocation for that environment.
+The unit tests are a software sanity check. They are not a substitute for the hardware-source rehearsal below.
 
-## Step 1 - Discover the source switch
+## Test 1 - Discover the real EX4300 VC
 
-For a short lab collection, explicitly reduce the observation window.
+Run the normal discovery path against the real EX4300 management address.
 
-Example from the first rehearsal:
+For a short lab collection:
 
 ```bash
-python migrate.py discover 172.16.163.10 --count 1 --duration 10
+./py migrate.py discover <ex4300-management-ip> --count 1 --duration 10
 ```
+
+For a production-like rehearsal, use the normal observation duration and multiple samples rather than the short example above.
 
 Expected outcome:
 
@@ -108,64 +128,67 @@ SUCCESS ...
 Discovered migration ID: <migration-id>
 ```
 
-The first rehearsal derived:
+Record the migration ID. All later steps use the same ID.
 
-```text
-Migration ID: dh4301
-```
+### Verify
 
-For production-like testing, use a longer collection window and multiple samples.
+Confirm that the discovery captured the expected:
 
-## Step 2 - Analyze the old-switch evidence
+- VC member/inventory information;
+- configured interfaces;
+- VLAN inventory;
+- Ethernet-switching/MAC evidence;
+- LLDP evidence where expected;
+- management identity;
+- configured-but-silent ports;
+- historical observations used by the analyzer.
 
-```bash
-python migrate.py <migration-id> analyze
-```
+Do not continue if the source evidence is obviously incomplete.
 
-Review the evidence summary and approve the exact evidence set used for analysis.
-
-For an all-vJunos source, `VIRTUAL_CHASSIS_UNSUPPORTED` may be accepted as a lab limitation. Do not automatically carry that disposition into a real EX4300 production rehearsal.
-
-Known-good first-rehearsal summary:
-
-```text
-Unique MACs:              20
-Consistent MAC/port IDs:  20
-Historical MAC conflicts: 0
-Findings:                  3
-```
-
-## Step 3 - Build and approve the migration intent
+## Test 2 - Analyze the real EX4300 evidence
 
 ```bash
-python migrate.py <migration-id> build
+./py migrate.py <migration-id> analyze
 ```
 
-Review the generated intent and approve it.
+Review the analysis summary and findings.
 
-Known-good first-rehearsal summary:
+The objective is to prove that the analyzer can consume a real EX4300 evidence set and correctly distinguish:
 
-```text
-Endpoint ports to correlate: 8
-Unused/template-default ports: 2
-Operator holds: 0
-Eligibility: LAB_ONLY
-```
+- observed endpoint ports;
+- historically observed but currently silent ports;
+- never-observed configured ports;
+- review findings;
+- operator holds;
+- migration eligibility.
 
-The first rehearsal created plan:
+Do not dismiss hardware-specific findings merely because an earlier vJunos rehearsal allowed a lab limitation.
 
-```text
-43413a1bdaa9521a
-```
-
-## Step 4 - Prestage the replacement vJunos-switch
-
-Use the normal prestage path so the test exercises real identity binding, rendering, candidate review, commit-confirmed, and validation.
-
-Typical command:
+## Test 3 - Build and approve the migration intent
 
 ```bash
-python migrate.py <migration-id> prestage --oob-address <replacement-address>/<prefix>
+./py migrate.py <migration-id> build
+```
+
+Review the exact migration intent before approval.
+
+Verify that:
+
+- all required VLANs are preserved;
+- endpoint ports are represented correctly;
+- unused/template-default ports are identified correctly;
+- management variables are correct;
+- no unexpected operator holds exist;
+- the approved plan references the expected analysis evidence.
+
+The approval records migration intent. It does not itself authorize device writes.
+
+## Test 4 - Prestage the replacement EX4400
+
+Use the normal prestage path:
+
+```bash
+./py migrate.py <migration-id> prestage --oob-address <replacement-address>/<prefix>
 ```
 
 Expected outcome:
@@ -176,36 +199,40 @@ Commit confirmed validation: PASS
 Final commit confirmation: PASS
 ```
 
-Known-good first-rehearsal transaction:
+This should exercise the real production prestage behavior:
 
-```text
-eb48af4c2d2f7f30
-```
+- replacement identity binding;
+- rendering;
+- candidate review;
+- commit-check;
+- commit-confirmed;
+- validation;
+- final confirmation.
 
-At this point the replacement switch is genuinely pre-staged. Do not generate the simulated post-cutover observation before prestage has passed.
+Do not generate the simulated post-cutover observation until prestage passes.
 
-## Step 5 - Use the normal physical-cutover workflow checkpoint
+## Test 5 - Record the normal physical-cutover workflow checkpoint
 
-For the lab rehearsal, continue through the normal operator workflow:
-
-```bash
-python migrate.py <migration-id> cutover
-```
-
-The command performs no device writes. It records the normal physical-cutover acknowledgement required by the production state machine.
-
-For this simulation, the acknowledgement is intentionally being used as a **lab workflow gate** so the rehearsal can continue through the same traditional operator path. No synthetic cutover state is currently required.
-
-Treat this acknowledgement as disposable lab evidence only. It must not be interpreted as proof that physical client cabling actually moved during the simulated rehearsal.
-
-## Step 6 - Generate the simulated post-cutover observation
-
-At the point where the real migration would have physically moved the endpoint cables, run:
+Continue through the normal operator workflow:
 
 ```bash
-PYTHONPATH=src python -m ex_migration_provisioner.postcutover_simulator_cli \
+./py migrate.py <migration-id> cutover
+```
+
+For this rehearsal, the acknowledgement is a **lab workflow gate**. It allows the state machine to continue through the same path used during a production migration.
+
+It is not proof that client cables physically moved.
+
+## Test 6 - Generate simulated EX4400 post-cutover placement from real EX4300 data
+
+At the point where production would physically move the endpoint cables, generate a simulated post-cutover observation:
+
+```bash
+./py -m ex_migration_provisioner.postcutover_simulator_cli \
     <migration-id>
 ```
+
+The simulator reads the approved migration evidence and creates replacement-side MAC/interface placement using those real source MAC addresses.
 
 The default scenario uses two deterministic swap pairs:
 
@@ -216,12 +243,20 @@ NORMAL_WITH_TWO_SWAPS
 Useful options:
 
 ```text
---swap-pairs 0    no intentional cable swaps
---swap-pairs 1    one swapped pair
---swap-pairs 2    default; two swapped pairs
+--swap-pairs 0    all correlatable endpoints remain on same-position ports
+--swap-pairs 1    one intentionally swapped pair
+--swap-pairs 2    default; two intentionally swapped pairs
 ```
 
-The simulator performs no device connection and no device write.
+For the primary rehearsal, use the default two-swap scenario unless a different scenario is being tested deliberately.
+
+The expected behavior is:
+
+- most endpoints appear on the expected same-position EX4400 port;
+- a small known set appears on intentionally different ports;
+- MAC identity comes from the real EX4300 evidence;
+- no device connection is made by the simulator;
+- no device write is performed by the simulator.
 
 Expected output includes:
 
@@ -233,36 +268,13 @@ Device connections performed: no
 Device writes performed: no
 ```
 
-Known-good first-rehearsal result:
-
-```text
-Correlatable endpoint intents: 8
-Approved endpoint MACs: 16
-Same-position placements: 4
-Moved placements: 4
-Missing endpoints: 0
-Unexpected endpoints: 0
-Physical interfaces observed: 48
-Dynamic MACs observed: 16
-Observation: 79720a061c216eb9
-```
-
-The intentional cable mutations were:
-
-```text
-ge-0/0/2 -> ge-0/0/3
-ge-0/0/3 -> ge-0/0/2
-ge-0/0/4 -> ge-0/0/5
-ge-0/0/5 -> ge-0/0/4
-```
-
 The observation is stored under:
 
 ```text
 snapshots/migrations/<migration-id>/new-switch/postcutover-observations/<observation-id>/
 ```
 
-with:
+with evidence such as:
 
 ```text
 observation.json
@@ -271,182 +283,174 @@ interfaces-terse.txt
 integrity.json
 ```
 
-## Step 7 - Discover and stage the QFX attachment
+Record the observation ID.
 
-The grouped `activate` workflow can perform QFX attachment discovery and coordinated QFX VLAN staging automatically if they are still pending. The first rehearsal exercised those stages separately and produced:
+## Test 7 - Discover and stage the QFX attachment
 
-```text
-Coordinated QFX VLAN transaction: PASS
-QFX commit-check: PASS on both
-Commit-confirmed validation: PASS on both
-Final confirmation: PASS on both
-EX4400 writes performed: no
-```
+If QFX attachment and VLAN staging are part of the rehearsal, exercise them through the normal workflow.
 
-Known-good first-rehearsal QFX transaction:
+The grouped `activate` path can satisfy missing QFX prerequisites automatically, or the QFX stages can be exercised separately when validating those transactions specifically.
 
-```text
-71f60d4ec40f6335
-```
+Verify:
 
-For a repeat test, either stage QFX separately as before or allow the grouped `activate` command in the next step to satisfy the missing QFX prerequisites using the normal approval path.
+- both expected QFX devices are discovered;
+- the EX4400 attachment is identified correctly;
+- required VLAN changes match the approved migration plan;
+- commit-check passes on both QFX devices;
+- commit-confirmed validation passes;
+- final confirmation succeeds.
 
-## Step 8 - Inspect the simulated endpoint mapping without endpoint writes
+Do not let the endpoint simulator replace QFX discovery or QFX staging. Those phases should remain real when the lab topology supports them.
 
-Use the normal operator-facing activation workflow and replay the synthetic observation:
+## Test 8 - Preview endpoint correlation with no EX4400 endpoint writes
+
+Replay the simulated observation through the normal operator-facing activation workflow:
 
 ```bash
-python migrate.py <migration-id> activate \
+./py migrate.py <migration-id> activate \
     --plan-only \
     --observation-id <observation-id>
 ```
 
-`--observation-id` is accepted through the operator wrapper only with a lab environment profile.
+`--observation-id` is a lab-only replay mechanism.
 
-Expected result for a clean scenario:
+Verify:
 
-```text
-Completed endpoint intents: 0
-Newly resolvable endpoint intents: 8
-Holds: 0
-Result: PASS
-EX4400 writes performed: no (--plan-only)
-QFX writes performed: no
-```
+- every same-position endpoint maps to its expected replacement interface;
+- every intentional swap maps to the simulated destination interface;
+- no endpoint is silently forced back to its original interface;
+- missing/unexpected/ambiguous endpoints produce the expected hold behavior;
+- EX4400 endpoint writes are not performed under `--plan-only`.
 
-Verify that the four intentionally swapped old ports map to the four simulated destination ports, and that the remaining four endpoint intents stay at the same physical position.
+A clean scenario should show all expected endpoint intents as resolvable with no unexplained holds.
 
-`--plan-only` still persists immutable observation/correlation evidence, but it does not create an endpoint transaction, does not commit endpoint configuration, does not mark endpoint intents completed, and does not offer endpoint-exception acceptance.
+The plan-only run may persist immutable observation/correlation evidence, but it must not commit endpoint configuration or mark endpoint intents completed.
 
-If QFX attachment/staging was still pending when this command started, those prerequisite phases may run first through their normal approval/commit-confirmed workflow. `--plan-only` applies specifically to the endpoint-activation portion.
+## Test 9 - Apply endpoint configuration to the replacement EX4400
 
-## Step 9 - Apply the endpoint configuration to the replacement vJunos-switch
-
-After the plan-only correlation looks correct, rerun the operator command without `--plan-only` while selecting the same synthetic observation:
+After the mapping is reviewed and correct, replay the same observation without `--plan-only`:
 
 ```bash
-python migrate.py <migration-id> activate \
+./py migrate.py <migration-id> activate \
     --observation-id <observation-id>
 ```
 
-This is a **real endpoint write** to the replacement vJunos-switch.
+This step performs the real endpoint configuration write to the replacement switch.
 
-Review the exact candidate diff. The expected destination interfaces must match the MAC-derived simulated placement, including the intentionally swapped interfaces.
+Review the candidate diff carefully.
 
-If correct, approve the candidate.
+The configured destination interfaces must match the MAC-derived simulated placement, including intentional swaps.
 
-Expected successful result:
+Expected result:
 
 ```text
 EX4400 endpoint activation transaction: PASS
 Commit-confirmed validation: PASS
 Final confirmation: PASS
-QFX writes performed: no
 ```
 
-Because the clients are synthetic rather than physically connected, the post-commit live MAC check may warn that an expected MAC is not currently learned. The configuration validation remains real and is the hard pass/fail check for this rehearsal.
+If no physical clients are connected to the replacement device, post-commit live MAC validation can legitimately report that expected MACs are not currently learned. Configuration validation remains the hard requirement for this simulated-cable rehearsal.
 
-## Step 10 - Run post-cutover port-state comparison
+## Test 10 - Run post-cutover port-state comparison
 
-The current grouped `validate` path still collects/uses its normal validation inputs. To force the exact same simulated observation into the port-state comparison during this rehearsal, use:
+To replay the same simulated observation into the port-state comparison:
 
 ```bash
-PYTHONPATH=src python -m ex_migration_provisioner.port_state_cli \
+./py -m ex_migration_provisioner.port_state_cli \
     <migration-id> \
     --observation-id <observation-id>
 ```
 
-Review the generated comparison artifact.
+Review the comparison artifact and confirm that the expected interface-state/mapping differences are represented correctly.
 
-## Step 11 - Generate the cabling report
+## Test 11 - Generate and review the cabling report
 
-Run the normal cabling report command after endpoint mappings exist.
+Run the normal cabling-report workflow after endpoint mappings exist.
 
-The two swapped pairs should produce four old/new interface differences that require relabeling/cabling attention.
+The intentionally swapped pairs should produce old/new interface differences requiring cabling or labeling attention.
 
-This validates that facilities output is derived from the completed endpoint mappings rather than assuming same-position cabling.
+This proves that facilities output is derived from completed endpoint mappings rather than from an assumption that every endpoint remains on the same numbered interface.
 
-## Real-migration plan-only recabling workflow
+## Test 12 - Real plan-only recabling behavior
 
-The simulator is not required for this production workflow.
+This is a separate production-behavior rehearsal and does **not** require the simulator.
 
-During a real migration, use the normal operator command with no observation ID:
+During a real migration:
 
 ```bash
-python migrate.py <migration-id> activate --plan-only
+./py migrate.py <migration-id> activate --plan-only
 ```
 
-If the mapping shows misplaced client cables:
+If the live mapping shows misplaced client cables:
 
 1. correct the physical cabling;
 2. cause quiet endpoints to transmit/relearn if needed;
-3. run the same `activate --plan-only` command again;
-4. because no `--observation-id` is supplied, a new live EX4400 observation is collected;
-5. repeat until the mapping is correct;
-6. run `python migrate.py <migration-id> activate` normally.
+3. run `activate --plan-only` again;
+4. because no `--observation-id` is supplied, collect a new live EX4400 observation;
+5. repeat until the live mapping is correct;
+6. run `activate` normally.
 
-Do not reuse an old `--observation-id` after recabling when the goal is to discover the new physical state. Reusing an observation ID intentionally replays the old immutable evidence.
+Do not replay an old observation ID after physically recabling when the goal is to discover the new state.
 
-## Repeating the entire simulated test
+## Pass/fail checklist for the real-EX4300 rehearsal
 
-The migration artifacts and successful endpoint transactions are intentionally persistent. A full test repeat therefore needs a clean lab state.
+Record each item for the lab run.
 
-Before repeating:
+- [ ] Unit test suite passes.
+- [ ] Real EX4300 discovery completes successfully.
+- [ ] VC/member and interface inventory is correct.
+- [ ] VLAN inventory is correct.
+- [ ] Real EX4300 MAC/interface evidence is captured.
+- [ ] Analyzer output is reasonable and review findings are understood.
+- [ ] Migration intent is correct and approved.
+- [ ] Replacement identity/prestage succeeds.
+- [ ] Physical-cutover workflow checkpoint is recorded.
+- [ ] QFX attachment discovery succeeds, if included.
+- [ ] QFX VLAN staging succeeds, if included.
+- [ ] Simulated observation is generated from the approved real EX4300 evidence.
+- [ ] Expected same-position endpoints remain same-position.
+- [ ] Intentional swapped endpoints appear on the expected alternate interfaces.
+- [ ] Plan-only endpoint correlation passes with no unexplained holds.
+- [ ] Candidate EX4400 endpoint configuration matches the simulated placement.
+- [ ] EX4400 endpoint activation transaction passes.
+- [ ] Port-state comparison is correct.
+- [ ] Cabling report reflects intentional swaps.
+- [ ] No simulator-specific correlation logic was required.
 
-1. restore the source vJunos-switch to the intended old-switch test configuration and MAC population;
-2. restore the replacement vJunos-switch to its pre-migration/base configuration;
-3. restore the lab QFX pair to the expected pre-migration baseline;
-4. use a new migration ID, **or**, in a disposable lab only, archive/remove the prior `snapshots/migrations/<migration-id>/` test artifacts before rediscovery;
+## Repeating the complete rehearsal
+
+Migration artifacts and successful transactions are intentionally persistent.
+
+Before a full repeat:
+
+1. restore the source EX4300 to the intended test state if it was changed;
+2. restore the replacement EX4400 to the intended pre-migration/base state;
+3. restore the QFX pair to the expected pre-migration baseline;
+4. use a new migration ID, or only in a disposable lab archive/remove the prior test artifacts;
 5. rerun discovery from the beginning.
 
-Never delete production migration evidence merely to rerun a workflow.
+Never delete production migration evidence merely to make a workflow repeatable.
 
-## What this test does not prove
+## What the real-EX4300 simulated-cable rehearsal still does not prove
 
-A successful vJunos rehearsal does not validate:
+Even with a physical EX4300 source, this test does not fully validate:
 
-- physical EX4400 VC formation;
-- real FPC/PIC inventory behavior;
-- optics and physical link behavior;
-- LLDP/LACP convergence timing on production hardware;
-- actual endpoint relearning after cable movement;
-- real silent endpoint behavior;
-- hardware-specific commit/rollback timing;
-- production management-path transition behavior.
+- the actual physical client cable move;
+- endpoint relearning timing after real recabling;
+- real silent-endpoint behavior on the replacement switch;
+- production LLDP/LACP convergence timing;
+- production optics/cabling faults;
+- production management-path transition timing;
+- every EX4400 VC/FPC hardware behavior unless the replacement side is also physical;
+- every production rollback/failure timing condition.
 
-Those require a later real EX4300/EX4400 hardware rehearsal or the first controlled production migration.
+Those require a full hardware rehearsal or the first controlled production migration.
 
-## Remaining simulator/workflow improvements
+## Additional fault-injection scenarios
 
-The current simulator is sufficient to continue the present rehearsal. The operator wrapper now supports both `activate --plan-only` and lab-only `--observation-id`, and the lab rehearsal can use the normal physical-cutover checkpoint.
+After the normal/two-swap scenario passes end-to-end, useful deterministic scenarios include:
 
-### Recommended next improvements
-
-1. **Expose simulated post-cutover generation through the central/operator CLI.**
-   `postcutover_simulator_cli` currently works as a standalone module. A cohesive lab command such as `simulate-postcutover` would make the rehearsal even easier to repeat.
-
-2. **Derive replacement client-port inventory instead of assuming 48 GE ports per member.**
-   The initial simulator intentionally targets the current EX4400-48-port design. Future hardware/model testing should derive valid edge interfaces from approved device/model inventory rather than hardcoding `ge-<member>/0/0-47`.
-
-3. **Reuse the production recovery-interface fallback.**
-   If a compatibility package leaves `recovery_interface` empty, the simulator should call the same production helper that derives the recovery port. Otherwise a future scenario could accidentally place a synthetic endpoint on the implicit recovery port.
-
-4. **Make simulated provenance explicit in final transaction/report output.**
-   Configuration writes can be real while pre-activation forwarding evidence is simulated. Reports should clearly state both facts, for example:
-
-   ```text
-   CONFIGURATION TRANSACTION: REAL/PASS
-   PRE-ACTIVATION MAC/FORWARDING EVIDENCE: SIMULATED
-   POST-COMMIT MAC EVIDENCE: LIVE
-   ```
-
-5. **Optional future lab-only cutover marker.**
-   A separate simulated-cutover state is no longer required for the current rehearsal because the lab workflow intentionally uses the traditional cutover acknowledgement. It could still be added later if a distinct audit marker becomes useful.
-
-### Future fault-injection scenarios
-
-After the normal/two-swap scenario passes end to end, add deterministic scenarios for:
-
+- no swaps;
 - one expected MAC missing;
 - unexpected MAC on a client port;
 - approved MACs from one old port appearing on multiple new ports;
@@ -459,4 +463,20 @@ After the normal/two-swap scenario passes end to end, add deterministic scenario
 - endpoint moved after an initial plan-only observation;
 - partially completed migration followed by rerun/reconciliation.
 
-These should continue to generate the normal post-cutover observation artifact and should not introduce simulator-specific branches into the production correlation algorithm.
+These scenarios should continue to produce the normal post-cutover observation artifact. They must not introduce simulator-specific branches into the production correlation algorithm.
+
+## Provenance requirement
+
+Whenever simulated observation evidence is used, reports and operator review should distinguish clearly between real and simulated evidence:
+
+```text
+SOURCE EX4300 DISCOVERY: REAL
+MIGRATION PLAN: REAL/APPROVED
+REPLACEMENT PRESTAGE: REAL
+PRE-ACTIVATION MAC/FORWARDING EVIDENCE: SIMULATED PLACEMENT USING REAL SOURCE MACS
+CONFIGURATION TRANSACTION: REAL
+POST-COMMIT CONFIG VALIDATION: REAL
+POST-COMMIT LIVE MAC EVIDENCE: LIVE WHEN AVAILABLE
+```
+
+That distinction is essential when interpreting a successful rehearsal.
