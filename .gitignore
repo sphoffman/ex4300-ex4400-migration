@@ -9,3 +9,4 @@ config/ex4400-baseline.json
 data/ex4400_inventory.csv
 
 .test-deps/
+vendor/test-wheels/

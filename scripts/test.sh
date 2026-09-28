@@ -7,12 +7,25 @@ cd "$REPO_DIR"
 rm -rf .test-deps
 mkdir -p .test-deps
 
-echo "Installing test dependencies..."
-./py -m pip install \
-  --disable-pip-version-check \
-  --target /scripts/.test-deps \
-  'pytest>=8,<9' \
-  'jsonschema==4.17.3'
+if [ -d "$REPO_DIR/vendor/test-wheels" ] &&
+   find "$REPO_DIR/vendor/test-wheels" -maxdepth 1 -type f | grep -q .; then
+    echo "Installing test dependencies from offline bundle..."
+    ./py -m pip install \
+      --disable-pip-version-check \
+      --no-index \
+      --find-links /scripts/vendor/test-wheels \
+      --target /scripts/.test-deps \
+      'pytest>=8,<9' \
+      'jsonschema==4.17.3'
+else
+    echo "Offline dependency bundle not found."
+    echo "Installing test dependencies from PyPI..."
+    ./py -m pip install \
+      --disable-pip-version-check \
+      --target /scripts/.test-deps \
+      'pytest>=8,<9' \
+      'jsonschema==4.17.3'
+fi
 
 echo
 echo "Running test suite..."
