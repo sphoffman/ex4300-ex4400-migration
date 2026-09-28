@@ -4,7 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from ex_migration_analyzer.core import read_json, utc_now
+from ex_migration_analyzer.core import read_json, sha256_file
 
 from . import cli_base as base
 from .endpoint_stage import (
@@ -25,6 +25,11 @@ from .port_state import (
     load_approved_port_state_evidence,
     write_port_state_comparison,
 )
+from .postcutover_observation import (
+    collect_live_postcutover_observation,
+    load_postcutover_observation,
+    write_postcutover_observation,
+)
 from .prestage import choose_package_compat
 
 
@@ -42,6 +47,13 @@ def _parser():
     parser.add_argument("--environment", type=Path, default=Path("config/environment.lab.json"))
     parser.add_argument("--identity-id")
     parser.add_argument("--package-id")
+    parser.add_argument(
+        "--observation-id",
+        help=(
+            "reuse one integrity-valid post-cutover EX4400 observation instead of collecting "
+            "fresh MAC/interface evidence; plan, identity, and package bindings must match"
+        ),
+    )
     parser.add_argument("--username")
     parser.add_argument("--password-env")
     return parser
@@ -58,6 +70,20 @@ def _interesting(row):
     )
 
 
+def _print_observation(observation, directory, action):
+    stats = observation["statistics"]
+    print("\nPost-cutover EX4400 observation")
+    print("  Observation: %s (%s)" % (observation["observation_id"], action))
+    print("  Source: %s" % observation["source"]["kind"])
+    print("  Physical interfaces observed: %d" % stats["physical_interfaces_observed"])
+    print("  Up/up physical interfaces: %d" % stats["physical_interfaces_up"])
+    print("  Dynamic MAC observations: %d" % stats["dynamic_mac_observations"])
+    print("  Unique dynamic MACs: %d" % stats["unique_dynamic_macs"])
+    print("  Dynamic-MAC interfaces: %d" % stats["dynamic_mac_interfaces"])
+    print("  Integrity: PASS")
+    print("  Record: %s" % (directory / "observation.json"))
+
+
 def run(argv):
     args = _parser().parse_args(argv)
     settings = base.load_settings(args.settings)
@@ -71,6 +97,9 @@ def run(argv):
         raise base.ProvisioningError(
             "selected pre-stage package is bound to a different approved migration plan"
         )
+
+    identity_digest = sha256_file(selected_identity["identity_path"])
+    package_digest = sha256_file(selected_package["package_path"])
 
     profile = read_json(args.environment)
     profile = _bind_lab_identity_transport(profile, selected_identity["identity"])
@@ -124,6 +153,9 @@ def run(argv):
         port=port,
         gather_facts=True,
     )
+    observation = None
+    observation_dir = None
+    observation_action = None
     try:
         dev.open(auto_probe=10, hostkey_verify=False)
         current = base.observe_ex4400_identity(
@@ -143,8 +175,39 @@ def run(argv):
         )
         committed_config = _interfaces_config_set(dev, "committed")
         completed = _reconcile_completed_state(committed_config, historical_completed)
-        terse_text = dev.cli("show interfaces terse", warning=False) or ""
-        mac_text = dev.cli("show ethernet-switching table extensive", warning=False) or ""
+
+        if args.observation_id:
+            loaded = load_postcutover_observation(
+                migration_root,
+                args.observation_id,
+                approved_plan_digest=selected_plan["plan_digest"],
+                identity_digest=identity_digest,
+                package_digest=package_digest,
+            )
+            observation = loaded["observation"]
+            observation_dir = loaded["directory"]
+            observation_action = "REUSED"
+            terse_text = loaded["terse_text"]
+            mac_text = loaded["mac_table_text"]
+        else:
+            observation, mac_text, terse_text = collect_live_postcutover_observation(
+                dev,
+                args.migration_id,
+                selected_plan["plan"],
+                selected_plan["plan_digest"],
+                selected_identity["identity"],
+                identity_digest,
+                package,
+                package_digest,
+                access,
+                current,
+            )
+            observation_dir, observation, observation_action = write_postcutover_observation(
+                migration_root,
+                observation,
+                mac_text,
+                terse_text,
+            )
     except base.ProvisioningError:
         raise
     except Exception as exc:
@@ -155,7 +218,8 @@ def run(argv):
         except Exception:
             pass
 
-    observed_at = utc_now()
+    _print_observation(observation, observation_dir, observation_action)
+    observed_at = observation["completed_at"]
     comparison = build_port_state_comparison(
         args.migration_id,
         selected_plan["plan"],
@@ -181,6 +245,7 @@ def run(argv):
     print("  Logical target: %s:%s" % (access["logical_address"], access["port"]))
     if access["transport_address"] != access["logical_address"]:
         print("  Lab transport: %s:%s" % (access["transport_address"], access["port"]))
+    print("  Observation evidence: %s" % observation["observation_id"])
     print("  Approved discovery collections: %d" % len(pre_evidence.get("collections", [])))
     print("  Discovery sample runs reconstructed: %d" % pre_evidence.get("total_sample_runs", 0))
     print("  Pre-migration latest states:")

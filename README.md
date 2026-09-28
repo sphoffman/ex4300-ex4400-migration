@@ -41,6 +41,12 @@ Site-level QFX discovery/inventory artifacts are stored under:
 snapshots/site/<site-id>/
 ```
 
+## Testing
+
+For the repeatable vJunos/post-cutover simulation rehearsal, including reset steps, expected checkpoints, and the remaining simulator workflow work, see:
+
+[`docs/simulated-migration-testing.md`](docs/simulated-migration-testing.md)
+
 ## VLAN and management model
 
 The migration workflow manages two VLAN roles directly:
@@ -230,6 +236,54 @@ After cutover, `activate` discovers the live QFX attachment, stages only the req
 
 Endpoint activation is evidence-driven. An endpoint receives a data VLAN only when approved historical MAC evidence maps unambiguously to a current EX4400 edge port.
 
+### Preview and correct client placement before endpoint activation
+
+After the physical cable move, an operator may preview the current EX4400 client mapping before committing endpoint-specific configuration:
+
+```bash
+python migrate.py <migration-id> activate --plan-only
+```
+
+The grouped `activate` workflow still satisfies its normal prerequisites. If QFX attachment discovery or the migration-specific QFX VLAN stage is still pending, those phases run first using their normal approval/safety behavior. `--plan-only` applies to the **endpoint activation** portion: endpoint correlation is produced and persisted, but no endpoint candidate is loaded or committed and no endpoint is marked migrated.
+
+With no `--observation-id`, every `activate --plan-only` invocation collects a **fresh live post-cutover EX4400 observation** and recomputes endpoint correlation from the currently learned MAC table.
+
+This supports a migration-night inspect/correct/recheck loop:
+
+```text
+move endpoint cables
+  -> run activate --plan-only
+  -> inspect old-interface -> new-interface MAC correlation
+  -> physically correct any misplaced cables
+  -> generate traffic from moved/quiet endpoints so the EX4400 relearns them
+  -> rerun activate --plan-only
+  -> repeat until mappings are acceptable
+  -> run normal activate
+```
+
+For example, if a preview reports:
+
+```text
+ge-0/0/2 -> ge-0/0/3
+ge-0/0/3 -> ge-0/0/2
+```
+
+those cables can be corrected and `activate --plan-only` run again. The second run uses newly collected live MAC/interface evidence; it does not overwrite or silently reuse the first observation.
+
+Do **not** pass an older `--observation-id` when the goal is to verify a physical cable correction. Supplying an observation ID intentionally reuses that immutable observation and therefore will not discover the new live mapping.
+
+For lab simulation, a specific immutable post-cutover observation can be replayed through the normal operator path:
+
+```bash
+python migrate.py <migration-id> activate \
+    --plan-only \
+    --observation-id <observation-id>
+```
+
+The operator wrapper permits `--observation-id` only when the selected environment profile is `lab`. This is intended for deterministic simulation/replay, not for production migration-night recabling checks.
+
+After the live mapping is satisfactory, proceed with normal activation so the endpoint-specific VLAN/description configuration is generated from the current correlation and committed through the normal approval and commit-confirmed safety path.
+
 If unresolved endpoints remain, the operator may accept them as migration exceptions. An accepted exception:
 
 - does not mark the endpoint migrated;
@@ -300,6 +354,8 @@ Used only when approved analysis contains eligible silent-port candidates.
 --environment PATH
 --username USER
 --password-env ENV_VAR
+--plan-only
+--observation-id ID   (lab environment only)
 --no-host-key-check
 ```
 
@@ -310,6 +366,8 @@ QFX attachment discovery
 QFX per-migration VLAN staging
 EX4400 endpoint correlation/activation
 ```
+
+`--plan-only` prevents endpoint configuration writes and completion state while retaining the observation/correlation audit artifacts. It does not suppress normal prerequisite QFX staging if that stage is still pending.
 
 ### `mac`
 

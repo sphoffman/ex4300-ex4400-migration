@@ -144,6 +144,8 @@ def _activate(migration_id, extra):
     result = legacy._activate(migration_id, extra)
     if result != 0:
         return result
+    if "--plan-only" in extra:
+        return 0
     settings_parser = argparse.ArgumentParser(add_help=False)
     settings_parser.add_argument("--settings", default="config/site.json")
     args, _unknown = settings_parser.parse_known_args(extra)
