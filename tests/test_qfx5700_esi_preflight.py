@@ -75,7 +75,10 @@ def test_configured_pair_is_skipped():
     }
     result = build_pair_preflight(devices, config(last_port=0))
     assert result["result"] == "PASS"
-    assert result["skip_count"] == 2
+    assert result["skip_count"] == 1
+    assert result["create_count"] == 1
+    assert result["candidates"][0]["pair_state"] == "SKIP_CONFIGURED"
+    assert result["candidates"][1]["pair_state"] == "CREATE"
 
 
 def test_asymmetric_configuration_hard_fails_pair_preflight():
