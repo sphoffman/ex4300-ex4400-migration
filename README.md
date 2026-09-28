@@ -417,3 +417,13 @@ import pytest
 raise SystemExit(pytest.main(["-q"]))
 '
 ```
+
+## Deployment on a Migration Server
+
+For fresh-server setup, Docker/PyEZ requirements, the portable Python
+launcher, testing, updates, and local configuration guidance, see
+[docs/deployment.md](docs/deployment.md).
+
+A production migration server should normally remain on `main`.
+Individual feature branches are not required to access completed
+migration capabilities.

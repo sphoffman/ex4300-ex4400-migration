@@ -8,3 +8,4 @@ config/qfx-site-policy.active.json
 config/ex4400-baseline.json
 data/ex4400_inventory.csv
 
+.test-deps/
