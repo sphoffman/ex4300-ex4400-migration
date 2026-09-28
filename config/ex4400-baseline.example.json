@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.0",
+  "environment": "lab",
+  "management": {
+    "vlan_id": 163,
+    "network": "<MANAGEMENT_SUBNET/CIDR>",
+    "uplink_interfaces": [
+      "ae0"
+    ]
+  },
+  "gateway_router": {
+    "address": "<ROUTER_MANAGEMENT_IP>",
+    "routing_instance": null
+  },
+  "baseline": {
+    "config_file": "templates/ex4400/baseline.set",
+    "format": "set",
+    "load_mode": "merge"
+  },
+  "inventory": {
+    "csv_file": "data/ex4400_inventory.csv"
+  },
+  "connection": {
+    "netconf_port": 830,
+    "auto_probe_seconds": 10
+  }
+}

@@ -1,0 +1,5 @@
+# Copy this file to templates/ex4400/baseline.set and replace the contents
+# with the approved static EX4400 baseline. No variables are rendered.
+#
+# Example only:
+set system services netconf ssh
