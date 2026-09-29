@@ -2,6 +2,8 @@
 
 `ex4400-baseline` prepares a replacement EX4400 before the EX4300-to-EX4400 migration workflow.
 
+For a complete explanation of which command form to use from the Linux host versus from inside the lab PyEZ container, see [`lab-pyez-usage.md`](lab-pyez-usage.md).
+
 ## What it does
 
 1. Connects to the source EX4300.
@@ -10,11 +12,11 @@
 4. Requires exactly one locally learned physical-interface MAC, unless `--port` explicitly selects the source interface.
 5. Connects to the configured router and resolves that MAC through ARP.
 6. Optionally requires the resulting address to be inside the configured management subnet.
-7. Connects to the discovered address and refuses to continue unless the device reports an EX4400 model.
+7. Connects to the discovered replacement switch and verifies that it is an allowed EX4400 target. Lab mode may accept the configured vJunos surrogate model.
 8. Loads the approved static baseline as a merge, runs commit check, and commits.
 9. Upserts `data/ex4400_inventory.csv`. `READY` is written only after a successful commit.
 
-The EX4300 and gateway router share one credential prompt. After the EX4400 vme address is discovered, the utility prompts separately for the replacement EX4400 credentials because the replacement may still be using local authentication before RADIUS is installed.
+The EX4300 and gateway router share one credential prompt. After the EX4400 VME/OOB address is discovered, the utility prompts separately for the replacement EX4400 credentials because the replacement may still be using local authentication before RADIUS is installed.
 
 ## Setup
 
@@ -34,68 +36,62 @@ cp templates/ex4400/baseline.set.example templates/ex4400/baseline.set
 
 Replace the example statements with the real baseline. No Jinja variables or other template expansion are performed.
 
-## Run
+## Run from the Linux host
 
-Normal automatic discovery:
+The repository-managed `./py` wrapper is the preferred host-side launcher:
 
 ```bash
-pyez -m ex4400_baseline 10.255.1.23
+./py -m ex4400_baseline 10.255.1.23
 ```
 
 If more than one local MAC exists in the management VLAN, explicitly select the EX4300 port:
 
 ```bash
-pyez -m ex4400_baseline 10.255.1.23 --port ge-4/0/47
+./py -m ex4400_baseline 10.255.1.23 --port ge-4/0/47
 ```
 
 Validate the candidate without committing:
 
 ```bash
-pyez -m ex4400_baseline 10.255.1.23 --dry-run
+./py -m ex4400_baseline 10.255.1.23 --dry-run
 ```
 
-For unattended test automation, the username can be supplied with `--username` and the password can be read from an environment variable using `--password-env`.
+If a shell function named `py` is already defined and launches the same PyEZ container correctly, `py -m ...` can also be used. The repository `./py` wrapper is preferred because it carries the current Docker mount, `PYTHONPATH`, and UID/GID behavior with the repository.
 
-## Inventory contract
+Older examples that use `pyez -m ...` are obsolete; there is no project launcher named `pyez`.
 
-The CSV key is `migration_id`, derived from the EX4300 hostname. Re-running the utility updates that row rather than appending a duplicate.
+## Run from inside PyEZ1
 
-Important fields are:
+When the prompt is already inside the PyEZ container, for example:
 
-- `migration_id`
-- `ex4400_ip`
-- `ex4400_mac`
-- `ex4300_interface`
-- `ex4400_model`
-- `ex4400_serial`
-- `status`
-
-The migration workflow must require `status == READY` before using `ex4400_ip`.
-
-A reader is provided for migration code:
-
-```python
-from pathlib import Path
-from ex4400_baseline.core import lookup_inventory
-
-row = lookup_inventory(
-    Path("data/ex4400_inventory.csv"),
-    migration_id,
-    require_ready=True,
-)
-ex4400_ip = row["ex4400_ip"]
+```text
+PyEZ1:~/scripts$
 ```
 
-The utility changes an existing row to `IN_PROGRESS` as soon as the EX4300 hostname is known, and changes it to `FAILED` on a handled error. This prevents an older `READY` row from remaining authoritative after a failed re-run.
+do not use the host-side `./py` wrapper. Python is already running in the correct container environment.
 
-## Notes
+From the repository root:
 
-The static baseline is deliberately loaded with merge semantics. This utility does not perform an overwrite/replace operation.
+```bash
+cd ~/scripts
+PYTHONPATH=src python -m ex4400_baseline 10.255.1.23
+```
 
-The currently existing migration provisioner binds an OOB `fxp0`/`mgmt_junos` identity. The address discovered here is the EX4400 `vme` address on the management VLAN. Those are different concepts, so this change publishes a clean inventory contract rather than incorrectly feeding the vme address into the existing OOB identity field.
+Dry run:
 
+```bash
+PYTHONPATH=src python -m ex4400_baseline 10.255.1.23 --dry-run
+```
 
-### Separate EX4400 credentials
+If several standalone module commands will be run in the same shell, export the source path once:
+
+```bash
+export PYTHONPATH="$PWD/src"
+python -m ex4400_baseline --help
+python -m ex4400_baseline 10.255.1.23 --dry-run
+```
+
+## Credentials
 
 Normal interactive use prompts twice:
 
@@ -107,7 +103,7 @@ EX4400 username:
 EX4400 password:
 ```
 
-For automation, the two credential sets can be supplied independently:
+For unattended test automation, the two credential sets can be supplied independently:
 
 ```bash
 PYTHONPATH=src python -m ex4400_baseline 172.16.163.10 \
@@ -115,4 +111,73 @@ PYTHONPATH=src python -m ex4400_baseline 172.16.163.10 \
   --password-env OLD_SWITCH_PASSWORD \
   --ex4400-username local-admin \
   --ex4400-password-env NEW_SWITCH_PASSWORD
+```
+
+The equivalent host-side form is:
+
+```bash
+./py -m ex4400_baseline 172.16.163.10 \
+  --username radius-user \
+  --password-env OLD_SWITCH_PASSWORD \
+  --ex4400-username local-admin \
+  --ex4400-password-env NEW_SWITCH_PASSWORD
+```
+
+## Inventory contract
+
+The CSV key is `migration_id`, derived from the EX4300 hostname. Re-running the utility updates that migration's row rather than appending a duplicate, while rows for other migration IDs are retained.
+
+Important fields include:
+
+- `migration_id`
+- `ex4300_ip`
+- `ex4400_ip`
+- `management_network`
+- `ex4400_mac`
+- `ex4300_interface`
+- `ex4400_model`
+- `ex4400_serial`
+- `status`
+
+The guided migration workflow uses a `READY` inventory row as the authoritative address source. It can obtain the existing EX4300 address from `ex4300_ip` and derive the replacement EX4400 VME/OOB address with prefix from `ex4400_ip` plus `management_network`.
+
+A reader is also available to lower-level migration code:
+
+```python
+from pathlib import Path
+from ex4400_baseline.core import lookup_inventory
+
+row = lookup_inventory(
+    Path("data/ex4400_inventory.csv"),
+    migration_id,
+    require_ready=True,
+)
+ex4300_ip = row["ex4300_ip"]
+ex4400_ip = row["ex4400_ip"]
+```
+
+The utility changes an existing row to `IN_PROGRESS` as soon as the EX4300 hostname is known, and changes it to `FAILED` on a handled error. This prevents an older `READY` row from remaining authoritative after a failed re-run.
+
+## Management-interface terminology
+
+On an EX4400 Virtual Chassis, the VC management endpoint is the logical `vme` interface reached through the members' dedicated management ports. In this project, the address discovered by MAC-to-ARP resolution for the replacement switch is the EX4400 **VME/OOB management address** used during prestage identity binding.
+
+This is separate from any later permanent in-band management interface such as an IRB carried across the production uplinks.
+
+Older project text that called the EX4400 OOB management endpoint `fxp0` was using terminology more common on other Junos platforms. For EX4400 VC documentation and operator prompts, use **VME/OOB management**.
+
+## Notes
+
+The static baseline is deliberately loaded with merge semantics. This utility does not perform an overwrite/replace operation.
+
+For the normal migration after baseline inventory has been created, use the guided operator workflow rather than launching lower-level provisioning modules directly:
+
+```bash
+./migrate <migration-id>
+```
+
+or, from inside PyEZ1:
+
+```bash
+python migrate.py <migration-id>
 ```
