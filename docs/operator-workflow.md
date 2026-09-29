@@ -8,20 +8,33 @@ The normal operator entry point is the repository-root `migrate` launcher.
 
 With no explicit phase, the launcher inspects immutable migration artifacts, displays current status, and offers to run the next safe action. Existing analyzer, planner, provisioner, QFX, endpoint, validation, and cleanup modules remain authoritative; the operator layer only orchestrates them and never bypasses their approvals or commit-confirmed safety checks.
 
+## Migration inventory
+
+When `data/ex4400_inventory.csv` contains a `READY` row for the migration ID, the guided workflow uses that row as the authoritative device-address inventory:
+
+- `ex4300_ip` supplies the reachable old-switch address for discovery.
+- `ex4400_ip` is the replacement EX4400 Virtual Chassis management (`vme`) address.
+- `management_network` supplies the CIDR prefix used with the EX4400 VME/OOB address during pre-stage identity binding.
+
+For example, a row with `ex4400_ip=172.16.198.19` and `management_network=172.16.198.0/24` supplies `172.16.198.19/24` to pre-stage automatically.
+
+A row that exists but is not `READY` is not bypassed: the migration stops so a failed or dry-run baseline result cannot silently become authoritative. If no inventory file or no row exists for the migration ID, the existing interactive/explicit-address workflow remains available for compatibility. Explicit `--address` and `--oob-address` arguments continue to override automatic lookup.
+
 ## Repeatable discovery
 
-The first discovery needs the currently reachable old-switch address:
+With a `READY` inventory row, the migration ID is enough to locate the currently reachable EX4300:
+
+```bash
+./migrate sw1203 discover
+```
+
+Without an inventory row, the first discovery can still be supplied explicitly:
 
 ```bash
 ./migrate sw1203 discover --address 10.255.3.18
 ```
 
-Each invocation creates one independent immutable discovery collection. Later runs reuse the source address already recorded in discovery evidence:
-
-```bash
-./migrate sw1203 discover
-./migrate sw1203 discover
-```
+Each invocation creates one independent immutable discovery collection. Later runs can reuse the source address already recorded in discovery evidence.
 
 Optional repeated collection is also supported:
 
@@ -46,6 +59,8 @@ Each collection remains a separate artifact. If a new collection is added after 
 ```
 
 The phase commands group existing guarded operations. They stop immediately if an underlying command fails or the operator declines an approval.
+
+When replacement identity has not yet been bound, `prestage` uses `ex4400_ip` plus `management_network` from the `READY` inventory row to derive the EX4400 VME/OOB CIDR automatically. The EX4400 `vme` interface is the Virtual Chassis management endpoint reached through the members' dedicated management ports; it is not treated as a separate in-band management address by the operator workflow.
 
 `cutover` is an operator checkpoint only. It records a plan-bound acknowledgement that the physical cabling move is complete; it performs no device writes. Existing post-cutover QFX attachment artifacts can also prove that an older migration already passed that physical boundary.
 
