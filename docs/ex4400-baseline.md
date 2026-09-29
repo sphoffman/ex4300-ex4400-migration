@@ -4,17 +4,27 @@
 
 ## What it does
 
-1. Connects to the source EX4300.
-2. Reads the Ethernet-switching table for the configured management VLAN.
-3. Ignores MAC addresses learned through configured uplinks (normally `ae0`).
-4. Requires exactly one locally learned physical-interface MAC, unless `--port` explicitly selects the source interface.
-5. Connects to the configured router and resolves that MAC through ARP.
-6. Optionally requires the resulting address to be inside the configured management subnet.
-7. Connects to the discovered address and refuses to continue unless the device reports an EX4400 model.
-8. Loads the approved static baseline as a merge, runs commit check, and commits.
-9. Upserts `data/ex4400_inventory.csv`. `READY` is written only after a successful commit.
+1. Checks whether NETCONF/SSH is reachable on the source EX4300.
+2. If TCP/830 is unavailable, connects to the source EX4300 over SSH/22 with the normal EX4300/router credentials, verifies the chassis identifies as an EX4300, adds only `set system services netconf ssh`, commits, and waits for TCP/830 to become reachable.
+3. Connects to the source EX4300 with PyEZ/NETCONF.
+4. Reads the Ethernet-switching table for the configured management VLAN.
+5. Ignores MAC addresses learned through configured uplinks (normally `ae0`).
+6. Requires exactly one locally learned physical-interface MAC, unless `--port` explicitly selects the source interface.
+7. Connects to the configured router and resolves that MAC through ARP.
+8. Optionally requires the resulting address to be inside the configured management subnet.
+9. Connects to the discovered address and refuses to continue unless the device reports an EX4400 model.
+10. Loads the approved static baseline as a merge, runs commit check, and commits.
+11. Upserts `data/ex4400_inventory.csv`. `READY` is written only after a successful commit.
 
 The EX4300 and gateway router share one credential prompt. After the EX4400 vme address is discovered, the utility prompts separately for the replacement EX4400 credentials because the replacement may still be using local authentication before RADIUS is installed.
+
+### Automatic NETCONF prerequisite
+
+The source EX4300 does not need NETCONF enabled ahead of time. If port 830 is already reachable, the prerequisite step is a no-op. If it is not reachable, the utility uses SSH/22 and the same EX4300/router username and password to enable NETCONF. RADIUS-backed SSH username/password authentication works normally as long as the account has permission to enter configuration mode and modify `system services`.
+
+The bootstrap refuses to make the change unless `show chassis hardware` identifies the target as an EX4300. It does not modify any other EX4300 configuration.
+
+Because NETCONF is required to perform the rest of baseline discovery, this prerequisite bootstrap may enable NETCONF even when `--dry-run` is used. `--dry-run` prevents the replacement EX4400 baseline from being committed; it does not disable the source-switch NETCONF prerequisite.
 
 ## Setup
 
@@ -48,7 +58,7 @@ If more than one local MAC exists in the management VLAN, explicitly select the 
 pyez -m ex4400_baseline 10.255.1.23 --port ge-4/0/47
 ```
 
-Validate the candidate without committing:
+Validate the EX4400 candidate without committing its baseline:
 
 ```bash
 pyez -m ex4400_baseline 10.255.1.23 --dry-run
@@ -93,7 +103,6 @@ The utility changes an existing row to `IN_PROGRESS` as soon as the EX4300 hostn
 The static baseline is deliberately loaded with merge semantics. This utility does not perform an overwrite/replace operation.
 
 The currently existing migration provisioner binds an OOB `fxp0`/`mgmt_junos` identity. The address discovered here is the EX4400 `vme` address on the management VLAN. Those are different concepts, so this change publishes a clean inventory contract rather than incorrectly feeding the vme address into the existing OOB identity field.
-
 
 ### Separate EX4400 credentials
 
