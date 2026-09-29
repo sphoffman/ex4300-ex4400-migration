@@ -109,6 +109,24 @@ The QFX pre-cutover baseline contains only the permanent management VLAN. Before
 
 After physical cutover, the replacement EX4400 uses its normal in-band management interface/VLAN (for example `irb.163` / `v163`) through its new uplinks to the QFX pair.
 
+## QFX5700 ESI-LAG bootstrap
+
+For a new migration QFX pair, the standalone QFX5700 ESI-LAG bootstrap utility can preprovision the deterministic ET -> AE, LACP, all-active ESI, trunk, and initial management-VLAN infrastructure expected by the normal migration workflow.
+
+Always dry-run it first:
+
+```bash
+./py -m ex_migration_qfx_bootstrap.cli --dry-run
+```
+
+Then, after reviewing a successful preflight and candidate configuration:
+
+```bash
+./py -m ex_migration_qfx_bootstrap.cli
+```
+
+See [`docs/qfx5700-esi-bootstrap.md`](docs/qfx5700-esi-bootstrap.md) for configuration-file setup, safety behavior, dry-run/preflight interpretation, commit protection, and the complete site bring-up sequence.
+
 ## Site preparation
 
 Normal site preparation:
@@ -135,7 +153,7 @@ in one process and prompts for QFX credentials once. Approval boundaries remain 
 
 Site initialization asks for the site/environment, QFX management addresses, permanent management VLAN, EX-only TEMP-ACCESS VLAN, and any reserved QFX ET interfaces. It does **not** ask for a temporary-management VLAN.
 
-The QFX migration-facing ET interfaces and AEs must already be preprovisioned by the external QFX provisioning process. This migration project does **not** create or repair:
+The QFX migration-facing ET interfaces and AEs must already be preprovisioned before `site-prep`. They may be created by the standalone QFX5700 ESI-LAG bootstrap utility documented above, or by another external provisioning process. The guided migration workflow itself does **not** create or repair:
 
 ```text
 ET -> AE mapping
@@ -421,7 +439,7 @@ Important rules include:
 
 - first discovery derives the migration ID from the old-switch hostname;
 - later discovery asserts that migration ID;
-- QFX ET/AE/LACP/ESI infrastructure is externally preprovisioned;
+- QFX ET/AE/LACP/ESI infrastructure is preprovisioned before the guided migration workflow, optionally using the repository's standalone QFX5700 ESI-LAG bootstrap utility;
 - QFX site baseline is permanent management only;
 - TEMP-ACCESS/3998 remains EX4400-only;
 - temporary EX4400 VME/OOB management is an external reachability prerequisite and has no project-managed transit-path device writes;
