@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import ipaddress
 import sys
 from pathlib import Path
@@ -153,24 +154,140 @@ def _activate(migration_id, extra):
     return _offer_exception_acceptance(root)
 
 
+def _inventory_path(settings):
+    return Path(settings.get("ex4400_inventory_csv", "data/ex4400_inventory.csv"))
+
+
+def _inventory_row(settings, migration_id):
+    """Return a READY inventory row, or None when this migration is not inventoried."""
+    path = _inventory_path(settings)
+    if not path.is_file():
+        return None
+
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+
+    wanted = str(migration_id).strip().lower()
+    matches = [
+        row
+        for row in rows
+        if str(row.get("migration_id") or "").strip().lower() == wanted
+    ]
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise OperatorError(
+            "EX4400 inventory %s contains %d rows for migration %s; expected exactly one"
+            % (path, len(matches), migration_id)
+        )
+
+    row = matches[0]
+    status = str(row.get("status") or "").strip()
+    if status != "READY":
+        raise OperatorError(
+            "EX4400 inventory row for %s is not READY (status=%s); refusing to bypass inventory safety"
+            % (migration_id, status or "UNKNOWN")
+        )
+    return row
+
+
+def _inventory_ex4300_address(row, migration_id):
+    address = str(row.get("ex4300_ip") or "").strip()
+    if not address:
+        raise OperatorError(
+            "READY EX4400 inventory row for %s has no ex4300_ip" % migration_id
+        )
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        raise OperatorError(
+            "READY EX4400 inventory row for %s has invalid ex4300_ip %r"
+            % (migration_id, address)
+        )
+    if parsed.version != 4:
+        raise OperatorError("EX4300 inventory address must be IPv4")
+    return str(parsed)
+
+
+def _inventory_ex4400_oob(row, migration_id):
+    address = str(row.get("ex4400_ip") or "").strip()
+    network = str(row.get("management_network") or "").strip()
+    if not address:
+        raise OperatorError(
+            "READY EX4400 inventory row for %s has no ex4400_ip" % migration_id
+        )
+    if not network:
+        raise OperatorError(
+            "READY EX4400 inventory row for %s has no management_network; cannot derive the VME/OOB CIDR"
+            % migration_id
+        )
+    try:
+        parsed_address = ipaddress.ip_address(address)
+        parsed_network = ipaddress.ip_network(network, strict=False)
+    except ValueError as exc:
+        raise OperatorError(
+            "READY EX4400 inventory row for %s has invalid management addressing: %s"
+            % (migration_id, exc)
+        )
+    if parsed_address.version != 4 or parsed_network.version != 4:
+        raise OperatorError("EX4400 VME/OOB inventory addressing must be IPv4")
+    if parsed_address not in parsed_network:
+        raise OperatorError(
+            "EX4400 inventory address %s is not inside management network %s"
+            % (parsed_address, parsed_network)
+        )
+    return "%s/%d" % (parsed_address, parsed_network.prefixlen)
+
+
 def _validated_oob_address(value):
     value = str(value or "").strip()
     if not value:
-        raise OperatorError("replacement OOB address/prefix is required")
+        raise OperatorError("replacement VME/OOB address/prefix is required")
     if "/" not in value:
         raise OperatorError(
-            "replacement OOB address must include an explicit CIDR prefix "
+            "replacement VME/OOB address must include an explicit CIDR prefix "
             "(for example 10.255.3.16/24); refusing to assume /32"
         )
     try:
         parsed = ipaddress.ip_interface(value)
     except ValueError:
         raise OperatorError(
-            "replacement OOB address/prefix is not valid IPv4 CIDR: %s" % value
+            "replacement VME/OOB address/prefix is not valid IPv4 CIDR: %s" % value
         )
     if parsed.version != 4:
-        raise OperatorError("replacement OOB address must be IPv4 CIDR")
+        raise OperatorError("replacement VME/OOB address must be IPv4 CIDR")
     return value
+
+
+def _discover_with_inventory(migration_id, extra):
+    values = list(extra)
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--settings", default="config/site.json")
+    parser.add_argument("--address")
+    args, _unknown = parser.parse_known_args(values)
+    if args.address:
+        return legacy._dispatch(migration_id, "discover", values)
+
+    settings = legacy._settings(args.settings)
+    row = _inventory_row(settings, migration_id)
+    if row is None:
+        return legacy._dispatch(migration_id, "discover", values)
+
+    address = _inventory_ex4300_address(row, migration_id)
+    root = migration_root(settings, migration_id)
+    evidence_address = legacy.source_address_from_evidence(root)
+    if evidence_address and str(evidence_address) != address:
+        raise OperatorError(
+            "EX4400 inventory EX4300 address %s conflicts with existing discovery evidence %s for %s"
+            % (address, evidence_address, migration_id)
+        )
+
+    print(
+        "EX4300 address: %s (from %s)"
+        % (address, _inventory_path(settings))
+    )
+    values += ["--address", address]
+    return legacy._dispatch(migration_id, "discover", values)
 
 
 def _prestage_with_validated_oob(migration_id, extra):
@@ -179,16 +296,25 @@ def _prestage_with_validated_oob(migration_id, extra):
     parser.add_argument("--settings", default="config/site.json")
     parser.add_argument("--oob-address")
     args, _unknown = parser.parse_known_args(values)
-    root = migration_root(legacy._settings(args.settings), migration_id)
+    settings = legacy._settings(args.settings)
+    root = migration_root(settings, migration_id)
     state = workflow_status(root)
     if state.get("identity") == "COMPLETE":
         return legacy._dispatch(migration_id, "prestage", values)
 
     oob = args.oob_address
     if oob is None:
-        oob = input(
-            "Replacement EX4400 OOB address/prefix (for example 10.0.0.15/24): "
-        ).strip()
+        row = _inventory_row(settings, migration_id)
+        if row is not None:
+            oob = _inventory_ex4400_oob(row, migration_id)
+            print(
+                "Replacement EX4400 VME/OOB address: %s (from %s)"
+                % (oob, _inventory_path(settings))
+            )
+        else:
+            oob = input(
+                "Replacement EX4400 VME/OOB address/prefix (for example 10.0.0.15/24): "
+            ).strip()
         values += ["--oob-address", _validated_oob_address(oob)]
     else:
         _validated_oob_address(oob)
@@ -207,6 +333,8 @@ def _dispatch(migration_id, command, extra):
         return 0
     if command == "activate":
         return _activate(migration_id, extra)
+    if command == "discover":
+        return _discover_with_inventory(migration_id, extra)
     if command == "prestage":
         return _prestage_with_validated_oob(migration_id, extra)
     return legacy._dispatch(migration_id, command, extra)
