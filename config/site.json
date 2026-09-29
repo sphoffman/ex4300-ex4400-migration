@@ -8,6 +8,7 @@
   "default_collection_interval_seconds": 180,
   "collection_workers": 4,
   "require_host_key_verification": true,
+  "ex4400_inventory_csv": "data/ex4400_inventory.csv",
   "ex4400_template": "templates/ex4400/ex4400.set.j2",
   "ex4400_template_contract": "templates/ex4400/contract-v1.json",
   "site_profile": "config/site-profile.json",
