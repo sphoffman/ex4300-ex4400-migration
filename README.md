@@ -29,6 +29,10 @@ Those are the three primary operator entry points:
 2. `discover` — collect the first EX4300 evidence and derive the migration ID from the switch hostname.
 3. `<migration-id>` — resume the guided migration from whatever safe phase is next.
 
+For the complete command matrix explaining when to use `./migrate`, `python migrate.py`, `./py`, or `PYTHONPATH=src python -m ...`, see:
+
+[`docs/lab-pyez-usage.md`](docs/lab-pyez-usage.md)
+
 Migration artifacts are immutable and digest-bound under:
 
 ```text
@@ -43,9 +47,15 @@ snapshots/site/<site-id>/
 
 ## Testing
 
-For the repeatable vJunos/post-cutover simulation rehearsal, including reset steps, expected checkpoints, and the remaining simulator workflow work, see:
+For the repeatable vJunos/post-cutover simulation rehearsal, including reset steps and expected checkpoints, see:
 
 [`docs/simulated-migration-testing.md`](docs/simulated-migration-testing.md)
+
+For normal full-suite testing from the Linux host, use:
+
+```bash
+./scripts/test.sh
+```
 
 ## VLAN and management model
 
@@ -56,22 +66,24 @@ The migration workflow manages two VLAN roles directly:
 163   v163/MGMT     permanent replacement EX4400 in-band management
 ```
 
-A separate temporary-management network may be used to reach the replacement EX4400 `fxp0` before cutover, but that path is an **external prerequisite** and is outside this project's configuration scope.
+A separate temporary-management network may be used to reach the replacement EX4400 **VME/OOB management address** before cutover, but that path is an **external prerequisite** and is outside this project's configuration scope.
 
 ### VLAN 3998 — `TEMP-ACCESS`
 
 `TEMP-ACCESS` is local to the replacement EX4400 prestage design. The Junos `default` VLAN is renumbered to 3998 so edge ports remain in a non-production holding VLAN until endpoint activation.
 
-It is **not** used for switch management and is not part of the QFX pre-cutover baseline.
+It is **not** used for permanent in-band switch management and is not part of the QFX pre-cutover baseline.
 
-### Temporary `fxp0` management — external prerequisite
+### Temporary VME/OOB management — external prerequisite
+
+On an EX4400 Virtual Chassis, the VC management endpoint is the logical `vme` interface reached through the members' dedicated management ports. This is the management endpoint used for replacement-switch identity binding and prestage connectivity.
 
 In production, temporary pre-cutover reachability may be provided through the legacy network, for example:
 
 ```text
-replacement EX4400 fxp0
+replacement EX4400 VME/OOB management
         |
-legacy EX4300 access port
+legacy EX4300 access/transit path
         |
 legacy EX4300 uplink
         |
@@ -87,9 +99,9 @@ EX4400
 QFX5700
 ```
 
-Before `prestage`, the operator is responsible for ensuring that the replacement EX4400 `fxp0` address is reachable. The migration workflow validates and binds the supplied replacement identity/address; it does not build the legacy transit path that provides that reachability.
+Before `prestage`, the operator is responsible for ensuring that the replacement EX4400 VME/OOB management address is reachable. The migration workflow validates and binds the supplied replacement identity/address; it does not build the legacy transit path that provides that reachability.
 
-The QFX5700s are not part of the temporary `fxp0` path. A migration-facing QFX AE must therefore contain no temporary-management VLAN membership.
+The QFX5700s are not part of the temporary VME/OOB path. A migration-facing QFX AE must therefore contain no temporary-management VLAN membership.
 
 ### VLAN 163 — permanent in-band management
 
@@ -154,7 +166,7 @@ Initial discovery does not require a migration ID:
 ./migrate discover
 ```
 
-or:
+or inside PyEZ1:
 
 ```bash
 python migrate.py discover
@@ -181,6 +193,26 @@ Repeat collections after the migration ID exists with:
 ```bash
 ./migrate <migration-id> discover
 ```
+
+## EX4400 baseline utility
+
+The EX4400 baseline utility is a standalone pre-migration tool rather than a normal guided migration phase.
+
+From the Linux host:
+
+```bash
+./py -m ex4400_baseline <EX4300-IP> --dry-run
+```
+
+From inside PyEZ1:
+
+```bash
+PYTHONPATH=src python -m ex4400_baseline <EX4300-IP> --dry-run
+```
+
+After a successful non-dry-run baseline, `data/ex4400_inventory.csv` contains the authoritative migration-ID mapping for the source EX4300 address and replacement EX4400 VME/OOB address. The guided workflow consumes a `READY` row automatically.
+
+See [`docs/ex4400-baseline.md`](docs/ex4400-baseline.md) for the complete baseline workflow.
 
 ## Guided migration
 
@@ -215,20 +247,20 @@ The guided workflow groups related internal phases but retains meaningful approv
 ```text
 approve exact migration intent
   -> create package/render
-  -> bind replacement EX4400 identity/OOB fxp0 address
+  -> bind replacement EX4400 identity/VME-OOB management address
   -> approve exact EX4400 candidate diff
   -> commit-confirm + validate replacement EX4400
 ```
 
-The replacement OOB address **must include an explicit CIDR prefix**. A bare address such as `10.255.3.16` is rejected rather than silently becoming `/32`.
+The replacement VME/OOB address **must include an explicit CIDR prefix**. When a `READY` EX4400 inventory row exists, the guided workflow derives that prefix from `ex4400_ip` plus `management_network`. A manually supplied bare address such as `10.255.3.16` is rejected rather than silently becoming `/32`.
 
-Temporary `fxp0` reachability must already exist before prestage; no EX4300/EX9200 temporary-management provisioning is performed by this workflow.
+Temporary VME/OOB reachability must already exist before prestage; no EX4300/EX9200 temporary-management provisioning is performed by this workflow.
 
 ## Physical cutover
 
 The `cutover` checkpoint is an operator acknowledgement only; it performs no device writes.
 
-In production, the legacy EX4300 uplinks terminate on EX9200s before cutover. During cutover those uplink fibers are moved to the replacement EX4400/QFX5700 topology. Once the replacement uplinks are active, permanent in-band management is used and the external temporary `fxp0` path is no longer required.
+In production, the legacy EX4300 uplinks terminate on EX9200s before cutover. During cutover those uplink fibers are moved to the replacement EX4400/QFX5700 topology. Once the replacement uplinks are active, permanent in-band management is used and the external temporary VME/OOB path is no longer required.
 
 After cutover, `activate` discovers the live QFX attachment, stages only the required per-migration QFX data/voice VLANs, and activates endpoints using approved historical MAC evidence.
 
@@ -316,7 +348,9 @@ These remain available for explicit resume/troubleshooting:
 ./migrate <migration-id> mac <mac-address>
 ```
 
-The normal guided path remains `./migrate <migration-id>`.
+Inside PyEZ1, replace `./migrate` with `python migrate.py`.
+
+The normal guided path remains `./migrate <migration-id>` from the host or `python migrate.py <migration-id>` from inside PyEZ1.
 
 ## Useful options
 
@@ -329,6 +363,8 @@ The normal guided path remains `./migrate <migration-id>`.
 --password-env ENV_VAR
 --no-host-key-check
 ```
+
+The option name remains `--oob-address` for CLI compatibility; on an EX4400 VC this represents the replacement VME/OOB management endpoint.
 
 ### `cutover-ready`
 
@@ -388,10 +424,11 @@ Important rules include:
 - QFX ET/AE/LACP/ESI infrastructure is externally preprovisioned;
 - QFX site baseline is permanent management only;
 - TEMP-ACCESS/3998 remains EX4400-only;
-- temporary `fxp0` management is an external prerequisite and has no project-managed device writes;
+- temporary EX4400 VME/OOB management is an external reachability prerequisite and has no project-managed transit-path device writes;
 - QFX migration AEs must not contain a temporary-management VLAN;
-- replacement EX `fxp0` is the pre-cutover management endpoint;
+- the replacement EX4400 VME/OOB endpoint is used for pre-cutover identity and prestage access;
 - replacement in-band management is used after cutover;
+- a `READY` EX4400 inventory row is authoritative for the recorded EX4300 and replacement VME/OOB addresses;
 - endpoint VLAN assignment requires unambiguous approved MAC evidence;
 - write-capable phases show the exact candidate diff and require approval;
 - device writes use commit-confirmed and post-change validation before final confirmation;
@@ -401,18 +438,18 @@ Important rules include:
 
 The project supports Python 3.8 and 3.12 in CI.
 
-Run tests with:
+From the Linux host, run the complete test workflow with:
 
 ```bash
-pytest -q
+./scripts/test.sh
 ```
 
-In the Juniper PyEZ container environment:
+Inside PyEZ1, prefer running the test workflow from the host. If `.test-deps` is already populated and a direct in-container run is needed, use:
 
 ```bash
-pyez -c '
+PYTHONPATH=src python -c '
 import sys
-sys.path.insert(0, "/scripts/.test-deps")
+sys.path.insert(0, ".test-deps")
 import pytest
 raise SystemExit(pytest.main(["-q"]))
 '
@@ -420,10 +457,12 @@ raise SystemExit(pytest.main(["-q"]))
 
 ## Deployment on a Migration Server
 
-For fresh-server setup, Docker/PyEZ requirements, the portable Python
-launcher, testing, updates, and local configuration guidance, see
-[docs/deployment.md](docs/deployment.md).
+For fresh-server setup, Docker/PyEZ requirements, the portable Python launcher, testing, updates, and local configuration guidance, see:
 
-A production migration server should normally remain on `main`.
-Individual feature branches are not required to access completed
-migration capabilities.
+[`docs/deployment.md`](docs/deployment.md)
+
+For day-to-day lab command forms, see:
+
+[`docs/lab-pyez-usage.md`](docs/lab-pyez-usage.md)
+
+A production migration server should normally remain on `main`. Individual feature branches are not required to access completed migration capabilities.
